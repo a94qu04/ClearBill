@@ -3,6 +3,12 @@ import type { LedgerMergeStats } from '@/core/backupMergeEngine'
 
 const GOOGLE_DRIVE_CLIENT_ID_KEY = 'clearbill_google_client_id'
 const GOOGLE_DRIVE_LAST_SYNC_KEY = 'clearbill_google_last_sync_at'
+const GOOGLE_DRIVE_ACCOUNT_KEY = 'clearbill_google_account'
+const GOOGLE_DRIVE_AUTO_SYNC_KEY = 'clearbill_google_auto_sync'
+const GOOGLE_DRIVE_DIRTY_KEY = 'clearbill_google_dirty'
+const GOOGLE_DRIVE_REMOTE_MTIME_KEY = 'clearbill_google_remote_mtime'
+const GOOGLE_DRIVE_SESSION_TOKEN_KEY = 'clearbill_google_session_token'
+
 const GOOGLE_DRIVE_BACKUP_FILENAME = 'clearbill-backup-v1.json'
 const GOOGLE_DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file'
 const GIS_SCRIPT_URL = 'https://accounts.google.com/gsi/client'
@@ -14,10 +20,16 @@ export type GoogleDriveSyncErrorCode =
   | 'ERR_GIS_UNAVAILABLE'
   | 'ERR_OAUTH_DENIED'
   | 'ERR_OAUTH_POPUP'
+  | 'ERR_OAUTH_SILENT_REQUIRED'
   | 'ERR_DRIVE_LIST_FAILED'
   | 'ERR_DRIVE_NOT_FOUND'
   | 'ERR_DRIVE_UPLOAD_FAILED'
   | 'ERR_DRIVE_DOWNLOAD_FAILED'
+
+export interface GoogleDriveAccountInfo {
+  email: string
+  displayName: string
+}
 
 interface GoogleTokenResponse {
   access_token?: string
@@ -27,13 +39,17 @@ interface GoogleTokenResponse {
 }
 
 interface GoogleTokenClient {
-  requestAccessToken: (overrideConfig?: { prompt?: string }) => void
+  requestAccessToken: (overrideConfig?: {
+    prompt?: string
+    hint?: string
+  }) => void
 }
 
 interface GoogleAccountsOAuth2 {
   initTokenClient: (config: {
     client_id: string
     scope: string
+    hint?: string
     callback: (response: GoogleTokenResponse) => void
     error_callback?: (error: { type?: string; message?: string }) => void
   }) => GoogleTokenClient
@@ -62,6 +78,12 @@ export class GoogleDriveSyncError extends Error {
 
 export interface GoogleDriveSyncOptions {
   clientId?: string
+  /** 若為 true，只使用快取權杖或靜默續連，絕不彈出登入視窗（適合背景自動同步） */
+  silentOnly?: boolean
+  /** 若為 true，強制重新選擇 Google 帳號 */
+  selectAccount?: boolean
+  /** 本機是否有尚未上傳的新變更；為 false 且雲端檔案未異動時將快速略過上傳 */
+  hasLocalChanges?: boolean
   /** 若遠端已有備份檔，下載後交由呼叫端透過 UUID 與 updatedAt 執行無損合併 */
   onMergeRemote: (rawJson: unknown) => Promise<LedgerMergeStats>
   /** 取得合併完成後的最新本地完整備份物件以回傳至 Google Drive */
@@ -73,11 +95,62 @@ export interface GoogleDriveSyncResult {
   syncedAt: number
   hadRemoteFile: boolean
   mergeStats: LedgerMergeStats | null
+  skippedNoChanges: boolean
+  uploaded: boolean
+  account: GoogleDriveAccountInfo | null
 }
 
 let cachedAccessToken: string | null = null
 let cachedTokenExpiresAt = 0
 let gisScriptLoadPromise: Promise<void> | null = null
+
+function restoreSessionTokenIfValid(): void {
+  if (cachedAccessToken && Date.now() < cachedTokenExpiresAt) return
+  if (typeof window === 'undefined') return
+  try {
+    const raw = window.sessionStorage.getItem(GOOGLE_DRIVE_SESSION_TOKEN_KEY)
+    if (!raw) return
+    const parsed = JSON.parse(raw) as { token?: string; expiresAt?: number }
+    if (
+      typeof parsed.token === 'string' &&
+      parsed.token &&
+      typeof parsed.expiresAt === 'number' &&
+      Date.now() < parsed.expiresAt
+    ) {
+      cachedAccessToken = parsed.token
+      cachedTokenExpiresAt = parsed.expiresAt
+    } else {
+      window.sessionStorage.removeItem(GOOGLE_DRIVE_SESSION_TOKEN_KEY)
+    }
+  } catch {
+    // 忽略儲存受限環境
+  }
+}
+
+function persistSessionToken(token: string, expiresAt: number): void {
+  cachedAccessToken = token
+  cachedTokenExpiresAt = expiresAt
+  if (typeof window === 'undefined') return
+  try {
+    window.sessionStorage.setItem(
+      GOOGLE_DRIVE_SESSION_TOKEN_KEY,
+      JSON.stringify({ token, expiresAt }),
+    )
+  } catch {
+    // 忽略儲存受限環境
+  }
+}
+
+function clearSessionToken(): void {
+  cachedAccessToken = null
+  cachedTokenExpiresAt = 0
+  if (typeof window === 'undefined') return
+  try {
+    window.sessionStorage.removeItem(GOOGLE_DRIVE_SESSION_TOKEN_KEY)
+  } catch {
+    // 忽略儲存受限環境
+  }
+}
 
 export function getBuiltInGoogleClientId(): string {
   return typeof import.meta !== 'undefined' &&
@@ -138,11 +211,116 @@ function saveLastGoogleSyncAt(timestamp: number): void {
   }
 }
 
+export function getSavedGoogleAccount(): GoogleDriveAccountInfo | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const raw = window.localStorage.getItem(GOOGLE_DRIVE_ACCOUNT_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Partial<GoogleDriveAccountInfo>
+    if (typeof parsed.email === 'string' && parsed.email.trim()) {
+      return {
+        email: parsed.email.trim(),
+        displayName:
+          typeof parsed.displayName === 'string' && parsed.displayName.trim()
+            ? parsed.displayName.trim()
+            : parsed.email.trim(),
+      }
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+function saveGoogleAccount(account: GoogleDriveAccountInfo | null): void {
+  if (typeof window === 'undefined') return
+  try {
+    if (account) {
+      window.localStorage.setItem(
+        GOOGLE_DRIVE_ACCOUNT_KEY,
+        JSON.stringify(account),
+      )
+    } else {
+      window.localStorage.removeItem(GOOGLE_DRIVE_ACCOUNT_KEY)
+    }
+  } catch {
+    // 忽略儲存受限環境
+  }
+}
+
+export function isGoogleAutoSyncEnabled(): boolean {
+  if (typeof window === 'undefined') return false
+  try {
+    return window.localStorage.getItem(GOOGLE_DRIVE_AUTO_SYNC_KEY) === 'true'
+  } catch {
+    return false
+  }
+}
+
+export function setGoogleAutoSyncEnabled(enabled: boolean): void {
+  if (typeof window === 'undefined') return
+  try {
+    if (enabled) {
+      window.localStorage.setItem(GOOGLE_DRIVE_AUTO_SYNC_KEY, 'true')
+    } else {
+      window.localStorage.removeItem(GOOGLE_DRIVE_AUTO_SYNC_KEY)
+    }
+  } catch {
+    // 忽略儲存受限環境
+  }
+}
+
+export function hasGoogleDriveDirtyChanges(): boolean {
+  if (typeof window === 'undefined') return false
+  try {
+    return window.localStorage.getItem(GOOGLE_DRIVE_DIRTY_KEY) === 'true'
+  } catch {
+    return false
+  }
+}
+
+export function setGoogleDriveDirtyChanges(dirty: boolean): void {
+  if (typeof window === 'undefined') return
+  try {
+    if (dirty) {
+      window.localStorage.setItem(GOOGLE_DRIVE_DIRTY_KEY, 'true')
+    } else {
+      window.localStorage.removeItem(GOOGLE_DRIVE_DIRTY_KEY)
+    }
+  } catch {
+    // 忽略儲存受限環境
+  }
+}
+
+function getSavedRemoteModifiedTime(): string {
+  if (typeof window === 'undefined') return ''
+  try {
+    return window.localStorage.getItem(GOOGLE_DRIVE_REMOTE_MTIME_KEY) || ''
+  } catch {
+    return ''
+  }
+}
+
+function saveRemoteModifiedTime(mtime: string | undefined): void {
+  if (typeof window === 'undefined') return
+  try {
+    if (mtime) {
+      window.localStorage.setItem(GOOGLE_DRIVE_REMOTE_MTIME_KEY, mtime)
+    } else {
+      window.localStorage.removeItem(GOOGLE_DRIVE_REMOTE_MTIME_KEY)
+    }
+  } catch {
+    // 忽略儲存受限環境
+  }
+}
+
 export function isGoogleDriveConnected(): boolean {
+  restoreSessionTokenIfValid()
   return Boolean(cachedAccessToken && Date.now() < cachedTokenExpiresAt)
 }
 
 export function disconnectGoogleDrive(): void {
+  restoreSessionTokenIfValid()
   if (cachedAccessToken && typeof window !== 'undefined') {
     try {
       window.google?.accounts?.oauth2?.revoke?.(cachedAccessToken)
@@ -150,8 +328,10 @@ export function disconnectGoogleDrive(): void {
       // 忽略撤銷例外
     }
   }
-  cachedAccessToken = null
-  cachedTokenExpiresAt = 0
+  clearSessionToken()
+  saveGoogleAccount(null)
+  setGoogleAutoSyncEnabled(false)
+  saveRemoteModifiedTime(undefined)
 }
 
 function loadGoogleIdentityScript(): Promise<void> {
@@ -196,18 +376,25 @@ function loadGoogleIdentityScript(): Promise<void> {
 
 /**
  * 透過 Google Identity Services 取得 Google Drive `drive.file` 最小權限存取權杖
+ * - 優先使用同分頁有效快取權杖
+ * - 支援 silentOnly（靜默續連，不跳彈窗，適合啟動／切回前景自動同步）
  */
 export async function requestGoogleDriveToken(
   clientId?: string,
-  interactivePrompt: 'consent' | '' = 'consent',
+  interactivePrompt: 'consent' | 'select_account' | '' = '',
+  options?: { silentOnly?: boolean; loginHint?: string },
 ): Promise<string> {
   const effectiveClientId = (clientId ?? getSavedGoogleClientId()).trim()
   if (!effectiveClientId) {
     throw new GoogleDriveSyncError('ERR_MISSING_CLIENT_ID')
   }
 
-  if (isGoogleDriveConnected() && cachedAccessToken) {
-    return cachedAccessToken
+  const forceSelect = interactivePrompt === 'select_account'
+  if (!forceSelect) {
+    restoreSessionTokenIfValid()
+    if (cachedAccessToken && Date.now() < cachedTokenExpiresAt) {
+      return cachedAccessToken
+    }
   }
 
   await loadGoogleIdentityScript()
@@ -216,37 +403,118 @@ export async function requestGoogleDriveToken(
     throw new GoogleDriveSyncError('ERR_GIS_UNAVAILABLE')
   }
 
+  const silentOnly = Boolean(options?.silentOnly)
+  const hint =
+    !forceSelect ? options?.loginHint ?? getSavedGoogleAccount()?.email : undefined
+
   return new Promise<string>((resolve, reject) => {
+    let settled = false
+    const timeoutId = silentOnly
+      ? window.setTimeout(() => {
+          if (settled) return
+          settled = true
+          reject(new GoogleDriveSyncError('ERR_OAUTH_SILENT_REQUIRED'))
+        }, 8000)
+      : null
+
+    const finishResolve = (token: string) => {
+      if (settled) return
+      settled = true
+      if (timeoutId !== null) window.clearTimeout(timeoutId)
+      resolve(token)
+    }
+
+    const finishReject = (err: GoogleDriveSyncError) => {
+      if (settled) return
+      settled = true
+      if (timeoutId !== null) window.clearTimeout(timeoutId)
+      reject(err)
+    }
+
     const client = oauth2.initTokenClient({
       client_id: effectiveClientId,
       scope: GOOGLE_DRIVE_SCOPE,
+      ...(hint ? { hint } : {}),
       callback: (response) => {
         if (response.error || !response.access_token) {
-          reject(
+          finishReject(
             new GoogleDriveSyncError(
-              'ERR_OAUTH_DENIED',
+              silentOnly ? 'ERR_OAUTH_SILENT_REQUIRED' : 'ERR_OAUTH_DENIED',
               response.error_description || response.error,
             ),
           )
           return
         }
-        cachedAccessToken = response.access_token
         const ttlSec = response.expires_in ?? 3500
-        cachedTokenExpiresAt = Date.now() + Math.max(60, ttlSec - 60) * 1000
-        resolve(response.access_token)
+        const expiresAt = Date.now() + Math.max(60, ttlSec - 60) * 1000
+        persistSessionToken(response.access_token, expiresAt)
+        finishResolve(response.access_token)
       },
       error_callback: (err) => {
-        reject(
-          new GoogleDriveSyncError('ERR_OAUTH_POPUP', err.message || err.type),
+        finishReject(
+          new GoogleDriveSyncError(
+            silentOnly ? 'ERR_OAUTH_SILENT_REQUIRED' : 'ERR_OAUTH_POPUP',
+            err.message || err.type,
+          ),
         )
       },
     })
 
-    client.requestAccessToken({ prompt: interactivePrompt })
+    if (silentOnly) {
+      client.requestAccessToken({
+        prompt: 'none',
+        ...(hint ? { hint } : {}),
+      })
+    } else {
+      client.requestAccessToken({
+        prompt: interactivePrompt,
+        ...(hint ? { hint } : {}),
+      })
+    }
   })
 }
 
-async function findExistingBackupFileId(accessToken: string): Promise<string | null> {
+/**
+ * 透過既有的 `drive.file` 權限查詢目前登入的 Google 帳號名稱與 Email（不需額外權限）
+ */
+async function fetchDriveAccountInfo(
+  accessToken: string,
+): Promise<GoogleDriveAccountInfo | null> {
+  try {
+    const res = await fetch(
+      'https://www.googleapis.com/drive/v3/about?fields=user(displayName,emailAddress)',
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      },
+    )
+    if (!res.ok) return getSavedGoogleAccount()
+    const data = (await res.json()) as {
+      user?: { displayName?: string; emailAddress?: string }
+    }
+    const email = data.user?.emailAddress?.trim()
+    if (!email) return getSavedGoogleAccount()
+    const info: GoogleDriveAccountInfo = {
+      email,
+      displayName: data.user?.displayName?.trim() || email,
+    }
+    saveGoogleAccount(info)
+    return info
+  } catch {
+    return getSavedGoogleAccount()
+  }
+}
+
+interface DriveBackupFileMeta {
+  id: string
+  name: string
+  modifiedTime?: string
+}
+
+async function findExistingBackupFile(
+  accessToken: string,
+): Promise<DriveBackupFileMeta | null> {
   const query = encodeURIComponent(
     `name='${GOOGLE_DRIVE_BACKUP_FILENAME}' and trashed=false`,
   )
@@ -260,16 +528,15 @@ async function findExistingBackupFileId(accessToken: string): Promise<string | n
 
   if (!res.ok) {
     if (res.status === 401) {
-      cachedAccessToken = null
-      cachedTokenExpiresAt = 0
+      clearSessionToken()
     }
     throw new GoogleDriveSyncError('ERR_DRIVE_LIST_FAILED', `HTTP ${res.status}`)
   }
 
   const data = (await res.json()) as {
-    files?: Array<{ id: string; name: string; modifiedTime?: string }>
+    files?: DriveBackupFileMeta[]
   }
-  return data.files?.[0]?.id ?? null
+  return data.files?.[0] ?? null
 }
 
 async function fetchDriveBackupJson(
@@ -286,6 +553,9 @@ async function fetchDriveBackupJson(
   )
 
   if (!res.ok) {
+    if (res.status === 401) {
+      clearSessionToken()
+    }
     throw new GoogleDriveSyncError(
       'ERR_DRIVE_DOWNLOAD_FAILED',
       `HTTP ${res.status}`,
@@ -299,7 +569,7 @@ async function uploadBackupPayload(
   accessToken: string,
   backup: LedgerBackup,
   existingFileId: string | null,
-): Promise<{ fileId: string; syncedAt: number }> {
+): Promise<{ fileId: string; syncedAt: number; modifiedTime?: string }> {
   const boundary = 'clearbill_drive_sync_boundary'
   const metadata = {
     name: GOOGLE_DRIVE_BACKUP_FILENAME,
@@ -315,8 +585,8 @@ async function uploadBackupPayload(
     `--${boundary}--`
 
   const endpoint = existingFileId
-    ? `https://www.googleapis.com/upload/drive/v3/files/${existingFileId}?uploadType=multipart`
-    : 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart'
+    ? `https://www.googleapis.com/upload/drive/v3/files/${existingFileId}?uploadType=multipart&fields=id,modifiedTime`
+    : 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,modifiedTime'
 
   const res = await fetch(endpoint, {
     method: existingFileId ? 'PATCH' : 'POST',
@@ -328,43 +598,107 @@ async function uploadBackupPayload(
   })
 
   if (!res.ok) {
+    if (res.status === 401) {
+      clearSessionToken()
+    }
     throw new GoogleDriveSyncError(
       'ERR_DRIVE_UPLOAD_FAILED',
       `HTTP ${res.status}`,
     )
   }
 
-  const uploaded = (await res.json()) as { id: string }
+  const uploaded = (await res.json()) as { id: string; modifiedTime?: string }
   const syncedAt = Date.now()
   saveLastGoogleSyncAt(syncedAt)
-  return { fileId: uploaded.id, syncedAt }
+  if (uploaded.modifiedTime) {
+    saveRemoteModifiedTime(uploaded.modifiedTime)
+  }
+  setGoogleDriveDirtyChanges(false)
+  return {
+    fileId: uploaded.id,
+    syncedAt,
+    modifiedTime: uploaded.modifiedTime,
+  }
 }
 
 /**
- * 安全無損雙向同步（Pull ➔ Merge ➔ Push）：
- * 1. 取得存取權杖並查詢雲端是否已有備份檔
- * 2. 若雲端已存在備份檔，先拉回並透過 UUID 與 updatedAt 與本地合併，避免多裝置直接覆蓋造成資料遺失
- * 3. 再將合併後最新完整備份上傳至 Google Drive
+ * 智慧跨裝置安全無損雙向同步（Pull ➔ Merge ➔ Push）：
+ * 1. 取得存取權杖（可選靜默續連）並確認 Google 帳號資訊
+ * 2. 比對遠端 modifiedTime；若無遠端異動且無本機新變更則秒速略過
+ * 3. 若遠端有檔案且有異動（或首次同步），先拉回透過 UUID + updatedAt 與本地無損合併
+ * 4. 依需要將最新合併結果上傳至 Google Drive，並更新同步時間戳
  */
 export async function syncWithGoogleDrive(
   options: GoogleDriveSyncOptions,
 ): Promise<GoogleDriveSyncResult> {
-  const token = await requestGoogleDriveToken(options.clientId)
-  const existingFileId = await findExistingBackupFileId(token)
+  const token = await requestGoogleDriveToken(
+    options.clientId,
+    options.selectAccount ? 'select_account' : '',
+    { silentOnly: options.silentOnly },
+  )
+  const account = await fetchDriveAccountInfo(token)
+  const existingFile = await findExistingBackupFile(token)
 
-  let mergeStats: LedgerMergeStats | null = null
-  const hadRemoteFile = Boolean(existingFileId)
+  const hadRemoteFile = Boolean(existingFile)
+  const lastKnownMtime = getSavedRemoteModifiedTime()
+  const remoteChanged =
+    !existingFile ||
+    !lastKnownMtime ||
+    existingFile.modifiedTime !== lastKnownMtime
 
-  if (existingFileId) {
-    const remoteJson = await fetchDriveBackupJson(token, existingFileId)
-    mergeStats = await options.onMergeRemote(remoteJson)
+  const hasLocalChanges = options.hasLocalChanges ?? true
+
+  // 遠端沒有變動且本地也沒有新變更：直接更新同步檢查時間，省去重複下載與上傳
+  if (existingFile && !remoteChanged && !hasLocalChanges) {
+    const syncedAt = Date.now()
+    saveLastGoogleSyncAt(syncedAt)
+    return {
+      fileId: existingFile.id,
+      syncedAt,
+      hadRemoteFile: true,
+      mergeStats: null,
+      skippedNoChanges: true,
+      uploaded: false,
+      account,
+    }
   }
 
+  let mergeStats: LedgerMergeStats | null = null
+  if (existingFile && remoteChanged) {
+    const remoteJson = await fetchDriveBackupJson(token, existingFile.id)
+    mergeStats = await options.onMergeRemote(remoteJson)
+    if (existingFile.modifiedTime) {
+      saveRemoteModifiedTime(existingFile.modifiedTime)
+    }
+  }
+
+  // 若雲端已經有檔且本機原本無未上傳變更，且合併僅單純吸收遠端資料，可免除不必要上傳
   const latestBackup = options.getMergedBackup()
+  const shouldUpload =
+    !existingFile ||
+    hasLocalChanges ||
+    (mergeStats !== null &&
+      (mergeStats.projectsSkipped > 0 || mergeStats.transactionsSkipped > 0))
+
+  if (!shouldUpload && existingFile) {
+    const syncedAt = Date.now()
+    saveLastGoogleSyncAt(syncedAt)
+    setGoogleDriveDirtyChanges(false)
+    return {
+      fileId: existingFile.id,
+      syncedAt,
+      hadRemoteFile: true,
+      mergeStats,
+      skippedNoChanges: false,
+      uploaded: false,
+      account,
+    }
+  }
+
   const { fileId, syncedAt } = await uploadBackupPayload(
     token,
     latestBackup,
-    existingFileId,
+    existingFile?.id ?? null,
   )
 
   return {
@@ -372,6 +706,9 @@ export async function syncWithGoogleDrive(
     syncedAt,
     hadRemoteFile,
     mergeStats,
+    skippedNoChanges: false,
+    uploaded: true,
+    account,
   }
 }
 
@@ -383,8 +720,8 @@ export async function uploadBackupToGoogleDrive(
   clientId?: string,
 ): Promise<{ fileId: string; syncedAt: number }> {
   const token = await requestGoogleDriveToken(clientId)
-  const existingFileId = await findExistingBackupFileId(token)
-  return uploadBackupPayload(token, backup, existingFileId)
+  const existingFile = await findExistingBackupFile(token)
+  return uploadBackupPayload(token, backup, existingFile?.id ?? null)
 }
 
 /**
@@ -394,17 +731,25 @@ export async function uploadBackupToGoogleDrive(
 export async function downloadBackupFromGoogleDrive(
   clientId?: string,
   allowMissing = false,
-): Promise<{ rawJson: unknown; syncedAt: number } | null> {
+): Promise<{
+  rawJson: unknown
+  syncedAt: number
+  account: GoogleDriveAccountInfo | null
+} | null> {
   const token = await requestGoogleDriveToken(clientId)
-  const existingFileId = await findExistingBackupFileId(token)
+  const account = await fetchDriveAccountInfo(token)
+  const existingFile = await findExistingBackupFile(token)
 
-  if (!existingFileId) {
+  if (!existingFile) {
     if (allowMissing) return null
     throw new GoogleDriveSyncError('ERR_DRIVE_NOT_FOUND')
   }
 
-  const rawJson = await fetchDriveBackupJson(token, existingFileId)
+  const rawJson = await fetchDriveBackupJson(token, existingFile.id)
   const syncedAt = Date.now()
   saveLastGoogleSyncAt(syncedAt)
-  return { rawJson, syncedAt }
+  if (existingFile.modifiedTime) {
+    saveRemoteModifiedTime(existingFile.modifiedTime)
+  }
+  return { rawJson, syncedAt, account }
 }

@@ -36,6 +36,23 @@ import {
   pushTransactionToFirestore,
   subscribeSharedProject,
 } from '@/services/firestoreSyncService'
+import {
+  disconnectGoogleDrive,
+  downloadBackupFromGoogleDrive,
+  getLastGoogleSyncAt,
+  getSavedGoogleAccount,
+  getSavedGoogleClientId,
+  GoogleDriveSyncError,
+  hasGoogleDriveDirtyChanges,
+  isGoogleAutoSyncEnabled,
+  isGoogleDriveConnected,
+  setGoogleAutoSyncEnabled,
+  setGoogleDriveDirtyChanges,
+  syncWithGoogleDrive,
+  type GoogleDriveAccountInfo,
+  type GoogleDriveSyncErrorCode,
+  type GoogleDriveSyncResult,
+} from '@/services/googleDriveSync'
 
 const ACTIVE_PROJECT_STORAGE_KEY = 'clearbill_active_project_id'
 const PREFS_STORAGE_KEY = 'clearbill_user_prefs_v2'
@@ -86,6 +103,15 @@ export type ProjectRealtimeSyncStatus =
   | 'local'
   | 'connecting'
   | 'synced'
+  | 'offline'
+  | 'error'
+
+export type GoogleDriveSyncStatus =
+  | 'disconnected'
+  | 'syncing'
+  | 'synced'
+  | 'pending'
+  | 'needs_auth'
   | 'offline'
   | 'error'
 
@@ -284,6 +310,32 @@ export const useLedgerStore = defineStore('ledger', () => {
   const pendingDeletionGuard = ref<PendingDeletionGuardAlert | null>(null)
   const activeRealtimeUnsubscribers = new Map<string, () => void>()
   const flushingProjectIds = new Set<string>()
+
+  // Google 雲端跨裝置自動同步狀態
+  const googleDriveAccount = ref<GoogleDriveAccountInfo | null>(
+    getSavedGoogleAccount(),
+  )
+  const googleDriveAutoSync = ref<boolean>(isGoogleAutoSyncEnabled())
+  const googleDriveLastSyncAt = ref<number | null>(getLastGoogleSyncAt())
+  const googleDriveDirty = ref<boolean>(hasGoogleDriveDirtyChanges())
+  const googleDriveLastErrorCode = ref<GoogleDriveSyncErrorCode | null>(null)
+  const googleDriveStatus = ref<GoogleDriveSyncStatus>(
+    resolveInitialGoogleDriveStatus(),
+  )
+  let googleAutoSyncTimer: ReturnType<typeof setTimeout> | null = null
+  let googleSyncInFlight: Promise<GoogleDriveSyncResult | null> | null = null
+
+  function resolveInitialGoogleDriveStatus(): GoogleDriveSyncStatus {
+    if (isGoogleDriveConnected()) {
+      return hasGoogleDriveDirtyChanges() ? 'pending' : 'synced'
+    }
+    if (isGoogleAutoSyncEnabled() || getSavedGoogleAccount()) {
+      return typeof navigator !== 'undefined' && navigator.onLine === false
+        ? 'offline'
+        : 'needs_auth'
+    }
+    return 'disconnected'
+  }
 
   // 使用者自訂偏好（預設幣別、可自由增刪的常用幣別、可自由增刪改的消費分類、專案排序、記憶匯率）
   const defaultCurrency = ref<string>(initialPrefs.defaultCurrency)
@@ -558,6 +610,7 @@ export const useLedgerStore = defineStore('ledger', () => {
     }
     categories.value = [...categories.value, cat]
     saveUserPrefs()
+    markGoogleDriveDirty()
     return cat
   }
 
@@ -578,6 +631,7 @@ export const useLedgerStore = defineStore('ledger', () => {
       }
     })
     saveUserPrefs()
+    markGoogleDriveDirty()
   }
 
   function removeCategory(key: string): boolean {
@@ -586,6 +640,7 @@ export const useLedgerStore = defineStore('ledger', () => {
     }
     categories.value = categories.value.filter((c) => c.key !== key)
     saveUserPrefs()
+    markGoogleDriveDirty()
     return true
   }
 
@@ -593,6 +648,189 @@ export const useLedgerStore = defineStore('ledger', () => {
     const existingCustom = categories.value.filter((c) => !c.isBuiltin)
     categories.value = [...cloneDefaultCategories(), ...existingCustom]
     saveUserPrefs()
+    markGoogleDriveDirty()
+  }
+
+  // ==================== Google 雲端跨裝置自動同步協調器 ====================
+  function scheduleGoogleDriveAutoSync(delayMs = 2500): void {
+    if (typeof window === 'undefined') return
+    if (googleAutoSyncTimer) {
+      clearTimeout(googleAutoSyncTimer)
+      googleAutoSyncTimer = null
+    }
+    if (!googleDriveAutoSync.value || !getSavedGoogleClientId()) return
+    googleAutoSyncTimer = setTimeout(() => {
+      googleAutoSyncTimer = null
+      void syncGoogleDriveNow({ silentOnly: true })
+    }, delayMs)
+  }
+
+  function markGoogleDriveDirty(): void {
+    googleDriveDirty.value = true
+    setGoogleDriveDirtyChanges(true)
+    if (!googleDriveAutoSync.value) return
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      googleDriveStatus.value = 'offline'
+      return
+    }
+    if (googleDriveStatus.value !== 'syncing') {
+      googleDriveStatus.value = 'pending'
+    }
+    scheduleGoogleDriveAutoSync(2500)
+  }
+
+  function setGoogleDriveAutoSync(enabled: boolean): void {
+    googleDriveAutoSync.value = enabled
+    setGoogleAutoSyncEnabled(enabled)
+    if (enabled) {
+      if (isGoogleDriveConnected()) {
+        googleDriveStatus.value = googleDriveDirty.value ? 'pending' : 'synced'
+        if (googleDriveDirty.value) {
+          scheduleGoogleDriveAutoSync(600)
+        }
+      } else if (googleDriveAccount.value) {
+        googleDriveStatus.value = 'needs_auth'
+      }
+    } else if (googleAutoSyncTimer) {
+      clearTimeout(googleAutoSyncTimer)
+      googleAutoSyncTimer = null
+    }
+  }
+
+  async function syncGoogleDriveNow(options?: {
+    clientId?: string
+    silentOnly?: boolean
+    selectAccount?: boolean
+    enableAutoSyncOnSuccess?: boolean
+  }): Promise<GoogleDriveSyncResult | null> {
+    if (googleSyncInFlight) {
+      return googleSyncInFlight
+    }
+
+    const silentOnly = Boolean(options?.silentOnly)
+    const effectiveClientId = (
+      options?.clientId ?? getSavedGoogleClientId()
+    ).trim()
+
+    if (!effectiveClientId) {
+      if (silentOnly) return null
+      throw new GoogleDriveSyncError('ERR_MISSING_CLIENT_ID')
+    }
+
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      googleDriveStatus.value = 'offline'
+      if (silentOnly) return null
+      throw new GoogleDriveSyncError('ERR_GIS_LOAD', 'Offline')
+    }
+
+    const run = async (): Promise<GoogleDriveSyncResult | null> => {
+      googleDriveStatus.value = 'syncing'
+      googleDriveLastErrorCode.value = null
+      try {
+        const res = await syncWithGoogleDrive({
+          clientId: effectiveClientId,
+          silentOnly,
+          selectAccount: options?.selectAccount,
+          hasLocalChanges: googleDriveDirty.value || !googleDriveLastSyncAt.value,
+          onMergeRemote: (rawJson) => importAndMergeLedgerBackup(rawJson),
+          getMergedBackup: () => exportLedgerBackup(),
+        })
+
+        googleDriveLastSyncAt.value = res.syncedAt
+        if (res.account) {
+          googleDriveAccount.value = res.account
+        }
+        googleDriveDirty.value = false
+        setGoogleDriveDirtyChanges(false)
+        googleDriveLastErrorCode.value = null
+        googleDriveStatus.value = 'synced'
+
+        // 首次透過互動式按鈕連結成功時，預設開啟跨裝置自動同步
+        if (!silentOnly && options?.enableAutoSyncOnSuccess !== false) {
+          if (!googleDriveAutoSync.value) {
+            googleDriveAutoSync.value = true
+            setGoogleAutoSyncEnabled(true)
+          }
+        }
+        return res
+      } catch (err) {
+        if (err instanceof GoogleDriveSyncError) {
+          if (err.code === 'ERR_OAUTH_SILENT_REQUIRED') {
+            googleDriveStatus.value = 'needs_auth'
+            googleDriveLastErrorCode.value = null
+            if (silentOnly) return null
+          }
+          googleDriveLastErrorCode.value = err.code
+          googleDriveStatus.value = 'error'
+          if (silentOnly) return null
+          throw err
+        }
+        googleDriveLastErrorCode.value = null
+        googleDriveStatus.value = 'error'
+        if (silentOnly) return null
+        throw err
+      } finally {
+        googleSyncInFlight = null
+      }
+    }
+
+    googleSyncInFlight = run()
+    return googleSyncInFlight
+  }
+
+  async function pullGoogleDriveNow(clientId?: string): Promise<{
+    stats: LedgerMergeStats
+    syncedAt: number
+  }> {
+    googleDriveStatus.value = 'syncing'
+    googleDriveLastErrorCode.value = null
+    try {
+      const downloaded = await downloadBackupFromGoogleDrive(clientId, false)
+      if (!downloaded) {
+        throw new GoogleDriveSyncError('ERR_DRIVE_NOT_FOUND')
+      }
+      const stats = await importAndMergeLedgerBackup(downloaded.rawJson)
+      googleDriveLastSyncAt.value = downloaded.syncedAt
+      if (downloaded.account) {
+        googleDriveAccount.value = downloaded.account
+      }
+      googleDriveStatus.value = googleDriveDirty.value ? 'pending' : 'synced'
+      return { stats, syncedAt: downloaded.syncedAt }
+    } catch (err) {
+      if (err instanceof GoogleDriveSyncError) {
+        googleDriveLastErrorCode.value = err.code
+      }
+      googleDriveStatus.value = 'error'
+      throw err
+    }
+  }
+
+  function disconnectGoogleDriveAccount(): void {
+    if (googleAutoSyncTimer) {
+      clearTimeout(googleAutoSyncTimer)
+      googleAutoSyncTimer = null
+    }
+    disconnectGoogleDrive()
+    googleDriveAccount.value = null
+    googleDriveAutoSync.value = false
+    googleDriveLastErrorCode.value = null
+    googleDriveStatus.value = 'disconnected'
+  }
+
+  async function tryBackgroundGoogleDriveSync(force = false): Promise<void> {
+    if (!googleDriveAutoSync.value) return
+    if (!getSavedGoogleClientId()) return
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      googleDriveStatus.value = 'offline'
+      return
+    }
+    const elapsed = googleDriveLastSyncAt.value
+      ? Date.now() - googleDriveLastSyncAt.value
+      : Infinity
+    if (!force && !googleDriveDirty.value && elapsed < 15_000) {
+      return
+    }
+    await syncGoogleDriveNow({ silentOnly: true })
   }
 
   async function refreshOutboxCounts(): Promise<void> {
@@ -1140,6 +1378,7 @@ export const useLedgerStore = defineStore('ledger', () => {
     saveUserPrefs()
     activeProjectId.value = saved.id
     persistActiveProjectId(saved.id)
+    markGoogleDriveDirty()
     return saved
   }
 
@@ -1166,6 +1405,7 @@ export const useLedgerStore = defineStore('ledger', () => {
     const saved = await saveProjectToNormalVault(updated)
     projects.value = projects.value.map((p) => (p.id === projectId ? saved : p))
     await enqueueAndFlushProjectChange(projectId, 'project', saved.id, saved.updatedAt)
+    markGoogleDriveDirty()
     return saved
   }
 
@@ -1196,6 +1436,7 @@ export const useLedgerStore = defineStore('ledger', () => {
     const saved = await saveProjectToNormalVault(updated)
     projects.value = projects.value.map((p) => (p.id === projectId ? saved : p))
     await enqueueAndFlushProjectChange(projectId, 'project', saved.id, saved.updatedAt)
+    markGoogleDriveDirty()
     return saved
   }
 
@@ -1225,6 +1466,7 @@ export const useLedgerStore = defineStore('ledger', () => {
     const saved = await saveProjectToNormalVault(updated)
     projects.value = projects.value.map((p) => (p.id === projectId ? saved : p))
     await enqueueAndFlushProjectChange(projectId, 'project', saved.id, saved.updatedAt)
+    markGoogleDriveDirty()
     return saved
   }
 
@@ -1280,6 +1522,7 @@ export const useLedgerStore = defineStore('ledger', () => {
     const saved = await saveProjectToNormalVault(updated)
     projects.value = projects.value.map((p) => (p.id === projectId ? saved : p))
     await enqueueAndFlushProjectChange(projectId, 'project', saved.id, saved.updatedAt)
+    markGoogleDriveDirty()
     return { ok: true }
   }
 
@@ -1308,6 +1551,7 @@ export const useLedgerStore = defineStore('ledger', () => {
       activeProjectId.value = saved.id
       persistActiveProjectId(saved.id)
     }
+    markGoogleDriveDirty()
     return saved
   }
 
@@ -1479,6 +1723,7 @@ export const useLedgerStore = defineStore('ledger', () => {
       activeProjectId.value = next
       persistActiveProjectId(next)
     }
+    markGoogleDriveDirty()
   }
 
   function selectProject(projectId: string | null): void {
@@ -1527,6 +1772,7 @@ export const useLedgerStore = defineStore('ledger', () => {
       saved.id,
       saved.updatedAt,
     )
+    markGoogleDriveDirty()
     return saved
   }
 
@@ -1604,6 +1850,7 @@ export const useLedgerStore = defineStore('ledger', () => {
       saved.id,
       saved.updatedAt,
     )
+    markGoogleDriveDirty()
     return saved
   }
 
@@ -1625,6 +1872,7 @@ export const useLedgerStore = defineStore('ledger', () => {
       updated.id,
       updated.updatedAt,
     )
+    markGoogleDriveDirty()
   }
 
   async function restoreTransaction(
@@ -1675,6 +1923,7 @@ export const useLedgerStore = defineStore('ledger', () => {
       saved.id,
       saved.updatedAt,
     )
+    markGoogleDriveDirty()
     return { ok: true, projectId: saved.projectId }
   }
 
@@ -1783,6 +2032,12 @@ export const useLedgerStore = defineStore('ledger', () => {
     syncStatusByProject,
     outboxCountByProject,
     pendingDeletionGuard,
+    googleDriveStatus,
+    googleDriveAccount,
+    googleDriveAutoSync,
+    googleDriveLastSyncAt,
+    googleDriveDirty,
+    googleDriveLastErrorCode,
     defaultCurrency,
     enabledCurrencies,
     categories,
@@ -1848,5 +2103,10 @@ export const useLedgerStore = defineStore('ledger', () => {
     flushAllSharedProjectsOutbox,
     approvePendingRemoteDeletes,
     rejectPendingRemoteDeletes,
+    setGoogleDriveAutoSync,
+    syncGoogleDriveNow,
+    pullGoogleDriveNow,
+    disconnectGoogleDriveAccount,
+    tryBackgroundGoogleDriveSync,
   }
 })

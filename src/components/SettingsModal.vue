@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   Check,
@@ -8,17 +8,20 @@ import {
   ChevronUp,
   Cloud,
   CloudDownload,
+  CloudOff,
   CloudUpload,
   Copy,
   Download,
   ExternalLink,
   Globe,
   HardDrive,
+  Link2,
   Loader2,
   Moon,
   Palette,
   Pencil,
   Plus,
+  RefreshCw,
   RotateCcw,
   Search,
   Sun,
@@ -38,24 +41,33 @@ import { searchCurrencyCatalog } from '@/core/currencyCatalog'
 import { formatCurrencyAmount } from '@/core/currency'
 import { getTodayIso } from '@/core/ledgerHelpers'
 import {
-  disconnectGoogleDrive,
-  downloadBackupFromGoogleDrive,
+  buildGoogleConnectLink,
+  GoogleClientIdSchema,
+} from '@/core/googleConnectLink'
+import {
   getBuiltInGoogleClientId,
   getCustomGoogleClientId,
-  getLastGoogleSyncAt,
   GoogleDriveSyncError,
   hasBuiltInGoogleClientId,
-  isGoogleDriveConnected,
   saveGoogleClientId,
-  syncWithGoogleDrive,
 } from '@/services/googleDriveSync'
+
+export type SettingsTab =
+  | 'general'
+  | 'categories'
+  | 'currencies'
+  | 'backup'
+  | 'trash'
 
 interface Props {
   open: boolean
   isDark: boolean
+  initialTab?: SettingsTab
 }
 
-defineProps<Props>()
+const props = withDefaults(defineProps<Props>(), {
+  initialTab: 'general',
+})
 
 const emit = defineEmits<{
   (e: 'close'): void
@@ -67,8 +79,7 @@ const emit = defineEmits<{
 const { t, locale } = useI18n()
 const store = useLedgerStore()
 
-type SettingsTab = 'general' | 'categories' | 'currencies' | 'backup' | 'trash'
-const activeTab = ref<SettingsTab>('general')
+const activeTab = ref<SettingsTab>(props.initialTab)
 
 // 分類新增與編輯狀態
 const newCategoryName = ref('')
@@ -80,7 +91,7 @@ const editingCatColor = ref<string>(AVATAR_PALETTE[0])
 // 幣別搜尋新增狀態
 const currencySearchQuery = ref('')
 
-// Google 雲端備份狀態（優先讀取建置期內建 VITE_GOOGLE_CLIENT_ID，使用者無需手動輸入）
+// Google 雲端跨裝置同步狀態（優先讀取建置期內建 VITE_GOOGLE_CLIENT_ID，使用者無需手動輸入）
 const builtInGoogleClientId = getBuiltInGoogleClientId()
 const hasBuiltInClientId = hasBuiltInGoogleClientId()
 const customGoogleClientId = ref(getCustomGoogleClientId())
@@ -88,13 +99,79 @@ const showAdvancedGoogleConfig = ref(false)
 const showGoogleGuide = ref(false)
 const currentOrigin =
   typeof window !== 'undefined' ? window.location.origin : ''
-const googleLastSyncAt = ref<number | null>(getLastGoogleSyncAt())
-const googleConnected = ref(isGoogleDriveConnected())
-const isGoogleBusy = ref(false)
+
+watch(
+  () => props.open,
+  (isOpen) => {
+    if (isOpen) {
+      activeTab.value = props.initialTab
+      customGoogleClientId.value = getCustomGoogleClientId()
+    }
+  },
+)
 
 const effectiveGoogleClientId = computed(
   () => customGoogleClientId.value.trim() || builtInGoogleClientId,
 )
+
+const canShareGoogleConnectLink = computed(() =>
+  GoogleClientIdSchema.safeParse(effectiveGoogleClientId.value).success,
+)
+
+const isGoogleBusy = computed(() => store.googleDriveStatus === 'syncing')
+
+const googleAccountInitial = computed(() => {
+  const name =
+    store.googleDriveAccount?.displayName || store.googleDriveAccount?.email || 'G'
+  return name.trim().charAt(0).toUpperCase() || 'G'
+})
+
+const googleStatusBadge = computed(() => {
+  switch (store.googleDriveStatus) {
+    case 'syncing':
+      return {
+        label: t('backup.googleStatusSyncing'),
+        className:
+          'bg-sky-100 text-sky-700 dark:bg-sky-950/70 dark:text-sky-300',
+      }
+    case 'synced':
+      return {
+        label: t('backup.googleStatusSynced'),
+        className:
+          'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/70 dark:text-emerald-300',
+      }
+    case 'pending':
+      return {
+        label: t('backup.googleStatusPending'),
+        className:
+          'bg-amber-100 text-amber-800 dark:bg-amber-950/70 dark:text-amber-300',
+      }
+    case 'needs_auth':
+      return {
+        label: t('backup.googleStatusNeedsAuth'),
+        className:
+          'bg-amber-100 text-amber-800 dark:bg-amber-950/70 dark:text-amber-300',
+      }
+    case 'offline':
+      return {
+        label: t('backup.googleStatusOffline'),
+        className:
+          'bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300',
+      }
+    case 'error':
+      return {
+        label: t('backup.googleStatusError'),
+        className:
+          'bg-rose-100 text-rose-700 dark:bg-rose-950/70 dark:text-rose-300',
+      }
+    default:
+      return {
+        label: t('backup.googleStatusDisconnected'),
+        className:
+          'bg-slate-200 text-slate-600 dark:bg-slate-800 dark:text-slate-400',
+      }
+  }
+})
 
 const filteredCurrencySuggestions = computed(() =>
   searchCurrencyCatalog(currencySearchQuery.value, store.availableCurrencies),
@@ -108,14 +185,15 @@ const canAddCustomIsoCode = computed(() => {
 })
 
 const formattedGoogleLastSync = computed(() => {
-  if (!googleLastSyncAt.value) return ''
+  const ts = store.googleDriveLastSyncAt
+  if (!ts) return ''
   try {
     return new Intl.DateTimeFormat(locale.value, {
       dateStyle: 'short',
       timeStyle: 'short',
-    }).format(new Date(googleLastSyncAt.value))
+    }).format(new Date(ts))
   } catch {
-    return new Date(googleLastSyncAt.value).toLocaleString()
+    return new Date(ts).toLocaleString()
   }
 })
 
@@ -278,7 +356,19 @@ async function handleCopyCurrentOrigin() {
   }
 }
 
-async function handleGoogleUpload() {
+async function handleCopyGoogleConnectLink() {
+  if (!canShareGoogleConnectLink.value || typeof window === 'undefined') return
+  try {
+    const baseUrl = `${window.location.origin}${window.location.pathname}`
+    const link = buildGoogleConnectLink(baseUrl, effectiveGoogleClientId.value)
+    await navigator.clipboard.writeText(link)
+    emit('toast', t('backup.googlePairLinkCopiedToast'))
+  } catch {
+    emit('toast', t('share.failedToast'))
+  }
+}
+
+async function handleGoogleUpload(selectAccount = false) {
   const activeClientId = effectiveGoogleClientId.value
   if (!activeClientId) {
     emit('toast', t('backup.googleNeedClientId'))
@@ -287,17 +377,17 @@ async function handleGoogleUpload() {
   if (customGoogleClientId.value.trim()) {
     saveGoogleClientId(customGoogleClientId.value.trim())
   }
-  isGoogleBusy.value = true
   try {
-    const res = await syncWithGoogleDrive({
+    const res = await store.syncGoogleDriveNow({
       clientId: activeClientId,
-      onMergeRemote: (rawJson) => store.importAndMergeLedgerBackup(rawJson),
-      getMergedBackup: () => store.exportLedgerBackup(),
+      selectAccount,
+      enableAutoSyncOnSuccess: true,
     })
-    googleLastSyncAt.value = res.syncedAt
-    googleConnected.value = isGoogleDriveConnected()
+    if (!res) return
 
-    if (res.hadRemoteFile && res.mergeStats) {
+    if (res.skippedNoChanges) {
+      emit('toast', t('backup.googleAlreadyUpToDate'))
+    } else if (res.hadRemoteFile && res.mergeStats) {
       emit(
         'toast',
         t('backup.googleSyncMergedSuccess', {
@@ -315,8 +405,6 @@ async function handleGoogleUpload() {
       'toast',
       t('backup.googleSyncError', { reason: resolveGoogleErrorReason(err) }),
     )
-  } finally {
-    isGoogleBusy.value = false
   }
 }
 
@@ -329,15 +417,8 @@ async function handleGoogleDownloadMerge() {
   if (customGoogleClientId.value.trim()) {
     saveGoogleClientId(customGoogleClientId.value.trim())
   }
-  isGoogleBusy.value = true
   try {
-    const downloaded = await downloadBackupFromGoogleDrive(activeClientId, false)
-    if (!downloaded) {
-      throw new GoogleDriveSyncError('ERR_DRIVE_NOT_FOUND')
-    }
-    const stats = await store.importAndMergeLedgerBackup(downloaded.rawJson)
-    googleLastSyncAt.value = downloaded.syncedAt
-    googleConnected.value = isGoogleDriveConnected()
+    const { stats } = await store.pullGoogleDriveNow(activeClientId)
     emit(
       'toast',
       t('backup.mergedToast', {
@@ -352,14 +433,20 @@ async function handleGoogleDownloadMerge() {
       'toast',
       t('backup.googleSyncError', { reason: resolveGoogleErrorReason(err) }),
     )
-  } finally {
-    isGoogleBusy.value = false
   }
 }
 
+function handleToggleAutoSync() {
+  const next = !store.googleDriveAutoSync
+  store.setGoogleDriveAutoSync(next)
+  emit(
+    'toast',
+    next ? t('backup.googleAutoSyncEnabledToast') : t('backup.googleAutoSyncDisabledToast'),
+  )
+}
+
 function handleGoogleDisconnect() {
-  disconnectGoogleDrive()
-  googleConnected.value = false
+  store.disconnectGoogleDriveAccount()
   emit('toast', t('backup.googleDisconnectedToast'))
 }
 
@@ -832,63 +919,105 @@ function fmt(amount: number, currency: string): string {
               </section>
             </div>
 
-            <!-- 分頁 4：本地 JSON 備份匯出入 ＋ Google 雲端硬碟備份 -->
+            <!-- 分頁 4：Google 雲端跨裝置同步 ＋ 本地 JSON 備份匯出入 -->
             <div v-else-if="activeTab === 'backup'" class="space-y-6">
-              <!-- 本地 JSON 備份 -->
-              <section class="space-y-3 rounded-2xl border border-slate-200 bg-slate-50/70 p-4 dark:border-slate-800 dark:bg-slate-950/50">
-                <div class="flex items-center gap-1.5 text-xs font-bold text-slate-800 dark:text-slate-100">
-                  <HardDrive class="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
-                  <span>{{ t('backup.localTitle') }}</span>
-                </div>
-                <p class="text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
-                  {{ t('backup.localDesc') }}
-                </p>
-
-                <div class="grid grid-cols-1 gap-2">
-                  <button
-                    type="button"
-                    class="flex w-full items-center justify-center gap-1.5 rounded-xl bg-slate-900 px-3 py-2.5 text-xs font-bold text-white transition hover:bg-slate-800 dark:bg-emerald-500 dark:text-slate-950 dark:hover:bg-emerald-400"
-                    @click="handleExportLocalJson"
-                  >
-                    <Download class="h-4 w-4" />
-                    <span>{{ t('backup.exportButton') }}</span>
-                  </button>
-
-                  <label
-                    class="flex w-full cursor-pointer items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-xs font-bold text-slate-700 transition hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
-                  >
-                    <Upload class="h-4 w-4" />
-                    <span>{{ t('backup.importButton') }}</span>
-                    <input
-                      type="file"
-                      accept="application/json,.json"
-                      class="hidden"
-                      @change="handleImportLocalJson"
-                    />
-                  </label>
-                </div>
-              </section>
-
-              <!-- Google 雲端硬碟備份 -->
-              <section class="space-y-3 rounded-2xl border border-slate-200 bg-slate-50/70 p-4 dark:border-slate-800 dark:bg-slate-950/50">
+              <!-- Google 雲端硬碟跨裝置自動同步 -->
+              <section class="space-y-3 rounded-2xl border border-sky-200/80 bg-sky-50/40 p-4 dark:border-sky-900/60 dark:bg-sky-950/20">
                 <div class="flex items-center justify-between gap-2">
-                  <div class="flex items-center gap-1.5 text-xs font-bold text-slate-800 dark:text-slate-100">
-                    <Cloud class="h-4 w-4 text-sky-500" />
+                  <div class="flex items-center gap-1.5 text-xs font-bold text-slate-900 dark:text-white">
+                    <CloudOff
+                      v-if="store.googleDriveStatus === 'offline'"
+                      class="h-4 w-4 text-slate-400"
+                    />
+                    <Cloud v-else class="h-4 w-4 text-sky-500" />
                     <span>{{ t('backup.googleTitle') }}</span>
                   </div>
-                  <button
-                    v-if="googleConnected"
-                    type="button"
-                    class="text-[11px] font-semibold text-rose-500 hover:underline"
-                    @click="handleGoogleDisconnect"
+                  <span
+                    class="rounded-full px-2 py-0.5 text-[10px] font-bold"
+                    :class="googleStatusBadge.className"
                   >
-                    {{ t('backup.googleDisconnect') }}
-                  </button>
+                    {{ googleStatusBadge.label }}
+                  </span>
                 </div>
 
-                <p class="text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
+                <p class="text-[11px] leading-relaxed text-slate-600 dark:text-slate-300">
                   {{ t('backup.googleDesc') }}
                 </p>
+
+                <!-- 已連結 Google 帳號卡片 -->
+                <div
+                  v-if="store.googleDriveAccount"
+                  class="flex items-center justify-between gap-2 rounded-xl border border-slate-200/90 bg-white px-3 py-2.5 dark:border-slate-800 dark:bg-slate-900"
+                >
+                  <div class="flex min-w-0 items-center gap-2.5">
+                    <div
+                      class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-sky-600 text-xs font-bold text-white"
+                    >
+                      {{ googleAccountInitial }}
+                    </div>
+                    <div class="min-w-0">
+                      <div class="truncate text-xs font-bold text-slate-900 dark:text-white">
+                        {{ store.googleDriveAccount.displayName }}
+                      </div>
+                      <div class="truncate text-[10px] text-slate-500 dark:text-slate-400">
+                        {{ store.googleDriveAccount.email }}
+                      </div>
+                    </div>
+                  </div>
+                  <div class="flex shrink-0 items-center gap-2">
+                    <button
+                      type="button"
+                      :disabled="isGoogleBusy"
+                      class="text-[11px] font-semibold text-sky-600 hover:underline disabled:opacity-40 dark:text-sky-400"
+                      @click="handleGoogleUpload(true)"
+                    >
+                      {{ t('backup.googleSwitchAccount') }}
+                    </button>
+                    <button
+                      type="button"
+                      class="text-[11px] font-semibold text-rose-500 hover:underline"
+                      @click="handleGoogleDisconnect"
+                    >
+                      {{ t('backup.googleDisconnect') }}
+                    </button>
+                  </div>
+                </div>
+
+                <!-- 自動跨裝置同步開關（連結後或已設定 Client ID 時可用） -->
+                <div
+                  v-if="store.googleDriveAccount || effectiveGoogleClientId"
+                  class="flex items-center justify-between gap-3 rounded-xl border border-slate-200/80 bg-white/90 px-3 py-2.5 dark:border-slate-800 dark:bg-slate-900/80"
+                >
+                  <div class="min-w-0">
+                    <div class="text-xs font-bold text-slate-800 dark:text-slate-100">
+                      {{ t('backup.googleAutoSyncTitle') }}
+                    </div>
+                    <p class="mt-0.5 text-[10px] leading-relaxed text-slate-500 dark:text-slate-400">
+                      {{ t('backup.googleAutoSyncDesc') }}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    :aria-checked="store.googleDriveAutoSync"
+                    class="relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition"
+                    :class="
+                      store.googleDriveAutoSync
+                        ? 'bg-emerald-500'
+                        : 'bg-slate-300 dark:bg-slate-700'
+                    "
+                    @click="handleToggleAutoSync"
+                  >
+                    <span
+                      class="inline-block h-4 w-4 transform rounded-full bg-white shadow transition"
+                      :class="
+                        store.googleDriveAutoSync
+                          ? 'translate-x-4.5'
+                          : 'translate-x-0.5'
+                      "
+                    />
+                  </button>
+                </div>
 
                 <!-- 已內建官方共用 Client ID：預設隱藏輸入框，一鍵即可同步 -->
                 <div v-if="hasBuiltInClientId" class="space-y-2">
@@ -1028,12 +1157,20 @@ function fmt(amount: number, currency: string): string {
                   </div>
                 </div>
 
-                <div class="text-[11px] text-slate-400">
-                  {{
-                    formattedGoogleLastSync
-                      ? t('backup.googleLastSync', { time: formattedGoogleLastSync })
-                      : t('backup.googleNotSyncedYet')
-                  }}
+                <div class="flex items-center justify-between gap-2 text-[11px] text-slate-500 dark:text-slate-400">
+                  <span>
+                    {{
+                      formattedGoogleLastSync
+                        ? t('backup.googleLastSync', { time: formattedGoogleLastSync })
+                        : t('backup.googleNotSyncedYet')
+                    }}
+                  </span>
+                  <span
+                    v-if="store.googleDriveDirty && store.googleDriveAccount"
+                    class="font-semibold text-amber-600 dark:text-amber-400"
+                  >
+                    {{ t('backup.googleUnsyncedHint') }}
+                  </span>
                 </div>
 
                 <div class="grid grid-cols-1 gap-2">
@@ -1041,23 +1178,81 @@ function fmt(amount: number, currency: string): string {
                     type="button"
                     :disabled="isGoogleBusy"
                     class="flex w-full items-center justify-center gap-1.5 rounded-xl bg-sky-600 px-3 py-2.5 text-xs font-bold text-white transition hover:bg-sky-700 disabled:opacity-50"
-                    @click="handleGoogleUpload"
+                    @click="handleGoogleUpload(false)"
                   >
                     <Loader2 v-if="isGoogleBusy" class="h-4 w-4 animate-spin" />
+                    <RefreshCw
+                      v-else-if="store.googleDriveAccount"
+                      class="h-4 w-4"
+                    />
                     <CloudUpload v-else class="h-4 w-4" />
-                    <span>{{ t('backup.googleUploadButton') }}</span>
+                    <span>
+                      {{
+                        store.googleDriveStatus === 'needs_auth'
+                          ? t('backup.googleReconnectButton')
+                          : store.googleDriveAccount
+                            ? t('backup.googleUploadButton')
+                            : t('backup.googleConnectButton')
+                      }}
+                    </span>
                   </button>
 
+                  <div class="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      :disabled="isGoogleBusy"
+                      class="flex items-center justify-center gap-1 rounded-xl border border-sky-200 bg-white px-2.5 py-2 text-[11px] font-bold text-sky-700 transition hover:bg-sky-50 disabled:opacity-50 dark:border-sky-800 dark:bg-slate-900 dark:text-sky-300 dark:hover:bg-sky-950/40"
+                      @click="handleGoogleDownloadMerge"
+                    >
+                      <CloudDownload class="h-3.5 w-3.5" />
+                      <span>{{ t('backup.googleDownloadButton') }}</span>
+                    </button>
+
+                    <button
+                      v-if="canShareGoogleConnectLink"
+                      type="button"
+                      class="flex items-center justify-center gap-1 rounded-xl border border-slate-200 bg-white px-2.5 py-2 text-[11px] font-bold text-slate-700 transition hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                      @click="handleCopyGoogleConnectLink"
+                    >
+                      <Link2 class="h-3.5 w-3.5 text-sky-500" />
+                      <span>{{ t('backup.googleCopyPairLink') }}</span>
+                    </button>
+                  </div>
+                </div>
+              </section>
+
+              <!-- 本地 JSON 備份 -->
+              <section class="space-y-3 rounded-2xl border border-slate-200 bg-slate-50/70 p-4 dark:border-slate-800 dark:bg-slate-950/50">
+                <div class="flex items-center gap-1.5 text-xs font-bold text-slate-800 dark:text-slate-100">
+                  <HardDrive class="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+                  <span>{{ t('backup.localTitle') }}</span>
+                </div>
+                <p class="text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
+                  {{ t('backup.localDesc') }}
+                </p>
+
+                <div class="grid grid-cols-1 gap-2">
                   <button
                     type="button"
-                    :disabled="isGoogleBusy"
-                    class="flex w-full items-center justify-center gap-1.5 rounded-xl border border-sky-200 bg-white px-3 py-2.5 text-xs font-bold text-sky-700 transition hover:bg-sky-50 disabled:opacity-50 dark:border-sky-800 dark:bg-slate-900 dark:text-sky-300 dark:hover:bg-sky-950/40"
-                    @click="handleGoogleDownloadMerge"
+                    class="flex w-full items-center justify-center gap-1.5 rounded-xl bg-slate-900 px-3 py-2.5 text-xs font-bold text-white transition hover:bg-slate-800 dark:bg-emerald-500 dark:text-slate-950 dark:hover:bg-emerald-400"
+                    @click="handleExportLocalJson"
                   >
-                    <Loader2 v-if="isGoogleBusy" class="h-4 w-4 animate-spin" />
-                    <CloudDownload v-else class="h-4 w-4" />
-                    <span>{{ t('backup.googleDownloadButton') }}</span>
+                    <Download class="h-4 w-4" />
+                    <span>{{ t('backup.exportButton') }}</span>
                   </button>
+
+                  <label
+                    class="flex w-full cursor-pointer items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-xs font-bold text-slate-700 transition hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                  >
+                    <Upload class="h-4 w-4" />
+                    <span>{{ t('backup.importButton') }}</span>
+                    <input
+                      type="file"
+                      accept="application/json,.json"
+                      class="hidden"
+                      @change="handleImportLocalJson"
+                    />
+                  </label>
                 </div>
               </section>
             </div>

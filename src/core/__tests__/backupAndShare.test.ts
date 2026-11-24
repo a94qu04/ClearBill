@@ -3,6 +3,10 @@ import {
   createLedgerBackupPayload,
   parseAndMergeLedgerBackup,
 } from '@/core/backupMergeEngine'
+import {
+  buildGoogleConnectLink,
+  parseGoogleConnectHash,
+} from '@/core/googleConnectLink'
 import { SchemaMigrationError } from '@/core/migrationEngine'
 import { buildProjectSettlementShareText } from '@/core/shareFormatter'
 import { calculateSettleUp } from '@/core/settleUpEngine'
@@ -242,5 +246,29 @@ describe('shareFormatter - 一鍵分享結算摘要文字產生器', () => {
     expect(text).toContain('已記錄還款：')
     expect(text).toContain('2026-11-25 小林 已付給 我')
     expect(text).toContain('300')
+  })
+})
+
+describe('googleConnectLink - Google 雲端跨裝置快速連線連結', () => {
+  it('能產生並解析合法的 Google OAuth Client ID 跨裝置配對連結', () => {
+    const clientId = '1234567890-abcdefg12345.apps.googleusercontent.com'
+    const url = buildGoogleConnectLink(
+      'https://example.github.io/ClearBill/',
+      clientId,
+    )
+    expect(url).toContain('#/connect-google?cid=')
+
+    const hash = url.slice(url.indexOf('#'))
+    const parsed = parseGoogleConnectHash(hash)
+    expect(parsed).toEqual({ clientId })
+  })
+
+  it('拒絕偽造或非 apps.googleusercontent.com 格式的惡意參數', () => {
+    expect(parseGoogleConnectHash('#/connect-google?cid=evil.com')).toBeNull()
+    expect(parseGoogleConnectHash('#/connect-google?cid=')).toBeNull()
+    expect(parseGoogleConnectHash('#/other?cid=123.apps.googleusercontent.com')).toBeNull()
+    expect(() =>
+      buildGoogleConnectLink('https://example.com/', 'not-a-valid-client-id'),
+    ).toThrow()
   })
 })

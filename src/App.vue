@@ -9,6 +9,7 @@ import {
   CloudOff,
   GripVertical,
   LayoutGrid,
+  Loader2,
   Plus,
   Receipt,
   Settings,
@@ -19,8 +20,13 @@ import {
 } from 'lucide-vue-next'
 import { AVATAR_PALETTE, useLedgerStore } from '@/stores/ledgerStore'
 import { formatCurrencyAmount } from '@/core/currency'
+import { parseGoogleConnectHash } from '@/core/googleConnectLink'
 import { parseShareInviteHash } from '@/core/realtimeSyncEngine'
 import { refreshLiveExchangeRates } from '@/services/exchangeRateService'
+import {
+  GoogleDriveSyncError,
+  saveGoogleClientId,
+} from '@/services/googleDriveSync'
 import {
   parseQuickIntake,
   type ParsedQuickIntakeResult,
@@ -37,7 +43,7 @@ import ProjectExpenseModal from '@/components/ProjectExpenseModal.vue'
 import ProjectSettleTab from '@/components/ProjectSettleTab.vue'
 import ProjectSettingsTab from '@/components/ProjectSettingsTab.vue'
 import ProjectShareModal from '@/components/ProjectShareModal.vue'
-import SettingsModal from '@/components/SettingsModal.vue'
+import SettingsModal, { type SettingsTab } from '@/components/SettingsModal.vue'
 import SettlementPaymentModal from '@/components/SettlementPaymentModal.vue'
 import SyncDeletionGuardModal from '@/components/SyncDeletionGuardModal.vue'
 import TransactionListSection from '@/components/TransactionListSection.vue'
@@ -52,6 +58,7 @@ const store = useLedgerStore()
 const activeView = ref<ActiveView>('home')
 const projectTab = ref<ProjectTab>('expenses')
 const settingsOpen = ref(false)
+const settingsInitialTab = ref<SettingsTab>('general')
 const allProjectsSheetOpen = ref(false)
 const shareModalOpen = ref(false)
 const pendingJoinInvite = ref<ShareInviteParams | null>(null)
@@ -59,6 +66,74 @@ const isDark = ref(false)
 const isTouchDevice = ref(false)
 const previewPhotos = ref<string[]>([])
 const previewPhotoIndex = ref(0)
+
+function openSettingsModal(tab: SettingsTab = 'general') {
+  settingsInitialTab.value = tab
+  settingsOpen.value = true
+}
+
+const googleCloudButtonTitle = computed(() => {
+  switch (store.googleDriveStatus) {
+    case 'syncing':
+      return t('backup.googleStatusSyncing')
+    case 'synced':
+      return t('backup.googleQuickSyncTip')
+    case 'pending':
+      return t('backup.googleStatusPending')
+    case 'needs_auth':
+      return t('backup.googleReconnectButton')
+    case 'offline':
+      return t('backup.googleStatusOffline')
+    case 'error':
+      return t('backup.googleStatusError')
+    default:
+      return t('backup.googleQuickConnectTip')
+  }
+})
+
+async function handleTopBarGoogleCloudClick() {
+  if (store.googleDriveStatus === 'syncing') return
+  if (
+    store.googleDriveStatus === 'synced' ||
+    store.googleDriveStatus === 'pending' ||
+    store.googleDriveStatus === 'needs_auth'
+  ) {
+    try {
+      const res = await store.syncGoogleDriveNow({
+        enableAutoSyncOnSuccess: true,
+      })
+      if (!res) return
+      if (res.skippedNoChanges) {
+        showToast(t('backup.googleAlreadyUpToDate'))
+      } else if (res.hadRemoteFile && res.mergeStats) {
+        showToast(
+          t('backup.googleSyncMergedSuccess', {
+            pAdd: res.mergeStats.projectsAdded,
+            pUpd: res.mergeStats.projectsUpdated,
+            tAdd: res.mergeStats.transactionsAdded,
+            tUpd: res.mergeStats.transactionsUpdated,
+          }),
+        )
+      } else {
+        showToast(t('backup.googleUploadSuccess'))
+      }
+    } catch (err) {
+      const code =
+        err instanceof GoogleDriveSyncError ? err.code : 'ERR_UNKNOWN'
+      const key = `backup.errors.${code}`
+      const translated = t(key)
+      showToast(
+        t('backup.googleSyncError', {
+          reason: translated === key ? t('backup.errors.ERR_UNKNOWN') : translated,
+        }),
+      )
+      openSettingsModal('backup')
+    }
+    return
+  }
+
+  openSettingsModal('backup')
+}
 
 function openPhotoLightbox(payload: { photos: string[]; index: number }) {
   previewPhotos.value = payload.photos
@@ -417,10 +492,23 @@ function handleRestoredFromSettings(projectId?: string) {
   }
 }
 
-// 處理外部 Hash 路由：支援 #/join?s=...&k=...（多人即時共享邀請）與 #/quick-add（iOS 捷徑）
+// 處理外部 Hash 路由：支援 #/join（多人共享）、#/connect-google（Google 雲端跨裝置配對）與 #/quick-add（iOS 捷徑）
 function handleHashQuickAdd() {
   if (typeof window === 'undefined') return
   const hash = window.location.hash
+
+  if (hash.startsWith('#/connect-google')) {
+    const parsedConnect = parseGoogleConnectHash(hash)
+    window.history.replaceState(null, '', window.location.pathname)
+    if (parsedConnect) {
+      saveGoogleClientId(parsedConnect.clientId)
+      openSettingsModal('backup')
+      showToast(t('backup.googlePairLinkAppliedToast'))
+    } else {
+      showToast(t('backup.errors.ERR_MISSING_CLIENT_ID'))
+    }
+    return
+  }
 
   if (hash.startsWith('#/join')) {
     const invite = parseShareInviteHash(hash)
@@ -464,7 +552,14 @@ function handleJoinedSharedProject(projectId: string) {
 function handleNetworkOnline() {
   void store.startAllSharedProjectListeners()
   void store.flushAllSharedProjectsOutbox()
+  void store.tryBackgroundGoogleDriveSync(true)
   void refreshLiveExchangeRates()
+}
+
+function handleVisibilityChange() {
+  if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+    void store.tryBackgroundGoogleDriveSync(false)
+  }
 }
 
 onMounted(async () => {
@@ -474,14 +569,17 @@ onMounted(async () => {
   await store.initFromIndexedDb()
   void store.startAllSharedProjectListeners()
   void store.flushAllSharedProjectsOutbox()
+  void store.tryBackgroundGoogleDriveSync(false)
   handleHashQuickAdd()
   window.addEventListener('hashchange', handleHashQuickAdd)
   window.addEventListener('online', handleNetworkOnline)
+  document.addEventListener('visibilitychange', handleVisibilityChange)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('hashchange', handleHashQuickAdd)
   window.removeEventListener('online', handleNetworkOnline)
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
   store.stopAllSharedProjectListeners()
   if (toastTimer) clearTimeout(toastTimer)
 })
@@ -540,13 +638,56 @@ onBeforeUnmount(() => {
             }}</span>
           </button>
 
+          <!-- Google 雲端跨裝置同步快捷按鈕（與設定齒輪同水平線） -->
+          <button
+            type="button"
+            :aria-label="googleCloudButtonTitle"
+            :title="googleCloudButtonTitle"
+            class="relative inline-flex h-7 shrink-0 items-center justify-center gap-1 rounded-lg border px-2 text-[11px] font-semibold transition active:scale-95"
+            :class="
+              store.googleDriveStatus === 'synced'
+                ? 'border-sky-200 bg-sky-50/80 text-sky-700 hover:bg-sky-100 dark:border-sky-900/70 dark:bg-sky-950/50 dark:text-sky-300'
+                : store.googleDriveStatus === 'pending' ||
+                    store.googleDriveStatus === 'needs_auth'
+                  ? 'border-amber-200 bg-amber-50/90 text-amber-800 hover:bg-amber-100 dark:border-amber-900/70 dark:bg-amber-950/50 dark:text-amber-300'
+                  : store.googleDriveStatus === 'error'
+                    ? 'border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100 dark:border-rose-900/70 dark:bg-rose-950/50 dark:text-rose-300'
+                    : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800'
+            "
+            @click="handleTopBarGoogleCloudClick"
+          >
+            <Loader2
+              v-if="store.googleDriveStatus === 'syncing'"
+              class="h-3.5 w-3.5 animate-spin text-sky-500"
+            />
+            <CloudOff
+              v-else-if="store.googleDriveStatus === 'offline'"
+              class="h-3.5 w-3.5 text-slate-400"
+            />
+            <Cloud v-else class="h-3.5 w-3.5" />
+            <span
+              v-if="store.googleDriveStatus === 'needs_auth'"
+              class="hidden sm:inline"
+            >
+              {{ t('backup.googleShortReconnect') }}
+            </span>
+            <span
+              v-else-if="store.googleDriveStatus === 'synced'"
+              class="h-1.5 w-1.5 rounded-full bg-emerald-500"
+            />
+            <span
+              v-else-if="store.googleDriveStatus === 'pending'"
+              class="h-1.5 w-1.5 rounded-full bg-amber-500"
+            />
+          </button>
+
           <!-- 右上角明確設定齒輪按鈕（與左上 Icon 同水平線、精緻小尺寸） -->
           <button
             type="button"
             :aria-label="t('settings.title')"
             :title="t('settings.title')"
             class="relative inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-600 transition hover:bg-slate-100 hover:text-slate-900 active:scale-95 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white"
-            @click="settingsOpen = true"
+            @click="openSettingsModal('general')"
           >
             <Settings class="h-3.5 w-3.5" />
             <span
@@ -1032,10 +1173,11 @@ onBeforeUnmount(() => {
       </div>
     </main>
 
-    <!-- 側邊設定抽屜（一般／分類／幣別／本地＋Google 雲端備份／復原與清空） -->
+    <!-- 側邊設定抽屜（一般／分類／幣別／Google 雲端跨裝置同步＋本地備份／復原與清空） -->
     <SettingsModal
       :open="settingsOpen"
       :is-dark="isDark"
+      :initial-tab="settingsInitialTab"
       @close="settingsOpen = false"
       @set-theme="setTheme"
       @toast="showToast($event)"
