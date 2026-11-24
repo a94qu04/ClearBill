@@ -340,6 +340,14 @@ defineExpose({ resetFilters })
                     {{ t('home.settlementBadge') }}
                   </span>
 
+                  <!-- 退款／退稅標記 -->
+                  <span
+                    v-if="tx.type === 'refund'"
+                    class="rounded bg-teal-50 px-1.5 py-0.5 text-[10px] font-semibold text-teal-700 dark:bg-teal-950/70 dark:text-teal-300"
+                  >
+                    {{ t('project.refundBadge') }}
+                  </span>
+
                   <!-- 首頁顯示所屬專案標籤 -->
                   <button
                     v-if="context === 'home' && tx.projectId && store.getProjectById(tx.projectId)"
@@ -385,10 +393,10 @@ defineExpose({ resetFilters })
                   >
                     ({{
                       t('project.convertedPreview', {
-                        amount: fmt(
+                        amount: `${tx.type === 'refund' ? '-' : ''}${fmt(
                           tx.amount * tx.exchangeRateToBase,
                           projectBaseCurrency,
-                        ),
+                        )}`,
                       })
                     }})
                   </span>
@@ -402,10 +410,18 @@ defineExpose({ resetFilters })
                 :class="
                   tx.type === 'income'
                     ? 'text-emerald-600 dark:text-emerald-400'
-                    : 'text-slate-900 dark:text-white'
+                    : tx.type === 'refund'
+                      ? 'text-teal-600 dark:text-teal-400'
+                      : 'text-slate-900 dark:text-white'
                 "
               >
-                {{ tx.type === 'income' ? '+' : '' }}{{ fmt(tx.amount, tx.currency) }}
+                {{
+                  tx.type === 'income'
+                    ? '+'
+                    : tx.type === 'refund'
+                      ? '-'
+                      : ''
+                }}{{ fmt(tx.amount, tx.currency) }}
               </span>
               <button
                 type="button"

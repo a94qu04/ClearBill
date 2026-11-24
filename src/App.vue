@@ -12,7 +12,10 @@ import {
 } from 'lucide-vue-next'
 import { useLedgerStore } from '@/stores/ledgerStore'
 import { formatCurrencyAmount } from '@/core/currency'
-import { parseQuickIntake } from '@/core/quickIntakeParser'
+import {
+  parseQuickIntake,
+  type ParsedQuickIntakeResult,
+} from '@/core/quickIntakeParser'
 import type { SplitMode, Transaction } from '@/schemas/ledgerSchema'
 import AllProjectsModal from '@/components/AllProjectsModal.vue'
 import PhotoLightboxModal from '@/components/PhotoLightboxModal.vue'
@@ -57,6 +60,7 @@ const projectFormError = ref('')
 // 支出與還款彈窗狀態
 const projExpenseSheetOpen = ref(false)
 const editingExpenseTx = ref<Transaction | null>(null)
+const quickIntakePrefill = ref<ParsedQuickIntakeResult | null>(null)
 
 const settleSheetOpen = ref(false)
 const editingSettleTx = ref<Transaction | null>(null)
@@ -126,13 +130,9 @@ const homeProjectTransactions = computed(() =>
   ),
 )
 
-const activeProjectTotalSpent = computed(() => {
-  if (!store.activeProject) return 0
-  return store.activeProjectExpenses.reduce(
-    (sum, tx) => sum + tx.amount * tx.exchangeRateToBase,
-    0,
-  )
-})
+const activeProjectTotalSpent = computed(
+  () => store.activeProjectSettleUp?.totalProjectExpense ?? 0,
+)
 
 const topBarTitle = computed(() => {
   if (activeView.value === 'project_create') return t('project.createTitle')
@@ -245,7 +245,13 @@ function onProjectDragEnd() {
 // ==================== 支出／還款新增、修改、刪除與復原 ====================
 function openAddProjectExpenseSheet() {
   editingExpenseTx.value = null
+  quickIntakePrefill.value = null
   projExpenseSheetOpen.value = true
+}
+
+function closeProjectExpenseSheet() {
+  projExpenseSheetOpen.value = false
+  quickIntakePrefill.value = null
 }
 
 /** 編輯交易：維持當前頁面不跳轉，在首頁修改完成或關閉皆留在首頁 */
@@ -254,6 +260,7 @@ function startEditTransaction(tx: Transaction) {
   if (!targetProject) return
 
   store.selectProject(targetProject.id)
+  quickIntakePrefill.value = null
 
   if (tx.type === 'transfer') {
     editingSettleTx.value = tx
@@ -324,6 +331,7 @@ function handleHashQuickAdd() {
 
   if (parsed.projectId && store.activeProject) {
     editingExpenseTx.value = null
+    quickIntakePrefill.value = parsed
     activeView.value = 'project_workspace'
     projectTab.value = 'expenses'
     projExpenseSheetOpen.value = true
@@ -733,7 +741,8 @@ onBeforeUnmount(() => {
       :open="projExpenseSheetOpen"
       :project="store.activeProject"
       :editing-tx="editingExpenseTx"
-      @close="projExpenseSheetOpen = false"
+      :prefill="quickIntakePrefill"
+      @close="closeProjectExpenseSheet"
       @saved="showToast($event)"
       @preview-photo="previewPhotoUrl = $event"
       @toast="showToast($event)"

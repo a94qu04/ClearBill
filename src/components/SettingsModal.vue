@@ -40,7 +40,7 @@ import {
   GoogleDriveSyncError,
   isGoogleDriveConnected,
   saveGoogleClientId,
-  uploadBackupToGoogleDrive,
+  syncWithGoogleDrive,
 } from '@/services/googleDriveSync'
 
 interface Props {
@@ -218,7 +218,16 @@ async function handleImportLocalJson(event: Event) {
   }
 }
 
-// ==================== Google 雲端硬碟備份與合併還原 ====================
+// ==================== Google 雲端硬碟無損同步（Pull ➔ Merge ➔ Push） ====================
+function resolveGoogleErrorReason(err: unknown): string {
+  if (err instanceof GoogleDriveSyncError) {
+    const key = `backup.errors.${err.code}`
+    const translated = t(key)
+    return translated === key ? t('backup.errors.ERR_UNKNOWN') : translated
+  }
+  return t('backup.errors.ERR_UNKNOWN')
+}
+
 function handleSaveGoogleClientId() {
   saveGoogleClientId(googleClientId.value)
   emit('toast', t('backup.googleClientIdSavedToast'))
@@ -233,19 +242,32 @@ async function handleGoogleUpload() {
   saveGoogleClientId(trimmed)
   isGoogleBusy.value = true
   try {
-    const backup = store.exportLedgerBackup()
-    const res = await uploadBackupToGoogleDrive(backup, trimmed)
+    const res = await syncWithGoogleDrive({
+      clientId: trimmed,
+      onMergeRemote: (rawJson) => store.importAndMergeLedgerBackup(rawJson),
+      getMergedBackup: () => store.exportLedgerBackup(),
+    })
     googleLastSyncAt.value = res.syncedAt
     googleConnected.value = isGoogleDriveConnected()
-    emit('toast', t('backup.googleUploadSuccess'))
+
+    if (res.hadRemoteFile && res.mergeStats) {
+      emit(
+        'toast',
+        t('backup.googleSyncMergedSuccess', {
+          pAdd: res.mergeStats.projectsAdded,
+          pUpd: res.mergeStats.projectsUpdated,
+          tAdd: res.mergeStats.transactionsAdded,
+          tUpd: res.mergeStats.transactionsUpdated,
+        }),
+      )
+    } else {
+      emit('toast', t('backup.googleUploadSuccess'))
+    }
   } catch (err) {
-    const reason =
-      err instanceof GoogleDriveSyncError
-        ? err.message
-        : err instanceof Error
-          ? err.message
-          : 'Unknown error'
-    emit('toast', t('backup.googleSyncError', { reason }))
+    emit(
+      'toast',
+      t('backup.googleSyncError', { reason: resolveGoogleErrorReason(err) }),
+    )
   } finally {
     isGoogleBusy.value = false
   }
@@ -260,9 +282,12 @@ async function handleGoogleDownloadMerge() {
   saveGoogleClientId(trimmed)
   isGoogleBusy.value = true
   try {
-    const { rawJson, syncedAt } = await downloadBackupFromGoogleDrive(trimmed)
-    const stats = await store.importAndMergeLedgerBackup(rawJson)
-    googleLastSyncAt.value = syncedAt
+    const downloaded = await downloadBackupFromGoogleDrive(trimmed, false)
+    if (!downloaded) {
+      throw new GoogleDriveSyncError('ERR_DRIVE_NOT_FOUND')
+    }
+    const stats = await store.importAndMergeLedgerBackup(downloaded.rawJson)
+    googleLastSyncAt.value = downloaded.syncedAt
     googleConnected.value = isGoogleDriveConnected()
     emit(
       'toast',
@@ -274,13 +299,10 @@ async function handleGoogleDownloadMerge() {
       }),
     )
   } catch (err) {
-    const reason =
-      err instanceof GoogleDriveSyncError
-        ? err.message
-        : err instanceof Error
-          ? err.message
-          : 'Unknown error'
-    emit('toast', t('backup.googleSyncError', { reason }))
+    emit(
+      'toast',
+      t('backup.googleSyncError', { reason: resolveGoogleErrorReason(err) }),
+    )
   } finally {
     isGoogleBusy.value = false
   }

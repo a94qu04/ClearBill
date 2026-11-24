@@ -1,10 +1,23 @@
 import type { LedgerBackup } from '@/schemas/ledgerSchema'
+import type { LedgerMergeStats } from '@/core/backupMergeEngine'
 
 const GOOGLE_DRIVE_CLIENT_ID_KEY = 'clearbill_google_client_id'
 const GOOGLE_DRIVE_LAST_SYNC_KEY = 'clearbill_google_last_sync_at'
 const GOOGLE_DRIVE_BACKUP_FILENAME = 'clearbill-backup-v1.json'
 const GOOGLE_DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file'
 const GIS_SCRIPT_URL = 'https://accounts.google.com/gsi/client'
+
+export type GoogleDriveSyncErrorCode =
+  | 'ERR_NO_BROWSER'
+  | 'ERR_MISSING_CLIENT_ID'
+  | 'ERR_GIS_LOAD'
+  | 'ERR_GIS_UNAVAILABLE'
+  | 'ERR_OAUTH_DENIED'
+  | 'ERR_OAUTH_POPUP'
+  | 'ERR_DRIVE_LIST_FAILED'
+  | 'ERR_DRIVE_NOT_FOUND'
+  | 'ERR_DRIVE_UPLOAD_FAILED'
+  | 'ERR_DRIVE_DOWNLOAD_FAILED'
 
 interface GoogleTokenResponse {
   access_token?: string
@@ -38,13 +51,28 @@ declare global {
 }
 
 export class GoogleDriveSyncError extends Error {
-  public readonly code: string
+  public readonly code: GoogleDriveSyncErrorCode
 
-  constructor(code: string, message: string) {
-    super(`${code}: ${message}`)
+  constructor(code: GoogleDriveSyncErrorCode, detail?: string) {
+    super(detail ? `${code}: ${detail}` : code)
     this.name = 'GoogleDriveSyncError'
     this.code = code
   }
+}
+
+export interface GoogleDriveSyncOptions {
+  clientId?: string
+  /** 若遠端已有備份檔，下載後交由呼叫端透過 UUID 與 updatedAt 執行無損合併 */
+  onMergeRemote: (rawJson: unknown) => Promise<LedgerMergeStats>
+  /** 取得合併完成後的最新本地完整備份物件以回傳至 Google Drive */
+  getMergedBackup: () => LedgerBackup
+}
+
+export interface GoogleDriveSyncResult {
+  fileId: string
+  syncedAt: number
+  hadRemoteFile: boolean
+  mergeStats: LedgerMergeStats | null
 }
 
 let cachedAccessToken: string | null = null
@@ -60,7 +88,10 @@ export function getSavedGoogleClientId(): string {
 
   if (typeof window === 'undefined') return envClientId
   try {
-    return window.localStorage.getItem(GOOGLE_DRIVE_CLIENT_ID_KEY)?.trim() || envClientId
+    return (
+      window.localStorage.getItem(GOOGLE_DRIVE_CLIENT_ID_KEY)?.trim() ||
+      envClientId
+    )
   } catch {
     return envClientId
   }
@@ -119,9 +150,7 @@ export function disconnectGoogleDrive(): void {
 
 function loadGoogleIdentityScript(): Promise<void> {
   if (typeof window === 'undefined') {
-    return Promise.reject(
-      new GoogleDriveSyncError('ERR_NO_BROWSER', 'Google Drive 同步僅支援瀏覽器環境'),
-    )
+    return Promise.reject(new GoogleDriveSyncError('ERR_NO_BROWSER'))
   }
   if (window.google?.accounts?.oauth2) {
     return Promise.resolve()
@@ -138,7 +167,7 @@ function loadGoogleIdentityScript(): Promise<void> {
       existing.addEventListener('load', () => resolve(), { once: true })
       existing.addEventListener(
         'error',
-        () => reject(new GoogleDriveSyncError('ERR_GIS_LOAD', '無法載入 Google 授權腳本')),
+        () => reject(new GoogleDriveSyncError('ERR_GIS_LOAD')),
         { once: true },
       )
       return
@@ -151,7 +180,7 @@ function loadGoogleIdentityScript(): Promise<void> {
     script.onload = () => resolve()
     script.onerror = () => {
       gisScriptLoadPromise = null
-      reject(new GoogleDriveSyncError('ERR_GIS_LOAD', '無法載入 Google 授權腳本，請檢查網路'))
+      reject(new GoogleDriveSyncError('ERR_GIS_LOAD'))
     }
     document.head.appendChild(script)
   })
@@ -168,10 +197,7 @@ export async function requestGoogleDriveToken(
 ): Promise<string> {
   const effectiveClientId = (clientId ?? getSavedGoogleClientId()).trim()
   if (!effectiveClientId) {
-    throw new GoogleDriveSyncError(
-      'ERR_MISSING_CLIENT_ID',
-      '尚未設定 Google OAuth Client ID',
-    )
+    throw new GoogleDriveSyncError('ERR_MISSING_CLIENT_ID')
   }
 
   if (isGoogleDriveConnected() && cachedAccessToken) {
@@ -181,10 +207,7 @@ export async function requestGoogleDriveToken(
   await loadGoogleIdentityScript()
   const oauth2 = window.google?.accounts?.oauth2
   if (!oauth2) {
-    throw new GoogleDriveSyncError(
-      'ERR_GIS_UNAVAILABLE',
-      'Google OAuth2 模組尚未就緒',
-    )
+    throw new GoogleDriveSyncError('ERR_GIS_UNAVAILABLE')
   }
 
   return new Promise<string>((resolve, reject) => {
@@ -196,7 +219,7 @@ export async function requestGoogleDriveToken(
           reject(
             new GoogleDriveSyncError(
               'ERR_OAUTH_DENIED',
-              response.error_description || response.error || '使用者取消授權',
+              response.error_description || response.error,
             ),
           )
           return
@@ -208,10 +231,7 @@ export async function requestGoogleDriveToken(
       },
       error_callback: (err) => {
         reject(
-          new GoogleDriveSyncError(
-            'ERR_OAUTH_POPUP',
-            err.message || err.type || '無法開啟 Google 登入視窗',
-          ),
+          new GoogleDriveSyncError('ERR_OAUTH_POPUP', err.message || err.type),
         )
       },
     })
@@ -237,10 +257,7 @@ async function findExistingBackupFileId(accessToken: string): Promise<string | n
       cachedAccessToken = null
       cachedTokenExpiresAt = 0
     }
-    throw new GoogleDriveSyncError(
-      'ERR_DRIVE_LIST_FAILED',
-      `查詢 Google Drive 備份失敗（HTTP ${res.status}）`,
-    )
+    throw new GoogleDriveSyncError('ERR_DRIVE_LIST_FAILED', `HTTP ${res.status}`)
   }
 
   const data = (await res.json()) as {
@@ -249,16 +266,34 @@ async function findExistingBackupFileId(accessToken: string): Promise<string | n
   return data.files?.[0]?.id ?? null
 }
 
-/**
- * 將本地完整備份 JSON 上傳（新增或覆蓋更新）至 Google Drive
- */
-export async function uploadBackupToGoogleDrive(
-  backup: LedgerBackup,
-  clientId?: string,
-): Promise<{ fileId: string; syncedAt: number }> {
-  const token = await requestGoogleDriveToken(clientId)
-  const existingFileId = await findExistingBackupFileId(token)
+async function fetchDriveBackupJson(
+  accessToken: string,
+  fileId: string,
+): Promise<unknown> {
+  const res = await fetch(
+    `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
+    {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    },
+  )
 
+  if (!res.ok) {
+    throw new GoogleDriveSyncError(
+      'ERR_DRIVE_DOWNLOAD_FAILED',
+      `HTTP ${res.status}`,
+    )
+  }
+
+  return (await res.json()) as unknown
+}
+
+async function uploadBackupPayload(
+  accessToken: string,
+  backup: LedgerBackup,
+  existingFileId: string | null,
+): Promise<{ fileId: string; syncedAt: number }> {
   const boundary = 'clearbill_drive_sync_boundary'
   const metadata = {
     name: GOOGLE_DRIVE_BACKUP_FILENAME,
@@ -280,7 +315,7 @@ export async function uploadBackupToGoogleDrive(
   const res = await fetch(endpoint, {
     method: existingFileId ? 'PATCH' : 'POST',
     headers: {
-      Authorization: `Bearer ${token}`,
+      Authorization: `Bearer ${accessToken}`,
       'Content-Type': `multipart/related; boundary=${boundary}`,
     },
     body,
@@ -289,7 +324,7 @@ export async function uploadBackupToGoogleDrive(
   if (!res.ok) {
     throw new GoogleDriveSyncError(
       'ERR_DRIVE_UPLOAD_FAILED',
-      `上傳至 Google Drive 失敗（HTTP ${res.status}）`,
+      `HTTP ${res.status}`,
     )
   }
 
@@ -300,38 +335,69 @@ export async function uploadBackupToGoogleDrive(
 }
 
 /**
- * 從 Google Drive 下載 ClearBill 備份 JSON 原始內容（交由 backupMergeEngine 做 Zod 驗證與合併）
+ * 安全無損雙向同步（Pull ➔ Merge ➔ Push）：
+ * 1. 取得存取權杖並查詢雲端是否已有備份檔
+ * 2. 若雲端已存在備份檔，先拉回並透過 UUID 與 updatedAt 與本地合併，避免多裝置直接覆蓋造成資料遺失
+ * 3. 再將合併後最新完整備份上傳至 Google Drive
+ */
+export async function syncWithGoogleDrive(
+  options: GoogleDriveSyncOptions,
+): Promise<GoogleDriveSyncResult> {
+  const token = await requestGoogleDriveToken(options.clientId)
+  const existingFileId = await findExistingBackupFileId(token)
+
+  let mergeStats: LedgerMergeStats | null = null
+  const hadRemoteFile = Boolean(existingFileId)
+
+  if (existingFileId) {
+    const remoteJson = await fetchDriveBackupJson(token, existingFileId)
+    mergeStats = await options.onMergeRemote(remoteJson)
+  }
+
+  const latestBackup = options.getMergedBackup()
+  const { fileId, syncedAt } = await uploadBackupPayload(
+    token,
+    latestBackup,
+    existingFileId,
+  )
+
+  return {
+    fileId,
+    syncedAt,
+    hadRemoteFile,
+    mergeStats,
+  }
+}
+
+/**
+ * 僅將本地完整備份 JSON 上傳（保留供單獨上傳使用）
+ */
+export async function uploadBackupToGoogleDrive(
+  backup: LedgerBackup,
+  clientId?: string,
+): Promise<{ fileId: string; syncedAt: number }> {
+  const token = await requestGoogleDriveToken(clientId)
+  const existingFileId = await findExistingBackupFileId(token)
+  return uploadBackupPayload(token, backup, existingFileId)
+}
+
+/**
+ * 從 Google Drive 下載 ClearBill 備份 JSON 原始內容
+ * - allowMissing 為 true 時，若雲端尚無備份檔則回傳 null 而不拋錯
  */
 export async function downloadBackupFromGoogleDrive(
   clientId?: string,
-): Promise<{ rawJson: unknown; syncedAt: number }> {
+  allowMissing = false,
+): Promise<{ rawJson: unknown; syncedAt: number } | null> {
   const token = await requestGoogleDriveToken(clientId)
   const existingFileId = await findExistingBackupFileId(token)
 
   if (!existingFileId) {
-    throw new GoogleDriveSyncError(
-      'ERR_DRIVE_NOT_FOUND',
-      'Google Drive 尚未建立 ClearBill 備份檔',
-    )
+    if (allowMissing) return null
+    throw new GoogleDriveSyncError('ERR_DRIVE_NOT_FOUND')
   }
 
-  const res = await fetch(
-    `https://www.googleapis.com/drive/v3/files/${existingFileId}?alt=media`,
-    {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    },
-  )
-
-  if (!res.ok) {
-    throw new GoogleDriveSyncError(
-      'ERR_DRIVE_DOWNLOAD_FAILED',
-      `下載 Google Drive 備份失敗（HTTP ${res.status}）`,
-    )
-  }
-
-  const rawJson = (await res.json()) as unknown
+  const rawJson = await fetchDriveBackupJson(token, existingFileId)
   const syncedAt = Date.now()
   saveLastGoogleSyncAt(syncedAt)
   return { rawJson, syncedAt }

@@ -10,6 +10,7 @@ import {
   getSuggestedExchangeRate,
   getTodayIso,
 } from '@/core/ledgerHelpers'
+import type { ParsedQuickIntakeResult } from '@/core/quickIntakeParser'
 import type { Project, SplitConfig, Transaction } from '@/schemas/ledgerSchema'
 import CurrencyAmountInput from '@/components/CurrencyAmountInput.vue'
 import QuickSplitPanel from '@/components/QuickSplitPanel.vue'
@@ -18,9 +19,12 @@ interface Props {
   open: boolean
   project: Project | null
   editingTx: Transaction | null
+  prefill?: ParsedQuickIntakeResult | null
 }
 
-const props = defineProps<Props>()
+const props = withDefaults(defineProps<Props>(), {
+  prefill: null,
+})
 
 const emit = defineEmits<{
   (e: 'close'): void
@@ -33,6 +37,7 @@ const { t, locale } = useI18n()
 const store = useLedgerStore()
 
 let isHydrating = false
+const txType = ref<'expense' | 'refund'>('expense')
 const splitPreset = ref<SplitConfig | null>(null)
 const splitResetKey = ref(0)
 const amount = ref<number | null>(null)
@@ -64,6 +69,15 @@ const allCategories = computed(() =>
   })),
 )
 
+/** 確保目前表單幣別（例如來自快速入帳預填的外幣）一定存在於下拉選單中 */
+const currencyOptions = computed(() => {
+  const list = [...store.availableCurrencies]
+  if (currency.value && !list.includes(currency.value)) {
+    list.unshift(currency.value)
+  }
+  return list
+})
+
 const needsExchangeRate = computed(() => {
   if (!props.project) return false
   return currency.value !== props.project.baseCurrency
@@ -76,6 +90,16 @@ const convertedPreviewAmount = computed(() => {
   return amt * rate
 })
 
+function cloneSplitConfig(config: SplitConfig | undefined): SplitConfig | null {
+  if (!config) return null
+  return {
+    payerId: config.payerId,
+    payers: config.payers ? config.payers.map((p) => ({ ...p })) : undefined,
+    mode: config.mode,
+    shares: config.shares.map((s) => ({ ...s })),
+  }
+}
+
 function hydrateForm() {
   if (!props.project) return
   isHydrating = true
@@ -84,6 +108,7 @@ function hydrateForm() {
 
   if (props.editingTx) {
     const tx = props.editingTx
+    txType.value = tx.type === 'refund' ? 'refund' : 'expense'
     amount.value = tx.amount
     currency.value = tx.currency
     exchangeRate.value = tx.exchangeRateToBase ?? 1
@@ -93,17 +118,27 @@ function hydrateForm() {
     time.value = tx.time || '00:00'
     links.value = tx.links ? [...tx.links] : []
     receiptImages.value = tx.receiptImages ? [...tx.receiptImages] : []
-    splitPreset.value = tx.splitConfig
-      ? {
-          payerId: tx.splitConfig.payerId,
-          payers: tx.splitConfig.payers
-            ? tx.splitConfig.payers.map((p) => ({ ...p }))
-            : undefined,
-          mode: tx.splitConfig.mode,
-          shares: tx.splitConfig.shares.map((s) => ({ ...s })),
-        }
-      : null
+    splitPreset.value = cloneSplitConfig(tx.splitConfig)
+  } else if (props.prefill) {
+    // 來自 #/quick-add（iOS 捷徑 / Web Share）之快速入帳自動預填
+    const pf = props.prefill
+    txType.value = 'expense'
+    amount.value = pf.amount
+    const prefillCurrency = pf.currency?.trim().toUpperCase() || props.project.baseCurrency
+    currency.value = prefillCurrency
+    exchangeRate.value =
+      prefillCurrency === props.project.baseCurrency
+        ? 1
+        : getSuggestedExchangeRate(prefillCurrency, props.project.baseCurrency)
+    categoryKey.value = store.categories[0]?.key ?? 'cat_food'
+    note.value = pf.merchant || pf.sanitizedNote || ''
+    date.value = pf.date || getTodayIso()
+    time.value = pf.time && pf.time !== '00:00' ? pf.time : ''
+    links.value = pf.links ? [...pf.links] : []
+    receiptImages.value = []
+    splitPreset.value = cloneSplitConfig(pf.defaultSplitConfig)
   } else {
+    txType.value = 'expense'
     amount.value = null
     currency.value = props.project.baseCurrency
     exchangeRate.value = 1
@@ -121,7 +156,7 @@ function hydrateForm() {
 }
 
 watch(
-  () => [props.open, props.editingTx?.id, props.project?.id] as const,
+  () => [props.open, props.editingTx?.id, props.prefill, props.project?.id] as const,
   ([isOpen]) => {
     if (isOpen) {
       hydrateForm()
@@ -207,7 +242,7 @@ async function handleSubmit() {
 
   const payload = {
     projectId: props.project.id,
-    type: 'expense' as const,
+    type: txType.value,
     amount: numericAmount,
     currency: currency.value,
     exchangeRateToBase: rate,
@@ -266,10 +301,45 @@ async function handleSubmit() {
         </div>
 
         <form class="space-y-3.5" @submit.prevent="handleSubmit">
+          <!-- 兩段式類型切換：消費支出 / 退款・退稅 -->
+          <div
+            role="tablist"
+            class="grid grid-cols-2 rounded-xl bg-slate-100 p-1 text-xs font-semibold dark:bg-slate-800"
+          >
+            <button
+              type="button"
+              role="tab"
+              :aria-selected="txType === 'expense'"
+              class="rounded-lg py-1.5 transition"
+              :class="
+                txType === 'expense'
+                  ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-950 dark:text-white'
+                  : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'
+              "
+              @click="txType = 'expense'"
+            >
+              {{ t('project.typeExpense') }}
+            </button>
+            <button
+              type="button"
+              role="tab"
+              :aria-selected="txType === 'refund'"
+              class="rounded-lg py-1.5 transition"
+              :class="
+                txType === 'refund'
+                  ? 'bg-teal-600 text-white shadow-sm dark:bg-teal-500 dark:text-slate-950'
+                  : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'
+              "
+              @click="txType = 'refund'"
+            >
+              {{ t('project.typeRefund') }}
+            </button>
+          </div>
+
           <CurrencyAmountInput
             v-model="amount"
             v-model:currency="currency"
-            :currencies="store.availableCurrencies"
+            :currencies="currencyOptions"
             show-currency-select
             size="lg"
             autofocus
@@ -308,7 +378,11 @@ async function handleSubmit() {
           <input
             v-model="note"
             type="text"
-            :placeholder="t('project.expenseTitlePlaceholder')"
+            :placeholder="
+              txType === 'refund'
+                ? t('project.refundTitlePlaceholder')
+                : t('project.expenseTitlePlaceholder')
+            "
             class="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-sm text-slate-900 focus:border-emerald-500 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white"
           />
 
@@ -440,12 +514,19 @@ async function handleSubmit() {
           <button
             type="submit"
             :disabled="!splitValid || (amount ?? 0) <= 0"
-            class="w-full rounded-2xl bg-emerald-600 py-3 text-sm font-bold text-white shadow-sm transition hover:bg-emerald-700 disabled:opacity-40 dark:bg-emerald-500 dark:text-slate-950"
+            class="w-full rounded-2xl py-3 text-sm font-bold text-white shadow-sm transition disabled:opacity-40"
+            :class="
+              txType === 'refund'
+                ? 'bg-teal-600 hover:bg-teal-700 dark:bg-teal-500 dark:text-slate-950'
+                : 'bg-emerald-600 hover:bg-emerald-700 dark:bg-emerald-500 dark:text-slate-950'
+            "
           >
             {{
               editingTx
                 ? t('project.updateExpenseButton')
-                : t('project.saveExpenseButton')
+                : txType === 'refund'
+                  ? t('project.saveRefundButton')
+                  : t('project.saveExpenseButton')
             }}
           </button>
         </form>
