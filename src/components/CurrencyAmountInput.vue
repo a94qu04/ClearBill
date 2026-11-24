@@ -163,7 +163,7 @@ const sizeClasses = computed(() => {
   if (props.size === 'lg') {
     return {
       wrapper: 'rounded-2xl',
-      select: 'w-[72px] py-3 pl-2.5 pr-1 text-xs font-bold',
+      select: 'w-[80px] py-3 pl-2.5 pr-1 text-xs font-bold',
       input: 'px-3.5 py-3 text-xl font-bold',
       feeBtn: 'px-2.5 text-xs',
     }
@@ -171,14 +171,14 @@ const sizeClasses = computed(() => {
   if (props.size === 'sm') {
     return {
       wrapper: 'rounded-lg',
-      select: 'w-[62px] py-1.5 pl-2 pr-1 text-[11px] font-bold',
+      select: 'w-[70px] py-1.5 pl-2 pr-1 text-[11px] font-bold',
       input: 'px-2.5 py-1.5 text-sm font-medium',
       feeBtn: 'px-1.5 text-[10px]',
     }
   }
   return {
     wrapper: 'rounded-xl',
-    select: 'w-[68px] py-2.5 pl-2 pr-1 text-xs font-bold',
+    select: 'w-[76px] py-2.5 pl-2 pr-1 text-xs font-bold',
     input: 'px-3 py-2.5 text-base font-bold',
     feeBtn: 'px-2 text-[11px]',
   }

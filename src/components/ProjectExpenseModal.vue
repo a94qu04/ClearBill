@@ -476,7 +476,7 @@ async function handleSubmit() {
             <input
               v-model="time"
               type="time"
-              class="w-28 rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs text-slate-800 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+              class="w-32 rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs text-slate-800 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
             />
             <button
               type="button"
