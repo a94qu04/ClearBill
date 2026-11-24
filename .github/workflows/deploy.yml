@@ -36,6 +36,7 @@ jobs:
       - name: 建置 GitHub Pages 正式版（含 PWA）
         env:
           VITE_BASE_PATH: /ClearBill/
+          VITE_GOOGLE_CLIENT_ID: ${{ vars.VITE_GOOGLE_CLIENT_ID || secrets.VITE_GOOGLE_CLIENT_ID }}
         run: npm run build
 
       - name: 設定 GitHub Pages

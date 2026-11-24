@@ -79,22 +79,28 @@ let cachedAccessToken: string | null = null
 let cachedTokenExpiresAt = 0
 let gisScriptLoadPromise: Promise<void> | null = null
 
-export function getSavedGoogleClientId(): string {
-  const envClientId =
-    typeof import.meta !== 'undefined' &&
+export function getBuiltInGoogleClientId(): string {
+  return typeof import.meta !== 'undefined' &&
     typeof import.meta.env?.VITE_GOOGLE_CLIENT_ID === 'string'
-      ? import.meta.env.VITE_GOOGLE_CLIENT_ID.trim()
-      : ''
+    ? import.meta.env.VITE_GOOGLE_CLIENT_ID.trim()
+    : ''
+}
 
-  if (typeof window === 'undefined') return envClientId
+export function hasBuiltInGoogleClientId(): boolean {
+  return Boolean(getBuiltInGoogleClientId())
+}
+
+export function getCustomGoogleClientId(): string {
+  if (typeof window === 'undefined') return ''
   try {
-    return (
-      window.localStorage.getItem(GOOGLE_DRIVE_CLIENT_ID_KEY)?.trim() ||
-      envClientId
-    )
+    return window.localStorage.getItem(GOOGLE_DRIVE_CLIENT_ID_KEY)?.trim() || ''
   } catch {
-    return envClientId
+    return ''
   }
+}
+
+export function getSavedGoogleClientId(): string {
+  return getCustomGoogleClientId() || getBuiltInGoogleClientId()
 }
 
 export function saveGoogleClientId(clientId: string): void {

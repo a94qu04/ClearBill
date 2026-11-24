@@ -3,10 +3,15 @@ import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   Check,
+  CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   Cloud,
   CloudDownload,
   CloudUpload,
+  Copy,
   Download,
+  ExternalLink,
   Globe,
   HardDrive,
   Loader2,
@@ -35,9 +40,11 @@ import { getTodayIso } from '@/core/ledgerHelpers'
 import {
   disconnectGoogleDrive,
   downloadBackupFromGoogleDrive,
+  getBuiltInGoogleClientId,
+  getCustomGoogleClientId,
   getLastGoogleSyncAt,
-  getSavedGoogleClientId,
   GoogleDriveSyncError,
+  hasBuiltInGoogleClientId,
   isGoogleDriveConnected,
   saveGoogleClientId,
   syncWithGoogleDrive,
@@ -73,11 +80,21 @@ const editingCatColor = ref<string>(AVATAR_PALETTE[0])
 // 幣別搜尋新增狀態
 const currencySearchQuery = ref('')
 
-// Google 雲端備份狀態
-const googleClientId = ref(getSavedGoogleClientId())
+// Google 雲端備份狀態（優先讀取建置期內建 VITE_GOOGLE_CLIENT_ID，使用者無需手動輸入）
+const builtInGoogleClientId = getBuiltInGoogleClientId()
+const hasBuiltInClientId = hasBuiltInGoogleClientId()
+const customGoogleClientId = ref(getCustomGoogleClientId())
+const showAdvancedGoogleConfig = ref(false)
+const showGoogleGuide = ref(false)
+const currentOrigin =
+  typeof window !== 'undefined' ? window.location.origin : ''
 const googleLastSyncAt = ref<number | null>(getLastGoogleSyncAt())
 const googleConnected = ref(isGoogleDriveConnected())
 const isGoogleBusy = ref(false)
+
+const effectiveGoogleClientId = computed(
+  () => customGoogleClientId.value.trim() || builtInGoogleClientId,
+)
 
 const filteredCurrencySuggestions = computed(() =>
   searchCurrencyCatalog(currencySearchQuery.value, store.availableCurrencies),
@@ -229,21 +246,44 @@ function resolveGoogleErrorReason(err: unknown): string {
 }
 
 function handleSaveGoogleClientId() {
-  saveGoogleClientId(googleClientId.value)
+  const trimmed = customGoogleClientId.value.trim()
+  saveGoogleClientId(trimmed)
+  if (!trimmed && hasBuiltInClientId) {
+    emit('toast', t('backup.googleResetBuiltInToast'))
+    return
+  }
   emit('toast', t('backup.googleClientIdSavedToast'))
 }
 
+function handleResetBuiltInClientId() {
+  customGoogleClientId.value = ''
+  saveGoogleClientId('')
+  emit('toast', t('backup.googleResetBuiltInToast'))
+}
+
+async function handleCopyCurrentOrigin() {
+  if (!currentOrigin) return
+  try {
+    await navigator.clipboard.writeText(currentOrigin)
+    emit('toast', t('backup.googleOriginCopiedToast'))
+  } catch {
+    // 若瀏覽器未授權剪貼簿則忽略
+  }
+}
+
 async function handleGoogleUpload() {
-  const trimmed = googleClientId.value.trim()
-  if (!trimmed) {
+  const activeClientId = effectiveGoogleClientId.value
+  if (!activeClientId) {
     emit('toast', t('backup.googleNeedClientId'))
     return
   }
-  saveGoogleClientId(trimmed)
+  if (customGoogleClientId.value.trim()) {
+    saveGoogleClientId(customGoogleClientId.value.trim())
+  }
   isGoogleBusy.value = true
   try {
     const res = await syncWithGoogleDrive({
-      clientId: trimmed,
+      clientId: activeClientId,
       onMergeRemote: (rawJson) => store.importAndMergeLedgerBackup(rawJson),
       getMergedBackup: () => store.exportLedgerBackup(),
     })
@@ -274,15 +314,17 @@ async function handleGoogleUpload() {
 }
 
 async function handleGoogleDownloadMerge() {
-  const trimmed = googleClientId.value.trim()
-  if (!trimmed) {
+  const activeClientId = effectiveGoogleClientId.value
+  if (!activeClientId) {
     emit('toast', t('backup.googleNeedClientId'))
     return
   }
-  saveGoogleClientId(trimmed)
+  if (customGoogleClientId.value.trim()) {
+    saveGoogleClientId(customGoogleClientId.value.trim())
+  }
   isGoogleBusy.value = true
   try {
-    const downloaded = await downloadBackupFromGoogleDrive(trimmed, false)
+    const downloaded = await downloadBackupFromGoogleDrive(activeClientId, false)
     if (!downloaded) {
       throw new GoogleDriveSyncError('ERR_DRIVE_NOT_FOUND')
     }
@@ -841,24 +883,141 @@ function fmt(amount: number, currency: string): string {
                   {{ t('backup.googleDesc') }}
                 </p>
 
-                <div class="space-y-1.5">
-                  <label class="block text-[11px] font-semibold text-slate-500 dark:text-slate-400">
-                    {{ t('backup.googleClientIdLabel') }}
-                  </label>
-                  <div class="flex gap-1.5">
-                    <input
-                      v-model="googleClientId"
-                      type="text"
-                      :placeholder="t('backup.googleClientIdPlaceholder')"
-                      class="min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-900 focus:border-emerald-500 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-white"
-                    />
+                <!-- 已內建官方共用 Client ID：預設隱藏輸入框，一鍵即可同步 -->
+                <div v-if="hasBuiltInClientId" class="space-y-2">
+                  <div
+                    class="flex items-start gap-2 rounded-xl border border-emerald-200 bg-emerald-50/70 px-3 py-2 text-[11px] font-medium text-emerald-800 dark:border-emerald-800/70 dark:bg-emerald-950/40 dark:text-emerald-200"
+                  >
+                    <CheckCircle2 class="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                    <span>{{ t('backup.googleBuiltInReady') }}</span>
+                  </div>
+
+                  <button
+                    type="button"
+                    class="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-400 transition hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300"
+                    @click="showAdvancedGoogleConfig = !showAdvancedGoogleConfig"
+                  >
+                    <ChevronUp v-if="showAdvancedGoogleConfig" class="h-3.5 w-3.5" />
+                    <ChevronDown v-else class="h-3.5 w-3.5" />
+                    <span>{{ t('backup.googleAdvancedToggle') }}</span>
+                  </button>
+
+                  <div v-if="showAdvancedGoogleConfig" class="space-y-1.5 pt-0.5">
+                    <div class="flex gap-1.5">
+                      <input
+                        v-model="customGoogleClientId"
+                        type="text"
+                        :placeholder="t('backup.googleClientIdPlaceholder')"
+                        class="min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-900 focus:border-emerald-500 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+                      />
+                      <button
+                        type="button"
+                        class="shrink-0 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                        @click="handleSaveGoogleClientId"
+                      >
+                        {{ t('backup.googleSaveClientId') }}
+                      </button>
+                    </div>
                     <button
+                      v-if="customGoogleClientId.trim()"
                       type="button"
-                      class="shrink-0 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
-                      @click="handleSaveGoogleClientId"
+                      class="text-[11px] font-semibold text-sky-600 hover:underline dark:text-sky-400"
+                      @click="handleResetBuiltInClientId"
                     >
-                      {{ t('backup.googleSaveClientId') }}
+                      {{ t('backup.googleResetBuiltIn') }}
                     </button>
+                  </div>
+                </div>
+
+                <!-- 尚未內建環境變數時：顯示 Client ID 輸入欄與 3 步驟快速引導連結 -->
+                <div v-else class="space-y-2">
+                  <div class="space-y-1.5">
+                    <label class="block text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+                      {{ t('backup.googleClientIdLabel') }}
+                    </label>
+                    <div class="flex gap-1.5">
+                      <input
+                        v-model="customGoogleClientId"
+                        type="text"
+                        :placeholder="t('backup.googleClientIdPlaceholder')"
+                        class="min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-900 focus:border-emerald-500 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+                      />
+                      <button
+                        type="button"
+                        class="shrink-0 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                        @click="handleSaveGoogleClientId"
+                      >
+                        {{ t('backup.googleSaveClientId') }}
+                      </button>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    class="inline-flex items-center gap-1 text-[11px] font-semibold text-sky-600 transition hover:underline dark:text-sky-400"
+                    @click="showGoogleGuide = !showGoogleGuide"
+                  >
+                    <ChevronUp v-if="showGoogleGuide" class="h-3.5 w-3.5" />
+                    <ChevronDown v-else class="h-3.5 w-3.5" />
+                    <span>{{ t('backup.googleGuideToggle') }}</span>
+                  </button>
+
+                  <div
+                    v-if="showGoogleGuide"
+                    class="space-y-2 rounded-xl border border-slate-200 bg-white p-3 text-[11px] text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
+                  >
+                    <ul class="space-y-1.5">
+                      <li>
+                        <a
+                          href="https://console.cloud.google.com/apis/library/drive.googleapis.com"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          class="inline-flex items-center gap-1 font-semibold text-sky-600 hover:underline dark:text-sky-400"
+                        >
+                          <span>{{ t('backup.googleGuideStep1') }}</span>
+                          <ExternalLink class="h-3 w-3 shrink-0" />
+                        </a>
+                      </li>
+                      <li>
+                        <a
+                          href="https://console.cloud.google.com/apis/credentials/consent"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          class="inline-flex items-center gap-1 font-semibold text-sky-600 hover:underline dark:text-sky-400"
+                        >
+                          <span>{{ t('backup.googleGuideStep2') }}</span>
+                          <ExternalLink class="h-3 w-3 shrink-0" />
+                        </a>
+                      </li>
+                      <li>
+                        <a
+                          href="https://console.cloud.google.com/apis/credentials"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          class="inline-flex items-center gap-1 font-semibold text-sky-600 hover:underline dark:text-sky-400"
+                        >
+                          <span>{{ t('backup.googleGuideStep3') }}</span>
+                          <ExternalLink class="h-3 w-3 shrink-0" />
+                        </a>
+                      </li>
+                    </ul>
+
+                    <div
+                      v-if="currentOrigin"
+                      class="space-y-1 border-t border-slate-100 pt-2 dark:border-slate-800"
+                    >
+                      <div class="text-[10px] font-semibold text-slate-400">
+                        {{ t('backup.googleOriginLabel') }}
+                      </div>
+                      <button
+                        type="button"
+                        class="flex w-full items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 font-mono text-[11px] text-slate-700 transition hover:border-sky-400 hover:bg-sky-50/60 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:border-sky-500"
+                        @click="handleCopyCurrentOrigin"
+                      >
+                        <span class="truncate">{{ currentOrigin }}</span>
+                        <Copy class="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                      </button>
+                    </div>
                   </div>
                 </div>
 

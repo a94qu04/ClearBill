@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>隱私權政策 Privacy Policy — ClearBill 清帳</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f8fafc;
+        --card: #ffffff;
+        --text: #0f172a;
+        --muted: #475569;
+        --border: #e2e8f0;
+        --accent: #059669;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #020617;
+          --card: #0f172a;
+          --text: #f1f5f9;
+          --muted: #94a3b8;
+          --border: #1e293b;
+          --accent: #34d399;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans TC',
+          Roboto, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        line-height: 1.75;
+        padding: 32px 16px;
+      }
+      main {
+        max-width: 760px;
+        margin: 0 auto;
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 20px;
+        padding: 32px 28px;
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 1.65rem;
+      }
+      h2 {
+        margin: 28px 0 10px;
+        font-size: 1.1rem;
+        color: var(--accent);
+      }
+      p,
+      li {
+        color: var(--muted);
+        font-size: 0.95rem;
+      }
+      ul {
+        padding-left: 20px;
+      }
+      code {
+        background: rgba(148, 163, 184, 0.16);
+        padding: 2px 6px;
+        border-radius: 6px;
+        font-size: 0.88em;
+      }
+      .meta {
+        font-size: 0.85rem;
+        color: var(--muted);
+        margin-bottom: 20px;
+      }
+      .back-link {
+        display: inline-block;
+        margin-top: 24px;
+        color: var(--accent);
+        text-decoration: none;
+        font-weight: 600;
+      }
+      .back-link:hover {
+        text-decoration: underline;
+      }
+      hr {
+        border: 0;
+        border-top: 1px solid var(--border);
+        margin: 28px 0;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>ClearBill（清帳）隱私權政策</h1>
+      <div class="meta">最後更新日期：2026-11-24</div>
+
+      <p>
+        ClearBill（清帳）是一款以「本地優先（Local-First）」為核心設計的網頁記帳與分帳應用程式。我們高度重視您的資料隱私，本應用程式<strong>不設有任何後端伺服器，也不會蒐集、追蹤或上傳您的個人帳務資料至開發者伺服器</strong>。
+      </p>
+
+      <h2>1. 資料儲存方式</h2>
+      <ul>
+        <li>
+          您建立的所有專案、消費明細、成員與設定皆直接儲存於您個人裝置的瀏覽器本地資料庫（<code>IndexedDB</code> 與 <code>localStorage</code>）。
+        </li>
+        <li>
+          您可隨時匯出本地 JSON 備份檔案，或透過瀏覽器設定清除本地資料。
+        </li>
+      </ul>
+
+      <h2>2. Google 雲端硬碟（Google Drive）同步權限說明</h2>
+      <ul>
+        <li>
+          當您主動點選「Google 雲端硬碟備份／同步」功能並完成 Google 帳號授權時，ClearBill 僅會申請最小權限範圍：<code>https://www.googleapis.com/auth/drive.file</code>。
+        </li>
+        <li>
+          此權限僅允許 ClearBill 在<strong>您自己的 Google 雲端硬碟</strong>中建立、讀取與更新本應用程式專屬的備份檔（<code>clearbill-backup-v1.json</code>），<strong>無法檢視、存取或修改您 Google 雲端硬碟中的任何其他檔案或資料夾</strong>。
+        </li>
+        <li>
+          所有同步連線皆由您的瀏覽器直接與 Google 官方 API 溝通，存取權杖（Access Token）僅暫存於當次瀏覽器記憶體中，不會傳送給任何第三方。
+        </li>
+        <li>
+          您隨時可在應用程式設定中點選「中斷連結」，或前往
+          <a
+            href="https://myaccount.google.com/permissions"
+            target="_blank"
+            rel="noopener noreferrer"
+            style="color: var(--accent)"
+            >Google 帳戶權限管理</a
+          >
+          撤銷 ClearBill 的存取權限。
+        </li>
+      </ul>
+
+      <h2>3. 資料分享與第三方揭露</h2>
+      <p>
+        ClearBill 不會販售、出租或向任何第三方揭露您的使用者資料。本應用程式對 Google API 所取得資訊的使用與傳輸，完全遵守
+        <a
+          href="https://developers.google.com/terms/api-services-user-data-policy"
+          target="_blank"
+          rel="noopener noreferrer"
+          style="color: var(--accent)"
+          >Google API 服務使用者資料政策（Google API Services User Data Policy）</a
+        >，包含「有限使用（Limited Use）」規定。
+      </p>
+
+      <hr />
+
+      <h1>Privacy Policy (English Summary)</h1>
+      <p>
+        ClearBill is a local-first, serverless expense-splitting web application. All ledger data is stored exclusively in your browser's local storage (<code>IndexedDB</code> and <code>localStorage</code>). We do not operate a backend server and do not collect, track, or store your financial records.
+      </p>
+      <ul>
+        <li>
+          <strong>Google Drive Sync</strong>: When you explicitly choose to sync with Google Drive, ClearBill requests only the minimal <code>https://www.googleapis.com/auth/drive.file</code> scope to read and update its own backup file (<code>clearbill-backup-v1.json</code>) stored in <strong>your own Google Drive</strong>. ClearBill cannot access any other files in your Google Drive.
+        </li>
+        <li>
+          <strong>Limited Use Compliance</strong>: ClearBill's use of information received from Google APIs adheres to the Google API Services User Data Policy, including the Limited Use requirements.
+        </li>
+      </ul>
+
+      <a class="back-link" href="./">← 返回 ClearBill（清帳）</a>
+    </main>
+  </body>
+</html>
