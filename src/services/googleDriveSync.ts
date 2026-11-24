@@ -7,7 +7,7 @@ const GOOGLE_DRIVE_ACCOUNT_KEY = 'clearbill_google_account'
 const GOOGLE_DRIVE_AUTO_SYNC_KEY = 'clearbill_google_auto_sync'
 const GOOGLE_DRIVE_DIRTY_KEY = 'clearbill_google_dirty'
 const GOOGLE_DRIVE_REMOTE_MTIME_KEY = 'clearbill_google_remote_mtime'
-const GOOGLE_DRIVE_SESSION_TOKEN_KEY = 'clearbill_google_session_token'
+const GOOGLE_DRIVE_TOKEN_STORAGE_KEY = 'clearbill_google_token_v1'
 
 const GOOGLE_DRIVE_BACKUP_FILENAME = 'clearbill-backup-v1.json'
 const GOOGLE_DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file'
@@ -108,7 +108,9 @@ function restoreSessionTokenIfValid(): void {
   if (cachedAccessToken && Date.now() < cachedTokenExpiresAt) return
   if (typeof window === 'undefined') return
   try {
-    const raw = window.sessionStorage.getItem(GOOGLE_DRIVE_SESSION_TOKEN_KEY)
+    const raw =
+      window.localStorage.getItem(GOOGLE_DRIVE_TOKEN_STORAGE_KEY) ||
+      window.sessionStorage.getItem(GOOGLE_DRIVE_TOKEN_STORAGE_KEY)
     if (!raw) return
     const parsed = JSON.parse(raw) as { token?: string; expiresAt?: number }
     if (
@@ -120,7 +122,8 @@ function restoreSessionTokenIfValid(): void {
       cachedAccessToken = parsed.token
       cachedTokenExpiresAt = parsed.expiresAt
     } else {
-      window.sessionStorage.removeItem(GOOGLE_DRIVE_SESSION_TOKEN_KEY)
+      window.localStorage.removeItem(GOOGLE_DRIVE_TOKEN_STORAGE_KEY)
+      window.sessionStorage.removeItem(GOOGLE_DRIVE_TOKEN_STORAGE_KEY)
     }
   } catch {
     // 忽略儲存受限環境
@@ -131,13 +134,15 @@ function persistSessionToken(token: string, expiresAt: number): void {
   cachedAccessToken = token
   cachedTokenExpiresAt = expiresAt
   if (typeof window === 'undefined') return
+  const serialized = JSON.stringify({ token, expiresAt })
   try {
-    window.sessionStorage.setItem(
-      GOOGLE_DRIVE_SESSION_TOKEN_KEY,
-      JSON.stringify({ token, expiresAt }),
-    )
+    window.localStorage.setItem(GOOGLE_DRIVE_TOKEN_STORAGE_KEY, serialized)
   } catch {
-    // 忽略儲存受限環境
+    try {
+      window.sessionStorage.setItem(GOOGLE_DRIVE_TOKEN_STORAGE_KEY, serialized)
+    } catch {
+      // 忽略儲存受限環境
+    }
   }
 }
 
@@ -146,7 +151,8 @@ function clearSessionToken(): void {
   cachedTokenExpiresAt = 0
   if (typeof window === 'undefined') return
   try {
-    window.sessionStorage.removeItem(GOOGLE_DRIVE_SESSION_TOKEN_KEY)
+    window.localStorage.removeItem(GOOGLE_DRIVE_TOKEN_STORAGE_KEY)
+    window.sessionStorage.removeItem(GOOGLE_DRIVE_TOKEN_STORAGE_KEY)
   } catch {
     // 忽略儲存受限環境
   }
@@ -397,37 +403,35 @@ export async function requestGoogleDriveToken(
     }
   }
 
+  const silentOnly = Boolean(options?.silentOnly)
+
+  // GIS OAuth Token Model 不支援背景無彈窗 prompt='none'；
+  // 靜默模式若無有效快取權杖，直接回報需重新驗證，避免觸發瀏覽器彈窗封鎖或 invalid_request 錯誤
+  if (silentOnly) {
+    throw new GoogleDriveSyncError('ERR_OAUTH_SILENT_REQUIRED')
+  }
+
   await loadGoogleIdentityScript()
   const oauth2 = window.google?.accounts?.oauth2
   if (!oauth2) {
     throw new GoogleDriveSyncError('ERR_GIS_UNAVAILABLE')
   }
 
-  const silentOnly = Boolean(options?.silentOnly)
   const hint =
     !forceSelect ? options?.loginHint ?? getSavedGoogleAccount()?.email : undefined
 
   return new Promise<string>((resolve, reject) => {
     let settled = false
-    const timeoutId = silentOnly
-      ? window.setTimeout(() => {
-          if (settled) return
-          settled = true
-          reject(new GoogleDriveSyncError('ERR_OAUTH_SILENT_REQUIRED'))
-        }, 8000)
-      : null
 
     const finishResolve = (token: string) => {
       if (settled) return
       settled = true
-      if (timeoutId !== null) window.clearTimeout(timeoutId)
       resolve(token)
     }
 
     const finishReject = (err: GoogleDriveSyncError) => {
       if (settled) return
       settled = true
-      if (timeoutId !== null) window.clearTimeout(timeoutId)
       reject(err)
     }
 
@@ -439,7 +443,7 @@ export async function requestGoogleDriveToken(
         if (response.error || !response.access_token) {
           finishReject(
             new GoogleDriveSyncError(
-              silentOnly ? 'ERR_OAUTH_SILENT_REQUIRED' : 'ERR_OAUTH_DENIED',
+              'ERR_OAUTH_DENIED',
               response.error_description || response.error,
             ),
           )
@@ -452,25 +456,15 @@ export async function requestGoogleDriveToken(
       },
       error_callback: (err) => {
         finishReject(
-          new GoogleDriveSyncError(
-            silentOnly ? 'ERR_OAUTH_SILENT_REQUIRED' : 'ERR_OAUTH_POPUP',
-            err.message || err.type,
-          ),
+          new GoogleDriveSyncError('ERR_OAUTH_POPUP', err.message || err.type),
         )
       },
     })
 
-    if (silentOnly) {
-      client.requestAccessToken({
-        prompt: 'none',
-        ...(hint ? { hint } : {}),
-      })
-    } else {
-      client.requestAccessToken({
-        prompt: interactivePrompt,
-        ...(hint ? { hint } : {}),
-      })
-    }
+    client.requestAccessToken({
+      prompt: interactivePrompt,
+      ...(hint ? { hint } : {}),
+    })
   })
 }
 
@@ -529,6 +523,7 @@ async function findExistingBackupFile(
   if (!res.ok) {
     if (res.status === 401) {
       clearSessionToken()
+      throw new GoogleDriveSyncError('ERR_OAUTH_SILENT_REQUIRED', 'HTTP 401')
     }
     throw new GoogleDriveSyncError('ERR_DRIVE_LIST_FAILED', `HTTP ${res.status}`)
   }
@@ -555,6 +550,7 @@ async function fetchDriveBackupJson(
   if (!res.ok) {
     if (res.status === 401) {
       clearSessionToken()
+      throw new GoogleDriveSyncError('ERR_OAUTH_SILENT_REQUIRED', 'HTTP 401')
     }
     throw new GoogleDriveSyncError(
       'ERR_DRIVE_DOWNLOAD_FAILED',
@@ -600,6 +596,7 @@ async function uploadBackupPayload(
   if (!res.ok) {
     if (res.status === 401) {
       clearSessionToken()
+      throw new GoogleDriveSyncError('ERR_OAUTH_SILENT_REQUIRED', 'HTTP 401')
     }
     throw new GoogleDriveSyncError(
       'ERR_DRIVE_UPLOAD_FAILED',
@@ -631,84 +628,103 @@ async function uploadBackupPayload(
 export async function syncWithGoogleDrive(
   options: GoogleDriveSyncOptions,
 ): Promise<GoogleDriveSyncResult> {
-  const token = await requestGoogleDriveToken(
-    options.clientId,
-    options.selectAccount ? 'select_account' : '',
-    { silentOnly: options.silentOnly },
-  )
-  const account = await fetchDriveAccountInfo(token)
-  const existingFile = await findExistingBackupFile(token)
-
-  const hadRemoteFile = Boolean(existingFile)
-  const lastKnownMtime = getSavedRemoteModifiedTime()
-  const remoteChanged =
-    !existingFile ||
-    !lastKnownMtime ||
-    existingFile.modifiedTime !== lastKnownMtime
-
-  const hasLocalChanges = options.hasLocalChanges ?? true
-
-  // 遠端沒有變動且本地也沒有新變更：直接更新同步檢查時間，省去重複下載與上傳
-  if (existingFile && !remoteChanged && !hasLocalChanges) {
-    const syncedAt = Date.now()
-    saveLastGoogleSyncAt(syncedAt)
-    return {
-      fileId: existingFile.id,
-      syncedAt,
-      hadRemoteFile: true,
-      mergeStats: null,
-      skippedNoChanges: true,
-      uploaded: false,
-      account,
+  const runOnce = async (forceRefreshToken = false): Promise<GoogleDriveSyncResult> => {
+    if (forceRefreshToken) {
+      clearSessionToken()
     }
-  }
+    const token = await requestGoogleDriveToken(
+      options.clientId,
+      options.selectAccount ? 'select_account' : '',
+      { silentOnly: options.silentOnly },
+    )
+    const account = await fetchDriveAccountInfo(token)
+    const existingFile = await findExistingBackupFile(token)
 
-  let mergeStats: LedgerMergeStats | null = null
-  if (existingFile && remoteChanged) {
-    const remoteJson = await fetchDriveBackupJson(token, existingFile.id)
-    mergeStats = await options.onMergeRemote(remoteJson)
-    if (existingFile.modifiedTime) {
-      saveRemoteModifiedTime(existingFile.modifiedTime)
+    const hadRemoteFile = Boolean(existingFile)
+    const lastKnownMtime = getSavedRemoteModifiedTime()
+    const remoteChanged =
+      !existingFile ||
+      !lastKnownMtime ||
+      existingFile.modifiedTime !== lastKnownMtime
+
+    const hasLocalChanges = options.hasLocalChanges ?? true
+
+    // 遠端沒有變動且本地也沒有新變更：直接更新同步檢查時間，省去重複下載與上傳
+    if (existingFile && !remoteChanged && !hasLocalChanges) {
+      const syncedAt = Date.now()
+      saveLastGoogleSyncAt(syncedAt)
+      return {
+        fileId: existingFile.id,
+        syncedAt,
+        hadRemoteFile: true,
+        mergeStats: null,
+        skippedNoChanges: true,
+        uploaded: false,
+        account,
+      }
     }
-  }
 
-  // 若雲端已經有檔且本機原本無未上傳變更，且合併僅單純吸收遠端資料，可免除不必要上傳
-  const latestBackup = options.getMergedBackup()
-  const shouldUpload =
-    !existingFile ||
-    hasLocalChanges ||
-    (mergeStats !== null &&
-      (mergeStats.projectsSkipped > 0 || mergeStats.transactionsSkipped > 0))
+    let mergeStats: LedgerMergeStats | null = null
+    if (existingFile && remoteChanged) {
+      const remoteJson = await fetchDriveBackupJson(token, existingFile.id)
+      mergeStats = await options.onMergeRemote(remoteJson)
+      if (existingFile.modifiedTime) {
+        saveRemoteModifiedTime(existingFile.modifiedTime)
+      }
+    }
 
-  if (!shouldUpload && existingFile) {
-    const syncedAt = Date.now()
-    saveLastGoogleSyncAt(syncedAt)
-    setGoogleDriveDirtyChanges(false)
+    // 若雲端已經有檔且本機原本無未上傳變更，且合併僅單純吸收遠端資料，可免除不必要上傳
+    const latestBackup = options.getMergedBackup()
+    const shouldUpload =
+      !existingFile ||
+      hasLocalChanges ||
+      (mergeStats !== null &&
+        (mergeStats.projectsSkipped > 0 || mergeStats.transactionsSkipped > 0))
+
+    if (!shouldUpload && existingFile) {
+      const syncedAt = Date.now()
+      saveLastGoogleSyncAt(syncedAt)
+      setGoogleDriveDirtyChanges(false)
+      return {
+        fileId: existingFile.id,
+        syncedAt,
+        hadRemoteFile: true,
+        mergeStats,
+        skippedNoChanges: false,
+        uploaded: false,
+        account,
+      }
+    }
+
+    const { fileId, syncedAt } = await uploadBackupPayload(
+      token,
+      latestBackup,
+      existingFile?.id ?? null,
+    )
+
     return {
-      fileId: existingFile.id,
+      fileId,
       syncedAt,
-      hadRemoteFile: true,
+      hadRemoteFile,
       mergeStats,
       skippedNoChanges: false,
-      uploaded: false,
+      uploaded: true,
       account,
     }
   }
 
-  const { fileId, syncedAt } = await uploadBackupPayload(
-    token,
-    latestBackup,
-    existingFile?.id ?? null,
-  )
-
-  return {
-    fileId,
-    syncedAt,
-    hadRemoteFile,
-    mergeStats,
-    skippedNoChanges: false,
-    uploaded: true,
-    account,
+  try {
+    return await runOnce(false)
+  } catch (err) {
+    // 手動操作若遇快取 Token 提前 401 失效，自動清快取重新驗證一次並重試
+    if (
+      !options.silentOnly &&
+      err instanceof GoogleDriveSyncError &&
+      err.code === 'ERR_OAUTH_SILENT_REQUIRED'
+    ) {
+      return await runOnce(true)
+    }
+    throw err
   }
 }
 

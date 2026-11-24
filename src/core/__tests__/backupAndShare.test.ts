@@ -111,6 +111,37 @@ describe('backupMergeEngine - JSON 備份匯出與 UUID + updatedAt 合併', () 
     expect(merged.transactions).toHaveLength(2)
   })
 
+  it('能容錯遷移空陣列 links / receiptImages 與空備註之雲端備份檔', () => {
+    const legacyCloudPayload = {
+      schemaVersion: 1,
+      exportedAt: Date.now(),
+      projects: [projectA],
+      transactions: [
+        {
+          ...txLocalOld,
+          id: '55555555-5555-4555-8555-555555555555',
+          note: '',
+          links: [],
+          receiptImages: [],
+          updatedAt: 1700000010000,
+        },
+      ],
+    }
+
+    const merged = parseAndMergeLedgerBackup(
+      { projects: [projectA], transactions: [txLocalOld] },
+      legacyCloudPayload,
+    )
+
+    expect(merged.stats.transactionsAdded).toBe(1)
+    const added = merged.transactions.find(
+      (t) => t.id === '55555555-5555-4555-8555-555555555555',
+    )
+    expect(added?.links).toBeUndefined()
+    expect(added?.receiptImages).toBeUndefined()
+    expect(added?.note).toBeUndefined()
+  })
+
   it('拒絕無效的 JSON 字串與結構損毀之備份資料', () => {
     expect(() =>
       parseAndMergeLedgerBackup(

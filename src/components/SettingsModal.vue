@@ -1009,10 +1009,10 @@ function fmt(amount: number, currency: string): string {
                     @click="handleToggleAutoSync"
                   >
                     <span
-                      class="inline-block h-4 w-4 transform rounded-full bg-white shadow transition"
+                      class="inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform duration-200"
                       :class="
                         store.googleDriveAutoSync
-                          ? 'translate-x-4.5'
+                          ? 'translate-x-[18px]'
                           : 'translate-x-0.5'
                       "
                     />
@@ -1171,6 +1171,21 @@ function fmt(amount: number, currency: string): string {
                   >
                     {{ t('backup.googleUnsyncedHint') }}
                   </span>
+                </div>
+
+                <!-- 發生同步異常時明確顯示具體錯誤原因，方便排查 -->
+                <div
+                  v-if="store.googleDriveStatus === 'error'"
+                  class="rounded-xl border border-rose-200 bg-rose-50/90 px-3 py-2 text-[11px] leading-relaxed text-rose-700 dark:border-rose-900/70 dark:bg-rose-950/40 dark:text-rose-300"
+                >
+                  {{
+                    t('backup.googleSyncError', {
+                      reason: store.googleDriveLastErrorCode
+                        ? t(`backup.errors.${store.googleDriveLastErrorCode}`)
+                        : store.googleDriveLastErrorDetail ||
+                          t('backup.errors.ERR_UNKNOWN'),
+                    })
+                  }}
                 </div>
 
                 <div class="grid grid-cols-1 gap-2">

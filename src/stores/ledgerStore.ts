@@ -319,6 +319,7 @@ export const useLedgerStore = defineStore('ledger', () => {
   const googleDriveLastSyncAt = ref<number | null>(getLastGoogleSyncAt())
   const googleDriveDirty = ref<boolean>(hasGoogleDriveDirtyChanges())
   const googleDriveLastErrorCode = ref<GoogleDriveSyncErrorCode | null>(null)
+  const googleDriveLastErrorDetail = ref<string | null>(null)
   const googleDriveStatus = ref<GoogleDriveSyncStatus>(
     resolveInitialGoogleDriveStatus(),
   )
@@ -726,6 +727,7 @@ export const useLedgerStore = defineStore('ledger', () => {
     const run = async (): Promise<GoogleDriveSyncResult | null> => {
       googleDriveStatus.value = 'syncing'
       googleDriveLastErrorCode.value = null
+      googleDriveLastErrorDetail.value = null
       try {
         const res = await syncWithGoogleDrive({
           clientId: effectiveClientId,
@@ -743,6 +745,7 @@ export const useLedgerStore = defineStore('ledger', () => {
         googleDriveDirty.value = false
         setGoogleDriveDirtyChanges(false)
         googleDriveLastErrorCode.value = null
+        googleDriveLastErrorDetail.value = null
         googleDriveStatus.value = 'synced'
 
         // 首次透過互動式按鈕連結成功時，預設開啟跨裝置自動同步
@@ -758,14 +761,19 @@ export const useLedgerStore = defineStore('ledger', () => {
           if (err.code === 'ERR_OAUTH_SILENT_REQUIRED') {
             googleDriveStatus.value = 'needs_auth'
             googleDriveLastErrorCode.value = null
+            googleDriveLastErrorDetail.value = null
             if (silentOnly) return null
+            throw err
           }
           googleDriveLastErrorCode.value = err.code
+          googleDriveLastErrorDetail.value = err.message
           googleDriveStatus.value = 'error'
           if (silentOnly) return null
           throw err
         }
         googleDriveLastErrorCode.value = null
+        googleDriveLastErrorDetail.value =
+          err instanceof Error ? err.message : String(err)
         googleDriveStatus.value = 'error'
         if (silentOnly) return null
         throw err
@@ -784,6 +792,7 @@ export const useLedgerStore = defineStore('ledger', () => {
   }> {
     googleDriveStatus.value = 'syncing'
     googleDriveLastErrorCode.value = null
+    googleDriveLastErrorDetail.value = null
     try {
       const downloaded = await downloadBackupFromGoogleDrive(clientId, false)
       if (!downloaded) {
@@ -799,6 +808,14 @@ export const useLedgerStore = defineStore('ledger', () => {
     } catch (err) {
       if (err instanceof GoogleDriveSyncError) {
         googleDriveLastErrorCode.value = err.code
+        googleDriveLastErrorDetail.value = err.message
+        if (err.code === 'ERR_OAUTH_SILENT_REQUIRED') {
+          googleDriveStatus.value = 'needs_auth'
+          throw err
+        }
+      } else {
+        googleDriveLastErrorDetail.value =
+          err instanceof Error ? err.message : String(err)
       }
       googleDriveStatus.value = 'error'
       throw err
@@ -814,6 +831,7 @@ export const useLedgerStore = defineStore('ledger', () => {
     googleDriveAccount.value = null
     googleDriveAutoSync.value = false
     googleDriveLastErrorCode.value = null
+    googleDriveLastErrorDetail.value = null
     googleDriveStatus.value = 'disconnected'
   }
 
@@ -1941,28 +1959,17 @@ export const useLedgerStore = defineStore('ledger', () => {
     return ids.length
   }
 
+  /** 將含 Vue Reactive Proxy 的資料深拷貝為純淨 Plain Object，徹底避免 IndexedDB structuredClone DataCloneError */
+  function toPlainClone<T>(value: T): T {
+    return JSON.parse(JSON.stringify(value)) as T
+  }
+
   function cloneProjectsForBackup(list: Project[]): Project[] {
-    return list.map((p) => ({
-      ...p,
-      members: p.members.map((m) => ({ ...m })),
-    }))
+    return toPlainClone(list)
   }
 
   function cloneTransactionsForBackup(list: Transaction[]): Transaction[] {
-    return list.map((tx) => ({
-      ...tx,
-      links: tx.links ? [...tx.links] : undefined,
-      receiptImages: tx.receiptImages ? [...tx.receiptImages] : undefined,
-      splitConfig: tx.splitConfig
-        ? {
-            ...tx.splitConfig,
-            payers: tx.splitConfig.payers
-              ? tx.splitConfig.payers.map((p) => ({ ...p }))
-              : undefined,
-            shares: tx.splitConfig.shares.map((s) => ({ ...s })),
-          }
-        : undefined,
-    }))
+    return toPlainClone(list)
   }
 
   function exportLedgerBackup(): LedgerBackup {
@@ -1970,7 +1977,7 @@ export const useLedgerStore = defineStore('ledger', () => {
       cloneProjectsForBackup(projects.value),
       cloneTransactionsForBackup(transactions.value),
       Date.now(),
-      categories.value.map((c) => ({ ...c })),
+      toPlainClone(categories.value),
     )
   }
 
@@ -1984,7 +1991,7 @@ export const useLedgerStore = defineStore('ledger', () => {
     return createSingleProjectBackupPayload(
       clonedProject,
       clonedTxs,
-      categories.value.map((c) => ({ ...c })),
+      toPlainClone(categories.value),
     )
   }
 
@@ -1993,25 +2000,28 @@ export const useLedgerStore = defineStore('ledger', () => {
   ): Promise<LedgerMergeStats> {
     const merged = parseAndMergeLedgerBackup(
       {
-        projects: projects.value,
-        transactions: transactions.value,
-        categories: categories.value.map((c) => ({ ...c })),
+        projects: cloneProjectsForBackup(projects.value),
+        transactions: cloneTransactionsForBackup(transactions.value),
+        categories: toPlainClone(categories.value),
       },
       raw,
     )
 
-    if (merged.projects.length > 0) {
-      await normalVaultDb.projects.bulkPut(merged.projects)
+    const plainProjects = toPlainClone(merged.projects)
+    const plainTransactions = toPlainClone(merged.transactions)
+
+    if (plainProjects.length > 0) {
+      await normalVaultDb.projects.bulkPut(plainProjects)
     }
-    if (merged.transactions.length > 0) {
-      await normalVaultDb.transactions.bulkPut(merged.transactions)
+    if (plainTransactions.length > 0) {
+      await normalVaultDb.transactions.bulkPut(plainTransactions)
     }
 
-    projects.value = merged.projects
-    transactions.value = merged.transactions
+    projects.value = plainProjects
+    transactions.value = plainTransactions
 
     if (merged.categories.length > 0) {
-      categories.value = merged.categories.map((c) => ({ ...c }))
+      categories.value = toPlainClone(merged.categories)
       saveUserPrefs()
     }
 
@@ -2038,6 +2048,7 @@ export const useLedgerStore = defineStore('ledger', () => {
     googleDriveLastSyncAt,
     googleDriveDirty,
     googleDriveLastErrorCode,
+    googleDriveLastErrorDetail,
     defaultCurrency,
     enabledCurrencies,
     categories,

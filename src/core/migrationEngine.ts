@@ -73,6 +73,20 @@ export function migrateTransaction(raw: unknown): Transaction {
     version = 1
   }
 
+  // 容錯清理：空陣列 links / receiptImages 轉為 undefined，避免觸發 min(1) 驗證失敗
+  if (Array.isArray(payload.links) && payload.links.length === 0) {
+    delete payload.links
+  }
+  if (Array.isArray(payload.receiptImages) && payload.receiptImages.length === 0) {
+    delete payload.receiptImages
+  }
+  if (payload.note === '' || payload.note === null) {
+    delete payload.note
+  }
+  if (payload.projectId === '' || payload.projectId === null) {
+    delete payload.projectId
+  }
+
   return TransactionSchema.parse(payload)
 }
 
