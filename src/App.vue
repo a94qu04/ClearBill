@@ -5,6 +5,8 @@ import {
   Archive,
   ArrowLeft,
   Check,
+  Cloud,
+  CloudOff,
   GripVertical,
   LayoutGrid,
   Plus,
@@ -12,23 +14,32 @@ import {
   Settings,
   Sparkles,
   Undo2,
+  Users,
   X,
 } from 'lucide-vue-next'
 import { AVATAR_PALETTE, useLedgerStore } from '@/stores/ledgerStore'
 import { formatCurrencyAmount } from '@/core/currency'
+import { parseShareInviteHash } from '@/core/realtimeSyncEngine'
 import { refreshLiveExchangeRates } from '@/services/exchangeRateService'
 import {
   parseQuickIntake,
   type ParsedQuickIntakeResult,
 } from '@/core/quickIntakeParser'
-import type { SplitMode, Transaction } from '@/schemas/ledgerSchema'
+import type {
+  ShareInviteParams,
+  SplitMode,
+  Transaction,
+} from '@/schemas/ledgerSchema'
 import AllProjectsModal from '@/components/AllProjectsModal.vue'
+import JoinSharedProjectModal from '@/components/JoinSharedProjectModal.vue'
 import PhotoLightboxModal from '@/components/PhotoLightboxModal.vue'
 import ProjectExpenseModal from '@/components/ProjectExpenseModal.vue'
 import ProjectSettleTab from '@/components/ProjectSettleTab.vue'
 import ProjectSettingsTab from '@/components/ProjectSettingsTab.vue'
+import ProjectShareModal from '@/components/ProjectShareModal.vue'
 import SettingsModal from '@/components/SettingsModal.vue'
 import SettlementPaymentModal from '@/components/SettlementPaymentModal.vue'
+import SyncDeletionGuardModal from '@/components/SyncDeletionGuardModal.vue'
 import TransactionListSection from '@/components/TransactionListSection.vue'
 
 type ActiveView = 'home' | 'project_create' | 'project_workspace'
@@ -42,6 +53,8 @@ const activeView = ref<ActiveView>('home')
 const projectTab = ref<ProjectTab>('expenses')
 const settingsOpen = ref(false)
 const allProjectsSheetOpen = ref(false)
+const shareModalOpen = ref(false)
+const pendingJoinInvite = ref<ShareInviteParams | null>(null)
 const isDark = ref(false)
 const isTouchDevice = ref(false)
 const previewPhotos = ref<string[]>([])
@@ -404,10 +417,22 @@ function handleRestoredFromSettings(projectId?: string) {
   }
 }
 
-// 保留 iOS 捷徑 / Web Share Target Hash 網址接收能力
+// 處理外部 Hash 路由：支援 #/join?s=...&k=...（多人即時共享邀請）與 #/quick-add（iOS 捷徑）
 function handleHashQuickAdd() {
   if (typeof window === 'undefined') return
   const hash = window.location.hash
+
+  if (hash.startsWith('#/join')) {
+    const invite = parseShareInviteHash(hash)
+    window.history.replaceState(null, '', window.location.pathname)
+    if (invite) {
+      pendingJoinInvite.value = invite
+    } else {
+      showToast(t('realtime.errors.ERR_PERMISSION_DENIED'))
+    }
+    return
+  }
+
   if (!hash.startsWith('#/quick-add')) return
 
   const parsed = parseQuickIntake(window.location.href, {
@@ -429,17 +454,35 @@ function handleHashQuickAdd() {
   }
 }
 
+function handleJoinedSharedProject(projectId: string) {
+  pendingJoinInvite.value = null
+  store.selectProject(projectId)
+  projectTab.value = 'expenses'
+  activeView.value = 'project_workspace'
+}
+
+function handleNetworkOnline() {
+  void store.startAllSharedProjectListeners()
+  void store.flushAllSharedProjectsOutbox()
+  void refreshLiveExchangeRates()
+}
+
 onMounted(async () => {
   initTheme()
   detectTouchDevice()
   void refreshLiveExchangeRates()
   await store.initFromIndexedDb()
+  void store.startAllSharedProjectListeners()
+  void store.flushAllSharedProjectsOutbox()
   handleHashQuickAdd()
   window.addEventListener('hashchange', handleHashQuickAdd)
+  window.addEventListener('online', handleNetworkOnline)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('hashchange', handleHashQuickAdd)
+  window.removeEventListener('online', handleNetworkOnline)
+  store.stopAllSharedProjectListeners()
   if (toastTimer) clearTimeout(toastTimer)
 })
 </script>
@@ -645,7 +688,13 @@ onBeforeUnmount(() => {
                 @click="openProjectWorkspace(proj.id)"
               >
                 <div class="flex w-full items-center justify-between gap-1.5">
-                  <span class="truncate text-xs font-bold">{{ proj.name }}</span>
+                  <span class="flex min-w-0 items-center gap-1">
+                    <Cloud
+                      v-if="proj.syncMeta?.mode === 'firestore'"
+                      class="h-3 w-3 shrink-0 text-emerald-600 dark:text-emerald-400"
+                    />
+                    <span class="truncate text-xs font-bold">{{ proj.name }}</span>
+                  </span>
                   <span class="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500 dark:bg-slate-800 dark:text-slate-400">
                     {{ proj.baseCurrency }}
                   </span>
@@ -829,29 +878,83 @@ onBeforeUnmount(() => {
         class="space-y-4"
       >
         <section
-          class="flex items-center justify-between rounded-2xl bg-slate-900 px-5 py-4 text-white dark:border dark:border-slate-800"
+          class="space-y-3 rounded-2xl bg-slate-900 px-5 py-4 text-white dark:border dark:border-slate-800"
         >
-          <div>
-            <div class="flex flex-wrap items-center gap-1.5 text-xs font-medium text-emerald-400">
-              <span>
-                {{ t('project.memberCount', { count: store.activeProject.members.length }) }}
-                · {{ store.activeProject.baseCurrency }}
-              </span>
-              <span
-                v-if="store.activeProject.isArchived"
-                class="inline-flex items-center gap-1 rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-bold text-amber-300"
-              >
-                <Archive class="h-3 w-3" />
-                <span>{{ t('project.archivedBadge') }}</span>
-              </span>
+          <div class="flex items-center justify-between gap-3">
+            <div class="min-w-0">
+              <div class="flex flex-wrap items-center gap-1.5 text-xs font-medium text-emerald-400">
+                <span>
+                  {{ t('project.memberCount', { count: store.activeProject.members.length }) }}
+                  · {{ store.activeProject.baseCurrency }}
+                </span>
+                <span
+                  v-if="store.activeProject.isArchived"
+                  class="inline-flex items-center gap-1 rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-bold text-amber-300"
+                >
+                  <Archive class="h-3 w-3" />
+                  <span>{{ t('project.archivedBadge') }}</span>
+                </span>
+              </div>
+              <div class="mt-0.5 truncate text-lg font-bold">{{ store.activeProject.name }}</div>
             </div>
-            <div class="mt-0.5 text-lg font-bold">{{ store.activeProject.name }}</div>
+            <div class="shrink-0 text-right">
+              <div class="text-[11px] text-slate-400">{{ t('project.totalSpent') }}</div>
+              <div class="text-xl font-extrabold tabular-nums text-emerald-400">
+                {{ fmt(activeProjectTotalSpent, store.activeProject.baseCurrency) }}
+              </div>
+            </div>
           </div>
-          <div class="text-right">
-            <div class="text-[11px] text-slate-400">{{ t('project.totalSpent') }}</div>
-            <div class="text-xl font-extrabold tabular-nums text-emerald-400">
-              {{ fmt(activeProjectTotalSpent, store.activeProject.baseCurrency) }}
-            </div>
+
+          <!-- 多人即時協作共享狀態與邀請入口 -->
+          <div class="flex items-center justify-between gap-2 border-t border-white/10 pt-2.5">
+            <button
+              type="button"
+              class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-bold transition"
+              :class="
+                store.activeProject.syncMeta?.mode === 'firestore'
+                  ? 'bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30'
+                  : 'bg-white/10 text-slate-200 hover:bg-white/20'
+              "
+              @click="shareModalOpen = true"
+            >
+              <template v-if="store.activeProject.syncMeta?.mode === 'firestore'">
+                <CloudOff
+                  v-if="store.syncStatusByProject[store.activeProject.id] === 'offline'"
+                  class="h-3.5 w-3.5 text-amber-300"
+                />
+                <span
+                  v-else
+                  class="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.9)]"
+                />
+                <span>
+                  {{
+                    (store.outboxCountByProject[store.activeProject.id] ?? 0) > 0
+                      ? t('realtime.entryOfflineBadge', {
+                          count: store.outboxCountByProject[store.activeProject.id],
+                        })
+                      : t('realtime.entrySyncedBadge')
+                  }}
+                </span>
+              </template>
+              <template v-else>
+                <Users class="h-3.5 w-3.5 text-emerald-400" />
+                <span>{{ t('realtime.entryInviteButton') }}</span>
+              </template>
+            </button>
+
+            <span
+              v-if="
+                store.activeProject.syncMeta?.mode === 'firestore' &&
+                store.activeProject.syncMeta.myMemberId
+              "
+              class="truncate text-[11px] text-slate-400"
+            >
+              {{
+                store.activeProject.members.find(
+                  (m) => m.id === store.activeProject?.syncMeta?.myMemberId,
+                )?.name
+              }}
+            </span>
           </div>
         </section>
 
@@ -979,5 +1082,24 @@ onBeforeUnmount(() => {
       :initial-index="previewPhotoIndex"
       @close="closePhotoLightbox"
     />
+
+    <!-- 多人即時協作共享與邀請彈窗 -->
+    <ProjectShareModal
+      :open="shareModalOpen"
+      :project="store.activeProject"
+      @close="shareModalOpen = false"
+      @toast="showToast($event)"
+    />
+
+    <!-- 旅伴透過 #/join 邀請連結入團與認領身分彈窗 -->
+    <JoinSharedProjectModal
+      :invite="pendingJoinInvite"
+      @close="pendingJoinInvite = null"
+      @joined="handleJoinedSharedProject"
+      @toast="showToast($event)"
+    />
+
+    <!-- 異常大量遠端刪除熔斷保護視窗 -->
+    <SyncDeletionGuardModal @toast="showToast($event)" />
   </div>
 </template>

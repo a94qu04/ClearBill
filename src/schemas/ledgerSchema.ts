@@ -122,6 +122,20 @@ export const ProjectMemberSchema = z.object({
 })
 export type ProjectMember = z.infer<typeof ProjectMemberSchema>
 
+/** 專案即時協作同步中繼資訊（未開啟共享時省略，維持 100% 本地） */
+export const ProjectSyncMetaSchema = z.object({
+  mode: z.enum(['local', 'firestore']).default('local'),
+  shareId: z.string().trim().min(8).max(64).optional(),
+  accessKey: z.string().trim().min(16).max(128).optional(),
+  role: z.enum(['owner', 'editor']).optional(),
+  /** 此裝置使用者在該團中認領之成員 ID（用於預設墊付人與視角顯示） */
+  myMemberId: z.string().trim().min(1).optional(),
+  /** 是否一併同步收據圖片至雲端（單筆圖片過大時會自動降級僅同步文字） */
+  syncReceiptImages: z.boolean().optional(),
+  lastSyncedAt: z.number().int().nonnegative().optional(),
+})
+export type ProjectSyncMeta = z.infer<typeof ProjectSyncMetaSchema>
+
 /** 旅遊 / 分帳專案結構 */
 export const ProjectSchema = z.object({
   id: z.string().uuid('專案 ID 必須為標準 UUID'),
@@ -133,11 +147,36 @@ export const ProjectSchema = z.object({
   defaultPayerId: z.string().trim().min(1).optional(),
   isActive: z.boolean().default(true),
   isArchived: z.boolean().optional(),
+  syncMeta: ProjectSyncMetaSchema.optional(),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
   isDeleted: z.boolean().optional(),
 })
 export type Project = z.infer<typeof ProjectSchema>
+
+/** 共享專案邀請連結參數驗證結構 */
+export const ShareInviteParamsSchema = z.object({
+  shareId: z
+    .string()
+    .trim()
+    .regex(/^[A-Za-z0-9_-]{8,64}$/, '無效的共享專案代碼'),
+  accessKey: z
+    .string()
+    .trim()
+    .regex(/^[A-Za-z0-9_-]{16,128}$/, '無效的共享存取金鑰'),
+})
+export type ShareInviteParams = z.infer<typeof ShareInviteParamsSchema>
+
+/** Firebase Web App 設定驗證結構 */
+export const FirebaseWebConfigSchema = z.object({
+  apiKey: z.string().trim().min(10),
+  authDomain: z.string().trim().min(3),
+  projectId: z.string().trim().min(2),
+  storageBucket: z.string().trim().optional(),
+  messagingSenderId: z.string().trim().optional(),
+  appId: z.string().trim().min(5),
+})
+export type FirebaseWebConfig = z.infer<typeof FirebaseWebConfigSchema>
 
 /** 自訂消費分類結構 */
 export const CustomCategorySchema = z.object({

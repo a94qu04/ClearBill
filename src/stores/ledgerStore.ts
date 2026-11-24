@@ -12,7 +12,11 @@ import {
   type TransactionType,
 } from '@/schemas/ledgerSchema'
 import {
+  clearProjectSyncOutbox,
+  enqueueSyncOutbox,
+  listSyncOutbox,
   normalVaultDb,
+  removeSyncOutboxKeys,
   saveProjectToNormalVault,
   saveTransactionToNormalVault,
 } from '@/db/normalVaultDb'
@@ -23,6 +27,15 @@ import {
   parseAndMergeLedgerBackup,
   type LedgerMergeStats,
 } from '@/core/backupMergeEngine'
+import { reconcileRemoteTransactions } from '@/core/realtimeSyncEngine'
+import {
+  isFirebaseConfigured,
+  joinSharedProjectOnFirestore,
+  publishProjectToFirestore,
+  pushProjectUpdateToFirestore,
+  pushTransactionToFirestore,
+  subscribeSharedProject,
+} from '@/services/firestoreSyncService'
 
 const ACTIVE_PROJECT_STORAGE_KEY = 'clearbill_active_project_id'
 const PREFS_STORAGE_KEY = 'clearbill_user_prefs_v2'
@@ -67,6 +80,22 @@ function generateUuid(): string {
     const v = c === 'x' ? r : (r & 0x3) | 0x8
     return v.toString(16)
   })
+}
+
+export type ProjectRealtimeSyncStatus =
+  | 'local'
+  | 'connecting'
+  | 'synced'
+  | 'offline'
+  | 'error'
+
+export interface PendingDeletionGuardAlert {
+  projectId: string
+  projectName: string
+  localActiveCount: number
+  newlyDeletedCount: number
+  deletionRatio: number
+  pendingDeletes: Transaction[]
 }
 
 export interface CreateProjectPayload {
@@ -248,6 +277,13 @@ export const useLedgerStore = defineStore('ledger', () => {
   const activeProjectId = ref<string | null>(null)
   const isLoaded = ref(false)
   const isStoragePersisted = ref(false)
+
+  // 即時多人協作同步狀態、離線待補傳計數與異常大量刪除熔斷告警
+  const syncStatusByProject = ref<Record<string, ProjectRealtimeSyncStatus>>({})
+  const outboxCountByProject = ref<Record<string, number>>({})
+  const pendingDeletionGuard = ref<PendingDeletionGuardAlert | null>(null)
+  const activeRealtimeUnsubscribers = new Map<string, () => void>()
+  const flushingProjectIds = new Set<string>()
 
   // 使用者自訂偏好（預設幣別、可自由增刪的常用幣別、可自由增刪改的消費分類、專案排序、記憶匯率）
   const defaultCurrency = ref<string>(initialPrefs.defaultCurrency)
@@ -559,6 +595,486 @@ export const useLedgerStore = defineStore('ledger', () => {
     saveUserPrefs()
   }
 
+  async function refreshOutboxCounts(): Promise<void> {
+    try {
+      const items = await listSyncOutbox()
+      const counts: Record<string, number> = {}
+      for (const item of items) {
+        counts[item.projectId] = (counts[item.projectId] ?? 0) + 1
+      }
+      outboxCountByProject.value = counts
+    } catch {
+      // 忽略受限環境
+    }
+  }
+
+  function isProjectRealtimeSynced(projectId: string | undefined): boolean {
+    if (!projectId) return false
+    const proj = projects.value.find((p) => p.id === projectId && !p.isDeleted)
+    return Boolean(proj?.syncMeta?.mode === 'firestore' && proj.syncMeta.shareId)
+  }
+
+  async function enqueueAndFlushProjectChange(
+    projectId: string | undefined,
+    entityType: 'project' | 'transaction',
+    entityId: string,
+    updatedAt: number,
+  ): Promise<void> {
+    if (!projectId || !isProjectRealtimeSynced(projectId)) return
+    await enqueueSyncOutbox(projectId, entityType, entityId, updatedAt)
+    await refreshOutboxCounts()
+    void flushProjectOutbox(projectId)
+  }
+
+  async function flushProjectOutbox(projectId: string): Promise<void> {
+    const proj = projects.value.find((p) => p.id === projectId && !p.isDeleted)
+    const shareId = proj?.syncMeta?.shareId
+    if (!proj || proj.syncMeta?.mode !== 'firestore' || !shareId) return
+    if (!isFirebaseConfigured()) return
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      syncStatusByProject.value = {
+        ...syncStatusByProject.value,
+        [projectId]: 'offline',
+      }
+      return
+    }
+    if (flushingProjectIds.has(projectId)) return
+
+    flushingProjectIds.add(projectId)
+    try {
+      const pendingItems = await listSyncOutbox(projectId)
+      if (pendingItems.length === 0) return
+
+      const syncImages = proj.syncMeta.syncReceiptImages !== false
+      const succeededKeys: string[] = []
+
+      for (const item of pendingItems) {
+        if (item.entityType === 'project') {
+          const latestProj = projects.value.find((p) => p.id === projectId)
+          if (latestProj) {
+            await pushProjectUpdateToFirestore(shareId, latestProj)
+          }
+          succeededKeys.push(item.key)
+        } else {
+          const latestTx = transactions.value.find((t) => t.id === item.entityId)
+          if (latestTx) {
+            await pushTransactionToFirestore(shareId, latestTx, syncImages)
+          }
+          succeededKeys.push(item.key)
+        }
+      }
+
+      await removeSyncOutboxKeys(succeededKeys)
+      await refreshOutboxCounts()
+      syncStatusByProject.value = {
+        ...syncStatusByProject.value,
+        [projectId]: 'synced',
+      }
+    } catch {
+      syncStatusByProject.value = {
+        ...syncStatusByProject.value,
+        [projectId]:
+          typeof navigator !== 'undefined' && navigator.onLine === false
+            ? 'offline'
+            : 'error',
+      }
+    } finally {
+      flushingProjectIds.delete(projectId)
+    }
+  }
+
+  async function flushAllSharedProjectsOutbox(): Promise<void> {
+    const sharedIds = projects.value
+      .filter((p) => !p.isDeleted && p.syncMeta?.mode === 'firestore' && p.syncMeta.shareId)
+      .map((p) => p.id)
+    for (const id of sharedIds) {
+      await flushProjectOutbox(id)
+    }
+  }
+
+  async function applyRemoteProjectUpdate(
+    localProjectId: string,
+    remoteProject: Project,
+  ): Promise<void> {
+    const localProj = projects.value.find((p) => p.id === localProjectId)
+    if (!localProj) return
+    if (remoteProject.updatedAt <= localProj.updatedAt) return
+
+    const mergedProject: Project = {
+      ...remoteProject,
+      id: localProj.id,
+      // 保留此裝置私有欄位（封存狀態、同步資訊與本機認領身分）
+      isArchived: localProj.isArchived,
+      defaultPayerId:
+        localProj.syncMeta?.myMemberId &&
+        remoteProject.members.some((m) => m.id === localProj.syncMeta?.myMemberId)
+          ? localProj.syncMeta.myMemberId
+          : remoteProject.defaultPayerId,
+      syncMeta: localProj.syncMeta
+        ? { ...localProj.syncMeta, lastSyncedAt: Date.now() }
+        : undefined,
+    }
+
+    const saved = await saveProjectToNormalVault(mergedProject)
+    projects.value = projects.value.map((p) => (p.id === localProjectId ? saved : p))
+  }
+
+  async function applyRemoteTransactionsList(
+    localProjectId: string,
+    txList: Transaction[],
+  ): Promise<void> {
+    if (txList.length === 0) return
+
+    const localMap = new Map(transactions.value.map((t) => [t.id, t]))
+    const toPersist: Transaction[] = []
+
+    for (const incoming of txList) {
+      const existing = localMap.get(incoming.id)
+      // 若遠端因圖片體積過大略過圖片，保留本地既有圖片避免遺失
+      const preservedImages =
+        (!incoming.receiptImages || incoming.receiptImages.length === 0) &&
+        existing?.receiptImages &&
+        existing.receiptImages.length > 0
+          ? [...existing.receiptImages]
+          : incoming.receiptImages
+
+      const normalized: Transaction = {
+        ...incoming,
+        projectId: localProjectId,
+        receiptImages: preservedImages,
+      }
+      toPersist.push(normalized)
+      localMap.set(normalized.id, normalized)
+    }
+
+    await normalVaultDb.transactions.bulkPut(toPersist)
+    transactions.value = Array.from(localMap.values())
+  }
+
+  async function handleRemoteTransactionsBatch(
+    localProjectId: string,
+    remoteTxs: Transaction[],
+  ): Promise<void> {
+    const localProj = projects.value.find((p) => p.id === localProjectId)
+    if (!localProj) return
+
+    const localProjectTxs = transactions.value.filter(
+      (tx) => tx.projectId === localProjectId,
+    )
+    const reconciled = reconcileRemoteTransactions(localProjectTxs, remoteTxs)
+
+    // 先安全套用遠端的新增與一般修改
+    if (reconciled.safeUpserts.length > 0) {
+      await applyRemoteTransactionsList(localProjectId, reconciled.safeUpserts)
+    }
+
+    // 異常大量刪除熔斷器：達門檻時自動攔截並要求使用者確認
+    if (reconciled.circuitBreaker.triggered) {
+      pendingDeletionGuard.value = {
+        projectId: localProjectId,
+        projectName: localProj.name,
+        localActiveCount: reconciled.circuitBreaker.localActiveCount,
+        newlyDeletedCount: reconciled.circuitBreaker.newlyDeletedCount,
+        deletionRatio: reconciled.circuitBreaker.deletionRatio,
+        pendingDeletes: reconciled.incomingDeletes,
+      }
+      return
+    }
+
+    if (reconciled.incomingDeletes.length > 0) {
+      await applyRemoteTransactionsList(localProjectId, reconciled.incomingDeletes)
+    }
+
+    syncStatusByProject.value = {
+      ...syncStatusByProject.value,
+      [localProjectId]: 'synced',
+    }
+  }
+
+  async function approvePendingRemoteDeletes(): Promise<number> {
+    const guard = pendingDeletionGuard.value
+    if (!guard) return 0
+    pendingDeletionGuard.value = null
+    await applyRemoteTransactionsList(guard.projectId, guard.pendingDeletes)
+    return guard.pendingDeletes.length
+  }
+
+  async function rejectPendingRemoteDeletes(): Promise<number> {
+    const guard = pendingDeletionGuard.value
+    if (!guard) return 0
+    pendingDeletionGuard.value = null
+
+    const now = Date.now()
+    let restoredCount = 0
+    for (const blockedDelete of guard.pendingDeletes) {
+      const localTx = transactions.value.find((t) => t.id === blockedDelete.id)
+      if (!localTx || localTx.isDeleted) continue
+      const bumped: Transaction = {
+        ...localTx,
+        isDeleted: false,
+        updatedAt: Math.max(now, blockedDelete.updatedAt + 1),
+      }
+      const saved = await saveTransactionToNormalVault(bumped)
+      transactions.value = transactions.value.map((t) =>
+        t.id === saved.id ? saved : t,
+      )
+      await enqueueAndFlushProjectChange(
+        guard.projectId,
+        'transaction',
+        saved.id,
+        saved.updatedAt,
+      )
+      restoredCount += 1
+    }
+    return restoredCount
+  }
+
+  function unsubscribeProjectRealtime(projectId: string): void {
+    const unsub = activeRealtimeUnsubscribers.get(projectId)
+    if (unsub) {
+      unsub()
+      activeRealtimeUnsubscribers.delete(projectId)
+    }
+  }
+
+  async function startProjectRealtimeListener(projectId: string): Promise<void> {
+    const proj = projects.value.find((p) => p.id === projectId && !p.isDeleted)
+    const shareId = proj?.syncMeta?.shareId
+    if (!proj || proj.syncMeta?.mode !== 'firestore' || !shareId) return
+    if (!isFirebaseConfigured()) {
+      syncStatusByProject.value = {
+        ...syncStatusByProject.value,
+        [projectId]: 'error',
+      }
+      return
+    }
+    if (activeRealtimeUnsubscribers.has(projectId)) return
+
+    syncStatusByProject.value = {
+      ...syncStatusByProject.value,
+      [projectId]: 'connecting',
+    }
+
+    try {
+      const unsub = await subscribeSharedProject(shareId, {
+        onProjectChange: (remoteProj) => {
+          void applyRemoteProjectUpdate(projectId, remoteProj)
+        },
+        onTransactionsBatch: (remoteTxs) => {
+          void handleRemoteTransactionsBatch(projectId, remoteTxs)
+        },
+        onError: () => {
+          syncStatusByProject.value = {
+            ...syncStatusByProject.value,
+            [projectId]:
+              typeof navigator !== 'undefined' && navigator.onLine === false
+                ? 'offline'
+                : 'error',
+          }
+        },
+      })
+      activeRealtimeUnsubscribers.set(projectId, unsub)
+      syncStatusByProject.value = {
+        ...syncStatusByProject.value,
+        [projectId]: 'synced',
+      }
+      void flushProjectOutbox(projectId)
+    } catch {
+      syncStatusByProject.value = {
+        ...syncStatusByProject.value,
+        [projectId]:
+          typeof navigator !== 'undefined' && navigator.onLine === false
+            ? 'offline'
+            : 'error',
+      }
+    }
+  }
+
+  async function startAllSharedProjectListeners(): Promise<void> {
+    if (!isFirebaseConfigured()) return
+    const sharedProjects = projects.value.filter(
+      (p) => !p.isDeleted && p.syncMeta?.mode === 'firestore' && p.syncMeta.shareId,
+    )
+    for (const proj of sharedProjects) {
+      await startProjectRealtimeListener(proj.id)
+    }
+  }
+
+  function stopAllSharedProjectListeners(): void {
+    for (const unsub of activeRealtimeUnsubscribers.values()) {
+      unsub()
+    }
+    activeRealtimeUnsubscribers.clear()
+  }
+
+  async function enableProjectRealtimeSync(
+    projectId: string,
+    options: { myMemberId?: string; syncReceiptImages?: boolean } = {},
+  ): Promise<{ shareId: string; accessKey: string; omittedImageTxCount: number }> {
+    const existing = projects.value.find((p) => p.id === projectId && !p.isDeleted)
+    if (!existing) {
+      throw new Error('ERR_PROJECT_NOT_FOUND')
+    }
+
+    const syncImages = options.syncReceiptImages !== false
+    const projTxs = transactions.value.filter((tx) => tx.projectId === projectId)
+    const published = await publishProjectToFirestore(existing, projTxs, syncImages)
+
+    const updated: Project = {
+      ...existing,
+      defaultPayerId: options.myMemberId || existing.defaultPayerId,
+      syncMeta: {
+        mode: 'firestore',
+        shareId: published.shareId,
+        accessKey: published.accessKey,
+        role: 'owner',
+        myMemberId: options.myMemberId || existing.defaultPayerId,
+        syncReceiptImages: syncImages,
+        lastSyncedAt: published.syncedAt,
+      },
+      members: existing.members.map((m) => ({ ...m })),
+    }
+
+    const saved = await saveProjectToNormalVault(updated)
+    projects.value = projects.value.map((p) => (p.id === projectId ? saved : p))
+    await startProjectRealtimeListener(projectId)
+
+    return {
+      shareId: published.shareId,
+      accessKey: published.accessKey,
+      omittedImageTxCount: published.omittedImageTxCount,
+    }
+  }
+
+  async function fetchSharedProjectForJoin(
+    shareId: string,
+    accessKey: string,
+  ): Promise<{ project: Project; transactions: Transaction[] }> {
+    const res = await joinSharedProjectOnFirestore(shareId, accessKey)
+    return { project: res.project, transactions: res.transactions }
+  }
+
+  async function finalizeJoinSharedProject(params: {
+    shareId: string
+    accessKey: string
+    remoteProject: Project
+    remoteTransactions: Transaction[]
+    selectedMemberId?: string
+    newMemberName?: string
+  }): Promise<Project> {
+    const now = Date.now()
+    let members = params.remoteProject.members.map((m) => ({ ...m }))
+    let claimedMemberId = params.selectedMemberId
+    let addedNewMember = false
+
+    const trimmedNewName = params.newMemberName?.trim()
+    if (!claimedMemberId && trimmedNewName) {
+      const createdMember: ProjectMember = {
+        id: `m_${members.length + 1}_${now.toString(36)}`,
+        name: trimmedNewName,
+        avatarColor: AVATAR_PALETTE[members.length % AVATAR_PALETTE.length],
+      }
+      members = [...members, createdMember]
+      claimedMemberId = createdMember.id
+      addedNewMember = true
+    }
+
+    const existingLocal = projects.value.find(
+      (p) => p.id === params.remoteProject.id,
+    )
+
+    const joinedProject: Project = {
+      ...params.remoteProject,
+      members,
+      isActive: true,
+      isDeleted: false,
+      isArchived: false,
+      defaultPayerId: claimedMemberId || members[0]?.id,
+      updatedAt: addedNewMember
+        ? Math.max(now, params.remoteProject.updatedAt + 1)
+        : params.remoteProject.updatedAt,
+      syncMeta: {
+        mode: 'firestore',
+        shareId: params.shareId,
+        accessKey: params.accessKey,
+        role: existingLocal?.syncMeta?.role ?? 'editor',
+        myMemberId: claimedMemberId || members[0]?.id,
+        syncReceiptImages: true,
+        lastSyncedAt: now,
+      },
+    }
+
+    const savedProj = await saveProjectToNormalVault(joinedProject)
+    if (existingLocal) {
+      projects.value = projects.value.map((p) =>
+        p.id === savedProj.id ? savedProj : p,
+      )
+    } else {
+      projects.value = [savedProj, ...projects.value]
+      projectOrder.value = [
+        savedProj.id,
+        ...projectOrder.value.filter((id) => id !== savedProj.id),
+      ]
+      saveUserPrefs()
+    }
+
+    await applyRemoteTransactionsList(savedProj.id, params.remoteTransactions)
+
+    if (addedNewMember) {
+      await enqueueAndFlushProjectChange(
+        savedProj.id,
+        'project',
+        savedProj.id,
+        savedProj.updatedAt,
+      )
+    }
+
+    activeProjectId.value = savedProj.id
+    persistActiveProjectId(savedProj.id)
+    await startProjectRealtimeListener(savedProj.id)
+    return savedProj
+  }
+
+  async function setMyMemberForProject(
+    projectId: string,
+    memberId: string,
+  ): Promise<void> {
+    const existing = projects.value.find((p) => p.id === projectId && !p.isDeleted)
+    if (!existing) return
+    if (!existing.members.some((m) => m.id === memberId)) return
+
+    const updated: Project = {
+      ...existing,
+      defaultPayerId: memberId,
+      syncMeta: existing.syncMeta
+        ? { ...existing.syncMeta, myMemberId: memberId }
+        : undefined,
+      members: existing.members.map((m) => ({ ...m })),
+    }
+    const saved = await saveProjectToNormalVault(updated)
+    projects.value = projects.value.map((p) => (p.id === projectId ? saved : p))
+  }
+
+  async function stopProjectRealtimeSync(projectId: string): Promise<void> {
+    unsubscribeProjectRealtime(projectId)
+    await clearProjectSyncOutbox(projectId)
+    await refreshOutboxCounts()
+
+    const existing = projects.value.find((p) => p.id === projectId)
+    if (!existing) return
+    const updated: Project = {
+      ...existing,
+      syncMeta: undefined,
+      members: existing.members.map((m) => ({ ...m })),
+    }
+    const saved = await saveProjectToNormalVault(updated)
+    projects.value = projects.value.map((p) => (p.id === projectId ? saved : p))
+    syncStatusByProject.value = {
+      ...syncStatusByProject.value,
+      [projectId]: 'local',
+    }
+  }
+
   async function initFromIndexedDb(): Promise<void> {
     if (isLoaded.value) return
     try {
@@ -568,6 +1084,7 @@ export const useLedgerStore = defineStore('ledger', () => {
       ])
       projects.value = loadedProjects
       transactions.value = loadedTransactions
+      await refreshOutboxCounts()
 
       const savedId =
         typeof window !== 'undefined'
@@ -648,6 +1165,7 @@ export const useLedgerStore = defineStore('ledger', () => {
 
     const saved = await saveProjectToNormalVault(updated)
     projects.value = projects.value.map((p) => (p.id === projectId ? saved : p))
+    await enqueueAndFlushProjectChange(projectId, 'project', saved.id, saved.updatedAt)
     return saved
   }
 
@@ -677,6 +1195,7 @@ export const useLedgerStore = defineStore('ledger', () => {
 
     const saved = await saveProjectToNormalVault(updated)
     projects.value = projects.value.map((p) => (p.id === projectId ? saved : p))
+    await enqueueAndFlushProjectChange(projectId, 'project', saved.id, saved.updatedAt)
     return saved
   }
 
@@ -705,6 +1224,7 @@ export const useLedgerStore = defineStore('ledger', () => {
 
     const saved = await saveProjectToNormalVault(updated)
     projects.value = projects.value.map((p) => (p.id === projectId ? saved : p))
+    await enqueueAndFlushProjectChange(projectId, 'project', saved.id, saved.updatedAt)
     return saved
   }
 
@@ -759,6 +1279,7 @@ export const useLedgerStore = defineStore('ledger', () => {
 
     const saved = await saveProjectToNormalVault(updated)
     projects.value = projects.value.map((p) => (p.id === projectId ? saved : p))
+    await enqueueAndFlushProjectChange(projectId, 'project', saved.id, saved.updatedAt)
     return { ok: true }
   }
 
@@ -919,6 +1440,10 @@ export const useLedgerStore = defineStore('ledger', () => {
     const existing = projects.value.find((p) => p.id === projectId)
     if (!existing) return
 
+    unsubscribeProjectRealtime(projectId)
+    await clearProjectSyncOutbox(projectId)
+    await refreshOutboxCounts()
+
     const now = Date.now()
     const updatedProject: Project = {
       ...existing,
@@ -996,6 +1521,12 @@ export const useLedgerStore = defineStore('ledger', () => {
 
     const saved = await saveTransactionToNormalVault(tx)
     transactions.value = [saved, ...transactions.value]
+    await enqueueAndFlushProjectChange(
+      saved.projectId,
+      'transaction',
+      saved.id,
+      saved.updatedAt,
+    )
     return saved
   }
 
@@ -1067,6 +1598,12 @@ export const useLedgerStore = defineStore('ledger', () => {
     transactions.value = transactions.value.map((tx) =>
       tx.id === id ? saved : tx,
     )
+    await enqueueAndFlushProjectChange(
+      saved.projectId,
+      'transaction',
+      saved.id,
+      saved.updatedAt,
+    )
     return saved
   }
 
@@ -1081,6 +1618,12 @@ export const useLedgerStore = defineStore('ledger', () => {
     await saveTransactionToNormalVault(updated)
     transactions.value = transactions.value.map((tx) =>
       tx.id === id ? updated : tx,
+    )
+    await enqueueAndFlushProjectChange(
+      updated.projectId,
+      'transaction',
+      updated.id,
+      updated.updatedAt,
     )
   }
 
@@ -1125,6 +1668,12 @@ export const useLedgerStore = defineStore('ledger', () => {
     const saved = await saveTransactionToNormalVault(restoredPayload)
     transactions.value = transactions.value.map((tx) =>
       tx.id === id ? saved : tx,
+    )
+    await enqueueAndFlushProjectChange(
+      saved.projectId,
+      'transaction',
+      saved.id,
+      saved.updatedAt,
     )
     return { ok: true, projectId: saved.projectId }
   }
@@ -1231,6 +1780,9 @@ export const useLedgerStore = defineStore('ledger', () => {
     activeProjectId,
     isLoaded,
     isStoragePersisted,
+    syncStatusByProject,
+    outboxCountByProject,
+    pendingDeletionGuard,
     defaultCurrency,
     enabledCurrencies,
     categories,
@@ -1284,5 +1836,17 @@ export const useLedgerStore = defineStore('ledger', () => {
     exportLedgerBackup,
     exportProjectBackup,
     importAndMergeLedgerBackup,
+    enableProjectRealtimeSync,
+    fetchSharedProjectForJoin,
+    finalizeJoinSharedProject,
+    setMyMemberForProject,
+    stopProjectRealtimeSync,
+    startProjectRealtimeListener,
+    startAllSharedProjectListeners,
+    stopAllSharedProjectListeners,
+    flushProjectOutbox,
+    flushAllSharedProjectsOutbox,
+    approvePendingRemoteDeletes,
+    rejectPendingRemoteDeletes,
   }
 })

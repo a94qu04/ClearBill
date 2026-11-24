@@ -6,19 +6,34 @@ import {
   type Transaction,
 } from '@/schemas/ledgerSchema'
 
+export interface SyncOutboxItem {
+  /** 複合主鍵：`${entityType}:${entityId}`，同一筆重複修改自動去重 */
+  key: string
+  projectId: string
+  entityType: 'project' | 'transaction'
+  entityId: string
+  updatedAt: number
+}
+
 /**
  * 個人三層隱私金庫第一層：一般明文本地資料庫（ledger_db_normal）
- * Phase 1 建立 Local-First 本地持久化基礎，所有寫入皆強制通過 Zod 驗證。
+ * v2 新增 syncOutbox 離線補同步佇列，支援多人即時共享專案離線記帳與連網自動補傳。
  */
 export class NormalVaultDatabase extends Dexie {
   projects!: EntityTable<Project, 'id'>
   transactions!: EntityTable<Transaction, 'id'>
+  syncOutbox!: EntityTable<SyncOutboxItem, 'key'>
 
   constructor() {
     super('ledger_db_normal')
     this.version(1).stores({
       projects: 'id, isActive, updatedAt, isDeleted',
       transactions: 'id, projectId, date, updatedAt, vaultLevel, type, isDeleted',
+    })
+    this.version(2).stores({
+      projects: 'id, isActive, updatedAt, isDeleted',
+      transactions: 'id, projectId, date, updatedAt, vaultLevel, type, isDeleted',
+      syncOutbox: 'key, projectId, entityType, updatedAt',
     })
   }
 }
@@ -37,4 +52,36 @@ export async function saveTransactionToNormalVault(
   const validated = TransactionSchema.parse(rawTx)
   await normalVaultDb.transactions.put(validated)
   return validated
+}
+
+export async function enqueueSyncOutbox(
+  projectId: string,
+  entityType: 'project' | 'transaction',
+  entityId: string,
+  updatedAt = Date.now(),
+): Promise<void> {
+  const item: SyncOutboxItem = {
+    key: `${entityType}:${entityId}`,
+    projectId,
+    entityType,
+    entityId,
+    updatedAt,
+  }
+  await normalVaultDb.syncOutbox.put(item)
+}
+
+export async function listSyncOutbox(projectId?: string): Promise<SyncOutboxItem[]> {
+  if (projectId) {
+    return normalVaultDb.syncOutbox.where('projectId').equals(projectId).toArray()
+  }
+  return normalVaultDb.syncOutbox.toArray()
+}
+
+export async function removeSyncOutboxKeys(keys: string[]): Promise<void> {
+  if (keys.length === 0) return
+  await normalVaultDb.syncOutbox.bulkDelete(keys)
+}
+
+export async function clearProjectSyncOutbox(projectId: string): Promise<void> {
+  await normalVaultDb.syncOutbox.where('projectId').equals(projectId).delete()
 }

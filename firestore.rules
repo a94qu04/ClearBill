@@ -1,0 +1,56 @@
+rules_version = '2';
+
+// ClearBill（清帳）Firebase Firestore 多人即時協作安全規則
+// 請複製本檔案內容至 Firebase Console > Firestore Database > Rules 並點擊「發布」
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 預設拒絕所有未明確授權之存取
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    match /shared_projects/{shareId} {
+      // 嚴禁掃描或列舉所有共享專案
+      allow list: if false;
+
+      // 建立新共享專案：須通過匿名登入（或正式登入），且帶入高熵 accessKey 與自身 UID
+      allow create: if request.auth != null
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.memberUids is list
+        && request.auth.uid in request.resource.data.memberUids
+        && request.resource.data.accessKey is string
+        && request.resource.data.accessKey.size() >= 16;
+
+      // 讀取單一共享專案：僅允許已透過邀請金鑰加入 memberUids 之成員
+      allow get: if request.auth != null
+        && request.auth.uid in resource.data.memberUids;
+
+      // 更新共享專案：
+      // 1) 已加入成員可更新專案資訊（但不得竄改 ownerUid 或 accessKey）
+      // 2) 新旅伴持有正確 accessKey 時，僅允許將自己的 UID 加入 memberUids 完成入團授權
+      allow update: if request.auth != null && (
+        (
+          request.auth.uid in resource.data.memberUids
+          && request.resource.data.ownerUid == resource.data.ownerUid
+          && request.resource.data.accessKey == resource.data.accessKey
+        )
+        || (
+          request.resource.data.accessKey == resource.data.accessKey
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberUids', 'accessKey'])
+          && request.resource.data.memberUids.hasAll(resource.data.memberUids)
+          && request.auth.uid in request.resource.data.memberUids
+        )
+      );
+
+      // 禁止直接硬刪除共享專案文件（一律透過軟刪除 isDeleted 同步）
+      allow delete: if false;
+
+      // 共享專案底下的單筆交易子集合（每筆交易獨立文件，避免多人同時記帳互蓋）
+      match /transactions/{txId} {
+        allow read, create, update: if request.auth != null
+          && request.auth.uid in get(/databases/$(database)/documents/shared_projects/$(shareId)).data.memberUids;
+        allow delete: if false;
+      }
+    }
+  }
+}
