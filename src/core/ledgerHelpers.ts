@@ -62,3 +62,31 @@ export function matchesDateQuery(isoDate: string, rawQuery: string): boolean {
 
   return variants.some((variant) => variant.toLowerCase().includes(normalizedQuery))
 }
+
+/** 清理檔名中的不安全字元（供匯出 JSON / CSV 使用） */
+export function sanitizeExportFilename(name: string): string {
+  const cleaned = name
+    .trim()
+    .replace(/[\\/:*?"<>|]/g, '_')
+    .replace(/\s+/g, '-')
+    .slice(0, 48)
+  return cleaned || 'clearbill-project'
+}
+
+/** 觸發瀏覽器下載文字內容檔案 */
+export function triggerTextFileDownload(
+  content: string,
+  filename: string,
+  mimeType: string,
+): void {
+  if (typeof document === 'undefined' || typeof URL === 'undefined') return
+  const blob = new Blob([content], { type: mimeType })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
+}

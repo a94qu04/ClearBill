@@ -1,8 +1,26 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Pencil, Plus, Trash2, UserPlus, X } from 'lucide-vue-next'
-import { AVATAR_PALETTE, useLedgerStore } from '@/stores/ledgerStore'
+import {
+  FileJson,
+  FileSpreadsheet,
+  Pencil,
+  Plus,
+  Trash2,
+  UserPlus,
+  X,
+} from 'lucide-vue-next'
+import {
+  AVATAR_PALETTE,
+  useLedgerStore,
+  type ManagedCategory,
+} from '@/stores/ledgerStore'
+import { buildProjectCsvContent } from '@/core/csvExporter'
+import {
+  getTodayIso,
+  sanitizeExportFilename,
+  triggerTextFileDownload,
+} from '@/core/ledgerHelpers'
 import type { Project, ProjectMember, SplitMode } from '@/schemas/ledgerSchema'
 
 interface Props {
@@ -46,6 +64,28 @@ watch(
 
 async function handleSaveProjectSettings() {
   if (!editProjectName.value.trim()) return
+
+  const currencyChanged =
+    editProjectCurrency.value.trim().toUpperCase() !==
+    props.project.baseCurrency.trim().toUpperCase()
+  const existingTxCount = store.getProjectTransactionCount(props.project.id)
+
+  if (
+    currencyChanged &&
+    existingTxCount > 0 &&
+    typeof window !== 'undefined' &&
+    !window.confirm(
+      t('project.changeCurrencyConfirm', {
+        from: props.project.baseCurrency,
+        to: editProjectCurrency.value,
+        count: existingTxCount,
+      }),
+    )
+  ) {
+    editProjectCurrency.value = props.project.baseCurrency
+    return
+  }
+
   try {
     await store.updateProject(props.project.id, {
       name: editProjectName.value,
@@ -119,6 +159,68 @@ async function handleDeleteProject() {
   await store.softDeleteProject(props.project.id)
   emit('toast', t('project.projectDeletedToast'))
   emit('projectDeleted')
+}
+
+function resolveCategoryLabel(cat: ManagedCategory): string {
+  if (cat.customLabel) return cat.customLabel
+  const translated = t(`categories.${cat.key}`)
+  return translated === `categories.${cat.key}` ? cat.key : translated
+}
+
+function getCategoryLabel(key: string): string {
+  const found = store.categories.find((c) => c.key === key)
+  if (found) return resolveCategoryLabel(found)
+  const translated = t(`categories.${key}`)
+  return translated === `categories.${key}` ? key : translated
+}
+
+function handleExportProjectCsv() {
+  const projectTxs = store.visibleTransactions.filter(
+    (tx) => tx.projectId === props.project.id,
+  )
+  const csv = buildProjectCsvContent(props.project, projectTxs, {
+    headers: {
+      date: t('export.csvDate'),
+      time: t('export.csvTime'),
+      type: t('export.csvType'),
+      category: t('export.csvCategory'),
+      note: t('export.csvNote'),
+      originalAmount: t('export.csvOriginalAmount'),
+      currency: t('export.csvCurrency'),
+      exchangeRate: t('export.csvExchangeRate'),
+      baseAmount: t('export.csvBaseAmount'),
+      baseCurrency: t('export.csvBaseCurrency'),
+      payers: t('export.csvPayers'),
+      shares: t('export.csvShares'),
+    },
+    typeNames: {
+      expense: t('project.typeExpense'),
+      refund: t('project.typeRefund'),
+      transfer: t('home.settlementBadge'),
+      income: t('daily.typeIncome'),
+      card_repayment: 'card_repayment',
+    },
+    resolveCategoryLabel: getCategoryLabel,
+  })
+  const safeName = sanitizeExportFilename(props.project.name)
+  triggerTextFileDownload(
+    csv,
+    `clearbill-${safeName}-${getTodayIso()}.csv`,
+    'text/csv;charset=utf-8',
+  )
+  emit('toast', t('export.csvExportedToast'))
+}
+
+function handleExportProjectJson() {
+  const backup = store.exportProjectBackup(props.project.id)
+  if (!backup) return
+  const safeName = sanitizeExportFilename(props.project.name)
+  triggerTextFileDownload(
+    JSON.stringify(backup, null, 2),
+    `clearbill-${safeName}-${getTodayIso()}.json`,
+    'application/json;charset=utf-8',
+  )
+  emit('toast', t('export.projectJsonExportedToast'))
 }
 </script>
 
@@ -328,6 +430,36 @@ async function handleDeleteProject() {
         >
           <Trash2 class="h-3.5 w-3.5" />
           <span>{{ t('project.deleteProject') }}</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- 單一專案報表與旅伴協作匯出 -->
+    <section
+      class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900"
+    >
+      <h3 class="text-xs font-bold text-slate-700 dark:text-slate-200">
+        {{ t('export.sectionTitle') }}
+      </h3>
+      <p class="mt-1 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
+        {{ t('export.sectionDesc') }}
+      </p>
+      <div class="mt-3 grid grid-cols-2 gap-2">
+        <button
+          type="button"
+          class="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs font-bold text-slate-700 transition hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+          @click="handleExportProjectCsv"
+        >
+          <FileSpreadsheet class="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+          <span>{{ t('export.csvButton') }}</span>
+        </button>
+        <button
+          type="button"
+          class="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs font-bold text-slate-700 transition hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+          @click="handleExportProjectJson"
+        >
+          <FileJson class="h-4 w-4 text-sky-600 dark:text-sky-400" />
+          <span>{{ t('export.projectJsonButton') }}</span>
         </button>
       </div>
     </section>

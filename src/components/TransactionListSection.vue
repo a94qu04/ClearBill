@@ -27,7 +27,7 @@ const emit = defineEmits<{
   (e: 'edit', tx: Transaction): void
   (e: 'delete', id: string): void
   (e: 'openProject', projectId: string): void
-  (e: 'previewPhoto', dataUrl: string): void
+  (e: 'previewPhotos', payload: { photos: string[]; index: number }): void
   (e: 'toast', message: string): void
 }>()
 
@@ -306,12 +306,17 @@ defineExpose({ resetFilters })
         >
           <div class="flex items-center justify-between gap-2.5 py-2.5">
             <div class="flex min-w-0 items-center gap-2.5">
-              <!-- 收據圖片縮圖 -->
+              <!-- 收據圖片縮圖（點擊於多圖燈箱瀏覽全部收據） -->
               <button
                 v-if="tx.receiptImages && tx.receiptImages.length > 0"
                 type="button"
                 class="relative h-10 w-10 shrink-0 overflow-hidden rounded-lg border border-slate-200 dark:border-slate-700"
-                @click.stop="emit('previewPhoto', tx.receiptImages[0])"
+                @click.stop="
+                  emit('previewPhotos', {
+                    photos: tx.receiptImages,
+                    index: 0,
+                  })
+                "
               >
                 <img
                   :src="tx.receiptImages[0]"

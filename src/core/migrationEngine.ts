@@ -117,6 +117,9 @@ export function migrateLedgerBackup(raw: unknown): LedgerBackup {
 
   const migratedProjects = rawProjects.map((item) => migrateProject(item))
   const migratedTransactions = rawTransactions.map((item) => migrateTransaction(item))
+  const rawCategories = Array.isArray(payload.categories)
+    ? payload.categories
+    : undefined
 
   return LedgerBackupSchema.parse({
     schemaVersion: CURRENT_SCHEMA_VERSION,
@@ -124,5 +127,6 @@ export function migrateLedgerBackup(raw: unknown): LedgerBackup {
       typeof payload.exportedAt === 'number' ? payload.exportedAt : Date.now(),
     projects: migratedProjects,
     transactions: migratedTransactions,
+    ...(rawCategories ? { categories: rawCategories } : {}),
   })
 }

@@ -19,6 +19,7 @@ import {
 import { calculateSettleUp } from '@/core/settleUpEngine'
 import {
   createLedgerBackupPayload,
+  createSingleProjectBackupPayload,
   parseAndMergeLedgerBackup,
   type LedgerMergeStats,
 } from '@/core/backupMergeEngine'
@@ -114,6 +115,7 @@ interface PersistedUserPrefsV2 {
   enabledCurrencies: string[]
   categories: ManagedCategory[]
   projectOrder?: string[]
+  exchangeRates?: Record<string, number>
 }
 
 function cloneDefaultCategories(): ManagedCategory[] {
@@ -126,6 +128,7 @@ function loadUserPrefs(): PersistedUserPrefsV2 {
     enabledCurrencies: [...INITIAL_CURRENCIES],
     categories: cloneDefaultCategories(),
     projectOrder: [],
+    exchangeRates: {},
   }
   if (typeof window === 'undefined') return defaults
 
@@ -173,11 +176,26 @@ function loadUserPrefs(): PersistedUserPrefsV2 {
         ? parsed.projectOrder.filter((id): id is string => typeof id === 'string')
         : []
 
+      const exchangeRates: Record<string, number> = {}
+      if (parsed.exchangeRates && typeof parsed.exchangeRates === 'object') {
+        for (const [pairKey, rate] of Object.entries(parsed.exchangeRates)) {
+          if (
+            /^[A-Z]{3}_[A-Z]{3}$/.test(pairKey) &&
+            typeof rate === 'number' &&
+            Number.isFinite(rate) &&
+            rate > 0
+          ) {
+            exchangeRates[pairKey] = rate
+          }
+        }
+      }
+
       return {
         defaultCurrency,
         enabledCurrencies: Array.from(enabledSet),
         categories,
         projectOrder,
+        exchangeRates,
       }
     }
 
@@ -231,11 +249,14 @@ export const useLedgerStore = defineStore('ledger', () => {
   const isLoaded = ref(false)
   const isStoragePersisted = ref(false)
 
-  // 使用者自訂偏好（預設幣別、可自由增刪的常用幣別、可自由增刪改的消費分類、專案排序）
+  // 使用者自訂偏好（預設幣別、可自由增刪的常用幣別、可自由增刪改的消費分類、專案排序、記憶匯率）
   const defaultCurrency = ref<string>(initialPrefs.defaultCurrency)
   const enabledCurrencies = ref<string[]>(initialPrefs.enabledCurrencies)
   const categories = ref<ManagedCategory[]>(initialPrefs.categories)
   const projectOrder = ref<string[]>(initialPrefs.projectOrder ?? [])
+  const rememberedExchangeRates = ref<Record<string, number>>(
+    initialPrefs.exchangeRates ?? {},
+  )
 
   function saveUserPrefs() {
     if (typeof window === 'undefined') return
@@ -245,11 +266,32 @@ export const useLedgerStore = defineStore('ledger', () => {
         enabledCurrencies: enabledCurrencies.value,
         categories: categories.value,
         projectOrder: projectOrder.value,
+        exchangeRates: rememberedExchangeRates.value,
       }
       window.localStorage.setItem(PREFS_STORAGE_KEY, JSON.stringify(data))
     } catch {
       // 忽略受限儲存環境
     }
+  }
+
+  function getRememberedExchangeRate(from: string, to: string): number | null {
+    const f = from.trim().toUpperCase()
+    const tCode = to.trim().toUpperCase()
+    if (!f || !tCode || f === tCode) return 1
+    const val = rememberedExchangeRates.value[`${f}_${tCode}`]
+    return typeof val === 'number' && Number.isFinite(val) && val > 0 ? val : null
+  }
+
+  function rememberExchangeRate(from: string, to: string, rate: number): void {
+    const f = from.trim().toUpperCase()
+    const tCode = to.trim().toUpperCase()
+    if (!f || !tCode || f === tCode) return
+    if (!Number.isFinite(rate) || rate <= 0) return
+    rememberedExchangeRates.value = {
+      ...rememberedExchangeRates.value,
+      [`${f}_${tCode}`]: rate,
+    }
+    saveUserPrefs()
   }
 
   const availableCurrencies = computed(() => {
@@ -361,6 +403,41 @@ export const useLedgerStore = defineStore('ledger', () => {
       proj.members.map((m) => m.id),
     )
   })
+
+  /** 各專案累計淨消費總額對照表（採與 settleUpEngine 完全一致之整數運算，供首頁與清單卡片顯示） */
+  const projectTotalExpenseMap = computed<Record<string, number>>(() => {
+    const txByProject = new Map<string, Transaction[]>()
+    for (const tx of visibleTransactions.value) {
+      if (!tx.projectId) continue
+      const list = txByProject.get(tx.projectId)
+      if (list) list.push(tx)
+      else txByProject.set(tx.projectId, [tx])
+    }
+
+    const result: Record<string, number> = {}
+    for (const proj of activeProjects.value) {
+      const projTxs = txByProject.get(proj.id) ?? []
+      if (projTxs.length === 0) {
+        result[proj.id] = 0
+        continue
+      }
+      const settle = calculateSettleUp(
+        projTxs,
+        proj.baseCurrency,
+        proj.members.map((m) => m.id),
+      )
+      result[proj.id] = settle.totalProjectExpense
+    }
+    return result
+  })
+
+  function getProjectTotalExpense(projectId: string): number {
+    return projectTotalExpenseMap.value[projectId] ?? 0
+  }
+
+  function getProjectTransactionCount(projectId: string): number {
+    return visibleTransactions.value.filter((tx) => tx.projectId === projectId).length
+  }
 
   function persistActiveProjectId(id: string | null): void {
     if (typeof window === 'undefined') return
@@ -898,26 +975,50 @@ export const useLedgerStore = defineStore('ledger', () => {
     return ids.length
   }
 
+  function cloneProjectsForBackup(list: Project[]): Project[] {
+    return list.map((p) => ({
+      ...p,
+      members: p.members.map((m) => ({ ...m })),
+    }))
+  }
+
+  function cloneTransactionsForBackup(list: Transaction[]): Transaction[] {
+    return list.map((tx) => ({
+      ...tx,
+      links: tx.links ? [...tx.links] : undefined,
+      receiptImages: tx.receiptImages ? [...tx.receiptImages] : undefined,
+      splitConfig: tx.splitConfig
+        ? {
+            ...tx.splitConfig,
+            payers: tx.splitConfig.payers
+              ? tx.splitConfig.payers.map((p) => ({ ...p }))
+              : undefined,
+            shares: tx.splitConfig.shares.map((s) => ({ ...s })),
+          }
+        : undefined,
+    }))
+  }
+
   function exportLedgerBackup(): LedgerBackup {
     return createLedgerBackupPayload(
-      projects.value.map((p) => ({
-        ...p,
-        members: p.members.map((m) => ({ ...m })),
-      })),
-      transactions.value.map((tx) => ({
-        ...tx,
-        links: tx.links ? [...tx.links] : undefined,
-        receiptImages: tx.receiptImages ? [...tx.receiptImages] : undefined,
-        splitConfig: tx.splitConfig
-          ? {
-              ...tx.splitConfig,
-              payers: tx.splitConfig.payers
-                ? tx.splitConfig.payers.map((p) => ({ ...p }))
-                : undefined,
-              shares: tx.splitConfig.shares.map((s) => ({ ...s })),
-            }
-          : undefined,
-      })),
+      cloneProjectsForBackup(projects.value),
+      cloneTransactionsForBackup(transactions.value),
+      Date.now(),
+      categories.value.map((c) => ({ ...c })),
+    )
+  }
+
+  function exportProjectBackup(projectId: string): LedgerBackup | null {
+    const target = projects.value.find((p) => p.id === projectId && !p.isDeleted)
+    if (!target) return null
+    const clonedProject = cloneProjectsForBackup([target])[0]
+    const clonedTxs = cloneTransactionsForBackup(
+      transactions.value.filter((tx) => tx.projectId === projectId),
+    )
+    return createSingleProjectBackupPayload(
+      clonedProject,
+      clonedTxs,
+      categories.value.map((c) => ({ ...c })),
     )
   }
 
@@ -928,6 +1029,7 @@ export const useLedgerStore = defineStore('ledger', () => {
       {
         projects: projects.value,
         transactions: transactions.value,
+        categories: categories.value.map((c) => ({ ...c })),
       },
       raw,
     )
@@ -941,6 +1043,11 @@ export const useLedgerStore = defineStore('ledger', () => {
 
     projects.value = merged.projects
     transactions.value = merged.transactions
+
+    if (merged.categories.length > 0) {
+      categories.value = merged.categories.map((c) => ({ ...c }))
+      saveUserPrefs()
+    }
 
     if (!activeProjectId.value && activeProjects.value.length > 0) {
       activeProjectId.value = activeProjects.value[0].id
@@ -969,6 +1076,11 @@ export const useLedgerStore = defineStore('ledger', () => {
     activeProjectExpenses,
     activeProjectSettlements,
     activeProjectSettleUp,
+    projectTotalExpenseMap,
+    getProjectTotalExpense,
+    getProjectTransactionCount,
+    getRememberedExchangeRate,
+    rememberExchangeRate,
     getProjectById,
     getAnyProjectById,
     setDefaultCurrency,
@@ -998,6 +1110,7 @@ export const useLedgerStore = defineStore('ledger', () => {
     permanentlyDeleteTransaction,
     emptyTrash,
     exportLedgerBackup,
+    exportProjectBackup,
     importAndMergeLedgerBackup,
   }
 })

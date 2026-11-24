@@ -29,7 +29,7 @@ const props = withDefaults(defineProps<Props>(), {
 const emit = defineEmits<{
   (e: 'close'): void
   (e: 'saved', message: string): void
-  (e: 'previewPhoto', dataUrl: string): void
+  (e: 'previewPhotos', payload: { photos: string[]; index: number }): void
   (e: 'toast', message: string): void
 }>()
 
@@ -43,6 +43,7 @@ const splitResetKey = ref(0)
 const amount = ref<number | null>(null)
 const currency = ref('TWD')
 const exchangeRate = ref<number | null>(1)
+const exchangeRateSource = ref<'remembered' | 'estimated' | 'saved'>('estimated')
 const categoryKey = ref<string>(store.categories[0]?.key ?? 'cat_food')
 const note = ref('')
 const date = ref(getTodayIso())
@@ -100,6 +101,23 @@ function cloneSplitConfig(config: SplitConfig | undefined): SplitConfig | null {
   }
 }
 
+function resolveExchangeRateForCurrency(
+  fromCurrency: string,
+  baseCurrency: string,
+): { rate: number; source: 'remembered' | 'estimated' } {
+  if (fromCurrency.toUpperCase() === baseCurrency.toUpperCase()) {
+    return { rate: 1, source: 'estimated' }
+  }
+  const remembered = store.getRememberedExchangeRate(fromCurrency, baseCurrency)
+  if (remembered !== null) {
+    return { rate: remembered, source: 'remembered' }
+  }
+  return {
+    rate: getSuggestedExchangeRate(fromCurrency, baseCurrency),
+    source: 'estimated',
+  }
+}
+
 function hydrateForm() {
   if (!props.project) return
   isHydrating = true
@@ -112,6 +130,7 @@ function hydrateForm() {
     amount.value = tx.amount
     currency.value = tx.currency
     exchangeRate.value = tx.exchangeRateToBase ?? 1
+    exchangeRateSource.value = 'saved'
     categoryKey.value = tx.categoryKey
     note.value = tx.note ?? ''
     date.value = tx.date
@@ -126,10 +145,12 @@ function hydrateForm() {
     amount.value = pf.amount
     const prefillCurrency = pf.currency?.trim().toUpperCase() || props.project.baseCurrency
     currency.value = prefillCurrency
-    exchangeRate.value =
-      prefillCurrency === props.project.baseCurrency
-        ? 1
-        : getSuggestedExchangeRate(prefillCurrency, props.project.baseCurrency)
+    const resolved = resolveExchangeRateForCurrency(
+      prefillCurrency,
+      props.project.baseCurrency,
+    )
+    exchangeRate.value = resolved.rate
+    exchangeRateSource.value = resolved.source
     categoryKey.value = store.categories[0]?.key ?? 'cat_food'
     note.value = pf.merchant || pf.sanitizedNote || ''
     date.value = pf.date || getTodayIso()
@@ -142,6 +163,7 @@ function hydrateForm() {
     amount.value = null
     currency.value = props.project.baseCurrency
     exchangeRate.value = 1
+    exchangeRateSource.value = 'estimated'
     categoryKey.value = store.categories[0]?.key ?? 'cat_food'
     note.value = ''
     date.value = getTodayIso()
@@ -167,14 +189,12 @@ watch(
 
 watch(currency, (nextCurrency) => {
   if (isHydrating || !props.project) return
-  if (nextCurrency === props.project.baseCurrency) {
-    exchangeRate.value = 1
-  } else {
-    exchangeRate.value = getSuggestedExchangeRate(
-      nextCurrency,
-      props.project.baseCurrency,
-    )
-  }
+  const resolved = resolveExchangeRateForCurrency(
+    nextCurrency,
+    props.project.baseCurrency,
+  )
+  exchangeRate.value = resolved.rate
+  exchangeRateSource.value = resolved.source
 })
 
 function fmt(val: number, cur: string): string {
@@ -257,6 +277,9 @@ async function handleSubmit() {
   }
 
   try {
+    if (needsExchangeRate.value && rate > 0) {
+      store.rememberExchangeRate(currency.value, props.project.baseCurrency, rate)
+    }
     if (props.editingTx) {
       await store.updateTransaction(props.editingTx.id, payload)
       emit('saved', t('daily.updatedToast'))
@@ -341,6 +364,8 @@ async function handleSubmit() {
             v-model:currency="currency"
             :currencies="currencyOptions"
             show-currency-select
+            enable-expression
+            show-service-fee-button
             size="lg"
             autofocus
             placeholder="0"
@@ -348,31 +373,43 @@ async function handleSubmit() {
 
           <div
             v-if="needsExchangeRate"
-            class="flex flex-wrap items-center gap-2 rounded-xl border border-amber-200 bg-amber-50/70 px-3 py-2 text-xs dark:border-amber-800/60 dark:bg-amber-950/30"
+            class="space-y-1 rounded-xl border border-amber-200 bg-amber-50/70 px-3 py-2 text-xs dark:border-amber-800/60 dark:bg-amber-950/30"
           >
-            <span class="font-semibold text-amber-900 dark:text-amber-200">
-              {{ t('project.exchangeRateLabel', { from: currency }) }}
-            </span>
-            <CurrencyAmountInput
-              v-model="exchangeRate"
-              :allow-decimals="true"
-              size="sm"
-              placeholder="1"
-              class="w-24"
-            />
-            <span class="font-semibold text-amber-900 dark:text-amber-200">
-              {{ project.baseCurrency }}
-            </span>
-            <span
-              v-if="convertedPreviewAmount > 0"
-              class="ml-auto font-bold text-amber-800 dark:text-amber-300"
+            <div class="flex flex-wrap items-center gap-2">
+              <span class="font-semibold text-amber-900 dark:text-amber-200">
+                {{ t('project.exchangeRateLabel', { from: currency }) }}
+              </span>
+              <CurrencyAmountInput
+                v-model="exchangeRate"
+                :allow-decimals="true"
+                size="sm"
+                placeholder="1"
+                class="w-24"
+              />
+              <span class="font-semibold text-amber-900 dark:text-amber-200">
+                {{ project.baseCurrency }}
+              </span>
+              <span
+                v-if="convertedPreviewAmount > 0"
+                class="ml-auto font-bold text-amber-800 dark:text-amber-300"
+              >
+                {{
+                  t('project.convertedPreview', {
+                    amount: fmt(convertedPreviewAmount, project.baseCurrency),
+                  })
+                }}
+              </span>
+            </div>
+            <div
+              v-if="exchangeRateSource !== 'saved'"
+              class="text-[10px] font-medium text-amber-700/90 dark:text-amber-300/80"
             >
               {{
-                t('project.convertedPreview', {
-                  amount: fmt(convertedPreviewAmount, project.baseCurrency),
-                })
+                exchangeRateSource === 'remembered'
+                  ? t('project.exchangeRateRememberedHint')
+                  : t('project.exchangeRateEstimatedHint')
               }}
-            </span>
+            </div>
           </div>
 
           <input
@@ -481,7 +518,9 @@ async function handleSubmit() {
                   :src="img"
                   alt="receipt preview"
                   class="h-full w-full cursor-pointer object-cover"
-                  @click="emit('previewPhoto', img)"
+                  @click="
+                    emit('previewPhotos', { photos: receiptImages, index: idx })
+                  "
                 />
                 <button
                   type="button"

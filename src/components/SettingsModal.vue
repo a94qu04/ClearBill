@@ -125,6 +125,13 @@ function resolveCategoryDisplayName(cat: ManagedCategory): string {
   return translated === `categories.${cat.key}` ? cat.key : translated
 }
 
+function getCategoryLabelByKey(key: string): string {
+  const found = store.categories.find((c) => c.key === key)
+  if (found) return resolveCategoryDisplayName(found)
+  const translated = t(`categories.${key}`)
+  return translated === `categories.${key}` ? key : translated
+}
+
 function getCatalogName(item: {
   names: { 'zh-TW': string; en: string; ja: string }
 }): string {
@@ -1088,7 +1095,7 @@ function fmt(amount: number, currency: string): string {
                   <div class="min-w-0">
                     <div class="flex flex-wrap items-center gap-1.5">
                       <span class="truncate text-xs font-semibold text-slate-800 dark:text-slate-100">
-                        {{ tx.note || tx.categoryKey }}
+                        {{ tx.note || getCategoryLabelByKey(tx.categoryKey) }}
                       </span>
                       <span
                         v-if="store.getAnyProjectById(tx.projectId)"

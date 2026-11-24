@@ -540,6 +540,7 @@ watch(
             <CurrencyAmountInput
               v-model="multiPayerAmounts[member.id]"
               :currency="currency"
+              enable-expression
               size="sm"
               placeholder="0"
               class="w-28"
@@ -654,6 +655,7 @@ watch(
             v-if="mode === 'custom_plus_equal'"
             v-model="memberStateMap[member.id].customAmount"
             :currency="currency"
+            enable-expression
             size="sm"
             :placeholder="t('split.customAmountPlaceholder')"
             class="w-24 sm:w-28"

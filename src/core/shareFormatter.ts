@@ -11,9 +11,28 @@ export interface ShareSummaryLabels {
   pendingTitle: string
   allSettledText: string
   historyTitle: string
+  detailsTitle?: string
+  refundTag?: string
   transferLine: (from: string, to: string, amountText: string) => string
   paidHistoryLine: (from: string, to: string, amountText: string, date: string) => string
+  detailItemLine?: (params: {
+    date: string
+    title: string
+    amountText: string
+    payerText: string
+  }) => string
   footerTagline: string
+}
+
+export interface ShareSummaryOptions {
+  /** 是否附帶消費／退款明細清單 */
+  includeDetails?: boolean
+  /** 專案內消費與退款清單（includeDetails 為 true 時輸出） */
+  expenses?: Transaction[]
+  /** 消費分類鍵值轉顯示文字 */
+  resolveCategoryLabel?: (categoryKey: string) => string
+  /** 多人墊付顯示文案 */
+  formatMultiPayer?: (count: number) => string
 }
 
 /**
@@ -26,6 +45,7 @@ export function buildProjectSettlementShareText(
   settlements: Transaction[],
   labels: ShareSummaryLabels,
   locale = 'zh-TW',
+  options: ShareSummaryOptions = {},
 ): string {
   const memberNameMap = new Map<string, string>()
   for (const member of project.members) {
@@ -65,6 +85,62 @@ export function buildProjectSettlementShareText(
           fmt(transfer.amount, transfer.currency),
         )}`,
       )
+    }
+  }
+
+  // 選填：附帶消費／退款明細（方便群組成員核對）
+  if (options.includeDetails && options.expenses && options.expenses.length > 0) {
+    const validExpenses = options.expenses
+      .filter((tx) => !tx.isDeleted && (tx.type === 'expense' || tx.type === 'refund'))
+      .sort((a, b) => {
+        const d = a.date.localeCompare(b.date)
+        if (d !== 0) return d
+        return a.time.localeCompare(b.time)
+      })
+
+    if (validExpenses.length > 0) {
+      lines.push('')
+      lines.push(labels.detailsTitle ?? '▎Details')
+      for (const tx of validExpenses) {
+        const titleBase =
+          tx.note?.trim() ||
+          options.resolveCategoryLabel?.(tx.categoryKey) ||
+          tx.categoryKey
+        const title =
+          tx.type === 'refund' && labels.refundTag
+            ? `[${labels.refundTag}] ${titleBase}`
+            : titleBase
+
+        const sign = tx.type === 'refund' ? '-' : ''
+        const originalText = `${sign}${fmt(tx.amount, tx.currency)}`
+        const amountText =
+          tx.currency !== project.baseCurrency
+            ? `${originalText} (≈ ${sign}${fmt(tx.amount * tx.exchangeRateToBase, project.baseCurrency)})`
+            : originalText
+
+        let payerText = ''
+        if (tx.splitConfig) {
+          const multi = (tx.splitConfig.payers ?? []).filter((p) => p.amount > 0)
+          if (multi.length > 1) {
+            payerText = options.formatMultiPayer
+              ? options.formatMultiPayer(multi.length)
+              : multi.map((p) => nameOf(p.memberId)).join('+')
+          } else {
+            payerText = nameOf(tx.splitConfig.payerId)
+          }
+        }
+
+        const formattedLine = labels.detailItemLine
+          ? labels.detailItemLine({
+              date: tx.date,
+              title,
+              amountText,
+              payerText,
+            })
+          : `${tx.date} ${title} ${amountText}${payerText ? ` (${payerText})` : ''}`
+
+        lines.push(`• ${formattedLine}`)
+      }
     }
   }
 

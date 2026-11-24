@@ -1,14 +1,31 @@
 <script setup lang="ts">
+import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Coins, Pencil, Share2, Trash2 } from 'lucide-vue-next'
+import {
+  Coins,
+  FileJson,
+  FileSpreadsheet,
+  Pencil,
+  Share2,
+  Trash2,
+} from 'lucide-vue-next'
 import type { Project, Transaction } from '@/schemas/ledgerSchema'
 import type { SettleUpResult } from '@/core/settleUpEngine'
 import { formatCurrencyAmount } from '@/core/currency'
 import { buildProjectSettlementShareText } from '@/core/shareFormatter'
+import { buildProjectCsvContent } from '@/core/csvExporter'
+import {
+  getTodayIso,
+  sanitizeExportFilename,
+  triggerTextFileDownload,
+} from '@/core/ledgerHelpers'
+import { useLedgerStore, type ManagedCategory } from '@/stores/ledgerStore'
+import CategoryPieChart from '@/components/CategoryPieChart.vue'
 
 interface Props {
   project: Project
   settleUp: SettleUpResult
+  expenses: Transaction[]
   settlements: Transaction[]
 }
 
@@ -22,6 +39,9 @@ const emit = defineEmits<{
 }>()
 
 const { t, locale } = useI18n()
+const store = useLedgerStore()
+
+const includeDetailsInShare = ref(false)
 
 function fmt(amount: number, currency: string): string {
   return formatCurrencyAmount(amount, currency, locale.value)
@@ -38,6 +58,19 @@ function getMemberColor(memberId: string): string {
   )
 }
 
+function resolveCategoryLabel(cat: ManagedCategory): string {
+  if (cat.customLabel) return cat.customLabel
+  const translated = t(`categories.${cat.key}`)
+  return translated === `categories.${cat.key}` ? cat.key : translated
+}
+
+function getCategoryLabel(key: string): string {
+  const found = store.categories.find((c) => c.key === key)
+  if (found) return resolveCategoryLabel(found)
+  const translated = t(`categories.${key}`)
+  return translated === `categories.${key}` ? key : translated
+}
+
 async function handleShareSettlement() {
   const summaryText = buildProjectSettlementShareText(
     props.project,
@@ -52,13 +85,30 @@ async function handleShareSettlement() {
       pendingTitle: t('share.pendingTitle'),
       allSettledText: t('settle.allSettled'),
       historyTitle: t('share.historyTitle'),
+      detailsTitle: t('share.detailsTitle'),
+      refundTag: t('project.refundBadge'),
       transferLine: (from, to, amount) =>
         t('share.transferLine', { from, to, amount }),
       paidHistoryLine: (from, to, amount, date) =>
         t('share.paidHistoryLine', { from, to, amount, date }),
+      detailItemLine: ({ date, title, amountText, payerText }) =>
+        payerText
+          ? t('share.detailItemLine', {
+              date,
+              title,
+              amount: amountText,
+              payer: payerText,
+            })
+          : `${date} ${title} ${amountText}`,
       footerTagline: t('share.footerTagline'),
     },
     locale.value,
+    {
+      includeDetails: includeDetailsInShare.value,
+      expenses: props.expenses,
+      resolveCategoryLabel: getCategoryLabel,
+      formatMultiPayer: (count) => t('project.multiPayerBadge', { count }),
+    },
   )
 
   try {
@@ -101,15 +151,62 @@ async function handleShareSettlement() {
     emit('toast', t('share.failedToast'))
   }
 }
+
+function handleExportCsv() {
+  const allProjectTxs = [...props.expenses, ...props.settlements]
+  const csv = buildProjectCsvContent(props.project, allProjectTxs, {
+    headers: {
+      date: t('export.csvDate'),
+      time: t('export.csvTime'),
+      type: t('export.csvType'),
+      category: t('export.csvCategory'),
+      note: t('export.csvNote'),
+      originalAmount: t('export.csvOriginalAmount'),
+      currency: t('export.csvCurrency'),
+      exchangeRate: t('export.csvExchangeRate'),
+      baseAmount: t('export.csvBaseAmount'),
+      baseCurrency: t('export.csvBaseCurrency'),
+      payers: t('export.csvPayers'),
+      shares: t('export.csvShares'),
+    },
+    typeNames: {
+      expense: t('project.typeExpense'),
+      refund: t('project.typeRefund'),
+      transfer: t('home.settlementBadge'),
+      income: t('daily.typeIncome'),
+      card_repayment: 'card_repayment',
+    },
+    resolveCategoryLabel: getCategoryLabel,
+  })
+  const safeName = sanitizeExportFilename(props.project.name)
+  triggerTextFileDownload(
+    csv,
+    `clearbill-${safeName}-${getTodayIso()}.csv`,
+    'text/csv;charset=utf-8',
+  )
+  emit('toast', t('export.csvExportedToast'))
+}
+
+function handleExportSingleProjectJson() {
+  const backup = store.exportProjectBackup(props.project.id)
+  if (!backup) return
+  const safeName = sanitizeExportFilename(props.project.name)
+  triggerTextFileDownload(
+    JSON.stringify(backup, null, 2),
+    `clearbill-${safeName}-${getTodayIso()}.json`,
+    'application/json;charset=utf-8',
+  )
+  emit('toast', t('export.projectJsonExportedToast'))
+}
 </script>
 
 <template>
   <div class="space-y-4">
-    <!-- 各成員總支出與結算總覽（含一鍵分享按鈕） -->
+    <!-- 各成員總支出與結算總覽（含一鍵分享精簡／明細切換與報表匯出） -->
     <section
       class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900"
     >
-      <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+      <div class="mb-3 flex flex-wrap items-start justify-between gap-2">
         <div>
           <h3 class="text-xs font-bold text-slate-700 dark:text-slate-200">
             {{ t('settle.balancesTitle') }}
@@ -122,14 +219,28 @@ async function handleShareSettlement() {
           </div>
         </div>
 
-        <button
-          type="button"
-          class="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-3 py-1.5 text-xs font-bold text-white transition hover:bg-slate-800 active:scale-95 dark:bg-emerald-500 dark:text-slate-950 dark:hover:bg-emerald-400"
-          @click="handleShareSettlement"
-        >
-          <Share2 class="h-3.5 w-3.5" />
-          <span>{{ t('share.button') }}</span>
-        </button>
+        <div class="flex flex-col items-end gap-1.5">
+          <button
+            type="button"
+            class="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-3 py-1.5 text-xs font-bold text-white transition hover:bg-slate-800 active:scale-95 dark:bg-emerald-500 dark:text-slate-950 dark:hover:bg-emerald-400"
+            @click="handleShareSettlement"
+          >
+            <Share2 class="h-3.5 w-3.5" />
+            <span>{{ t('share.button') }}</span>
+          </button>
+
+          <label
+            v-if="expenses.length > 0"
+            class="inline-flex cursor-pointer select-none items-center gap-1.5 text-[11px] font-medium text-slate-500 dark:text-slate-400"
+          >
+            <input
+              v-model="includeDetailsInShare"
+              type="checkbox"
+              class="h-3.5 w-3.5 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 dark:border-slate-600 dark:bg-slate-800"
+            />
+            <span>{{ t('share.includeDetailsToggle') }}</span>
+          </label>
+        </div>
       </div>
 
       <div class="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
@@ -200,7 +311,35 @@ async function handleShareSettlement() {
           </div>
         </div>
       </div>
+
+      <!-- 單一專案快速匯出列（Excel CSV 與旅伴合併 JSON） -->
+      <div
+        class="mt-3 grid grid-cols-2 gap-2 border-t border-slate-100 pt-3 dark:border-slate-800"
+      >
+        <button
+          type="button"
+          class="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2 text-[11px] font-bold text-slate-700 transition hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800/80 dark:text-slate-200 dark:hover:bg-slate-800"
+          @click="handleExportCsv"
+        >
+          <FileSpreadsheet class="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
+          <span class="truncate">{{ t('export.csvButton') }}</span>
+        </button>
+        <button
+          type="button"
+          class="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2 text-[11px] font-bold text-slate-700 transition hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800/80 dark:text-slate-200 dark:hover:bg-slate-800"
+          @click="handleExportSingleProjectJson"
+        >
+          <FileJson class="h-3.5 w-3.5 text-sky-600 dark:text-sky-400" />
+          <span class="truncate">{{ t('export.projectJsonButton') }}</span>
+        </button>
+      </div>
     </section>
+
+    <!-- 消費結構圓餅圖統計 -->
+    <CategoryPieChart
+      :transactions="expenses"
+      :base-currency="project.baseCurrency"
+    />
 
     <!-- 待還款結算 -->
     <section

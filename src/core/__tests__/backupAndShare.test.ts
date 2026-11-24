@@ -98,6 +98,7 @@ describe('backupMergeEngine - JSON 備份匯出與 UUID + updatedAt 合併', () 
       transactionsAdded: 1,
       transactionsUpdated: 0,
       transactionsSkipped: 1,
+      categoriesAdded: 0,
     })
 
     expect(merged.projects[0].name).toBe('2026 東京賞楓行')

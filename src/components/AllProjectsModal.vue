@@ -10,6 +10,7 @@ import {
   X,
 } from 'lucide-vue-next'
 import { useLedgerStore } from '@/stores/ledgerStore'
+import { formatCurrencyAmount } from '@/core/currency'
 
 interface Props {
   open: boolean
@@ -24,8 +25,16 @@ const emit = defineEmits<{
   (e: 'createProject'): void
 }>()
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const store = useLedgerStore()
+
+function fmtProjectTotal(projectId: string, currency: string): string {
+  return formatCurrencyAmount(
+    store.getProjectTotalExpense(projectId),
+    currency,
+    locale.value,
+  )
+}
 
 const draggingProjectId = ref<string | null>(null)
 const dragOverProjectId = ref<string | null>(null)
@@ -136,8 +145,12 @@ function onDragEnd() {
                 <div class="truncate text-sm font-bold text-slate-900 dark:text-white">
                   {{ proj.name }}
                 </div>
-                <div class="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-                  {{ t('project.memberCount', { count: proj.members.length }) }} · {{ proj.baseCurrency }}
+                <div class="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
+                  <span>{{ t('project.memberCount', { count: proj.members.length }) }}</span>
+                  <span>·</span>
+                  <span class="font-bold tabular-nums text-emerald-700 dark:text-emerald-400">
+                    {{ fmtProjectTotal(proj.id, proj.baseCurrency) }}
+                  </span>
                 </div>
               </div>
               <Check

@@ -39,7 +39,30 @@ const settingsOpen = ref(false)
 const allProjectsSheetOpen = ref(false)
 const isDark = ref(false)
 const isTouchDevice = ref(false)
-const previewPhotoUrl = ref<string | null>(null)
+const previewPhotos = ref<string[]>([])
+const previewPhotoIndex = ref(0)
+
+function openPhotoLightbox(payload: { photos: string[]; index: number }) {
+  previewPhotos.value = payload.photos
+  previewPhotoIndex.value = payload.index
+}
+
+function closePhotoLightbox() {
+  previewPhotos.value = []
+  previewPhotoIndex.value = 0
+}
+
+function copyMembersFromProject(sourceProjectId: string) {
+  const source = store.getProjectById(sourceProjectId)
+  if (!source) return
+  projectMembersText.value = source.members.map((m) => m.name).join(', ')
+  showToast(
+    t('project.membersCopiedToast', {
+      name: source.name,
+      count: source.members.length,
+    }),
+  )
+}
 
 // Toast 與即時刪除復原狀態
 const toastMessage = ref('')
@@ -487,13 +510,13 @@ onBeforeUnmount(() => {
             <span>{{ t('home.createFirstProject') }}</span>
           </button>
 
-          <div v-else class="grid grid-cols-2 gap-2">
+          <div v-else class="grid grid-cols-2 gap-2.5">
             <div
               v-for="proj in store.activeProjects.slice(0, 4)"
               :key="proj.id"
               draggable="true"
               :data-project-id="proj.id"
-              class="flex items-center justify-between gap-1.5 rounded-xl border px-2.5 py-2.5 text-left text-xs font-semibold transition"
+              class="flex items-start gap-1.5 rounded-2xl border px-2.5 py-3 text-left transition"
               :class="[
                 store.activeProject?.id === proj.id
                   ? 'border-emerald-500 bg-emerald-50 text-emerald-900 dark:border-emerald-500/70 dark:bg-emerald-950/60 dark:text-emerald-200'
@@ -509,20 +532,30 @@ onBeforeUnmount(() => {
               @dragend="onProjectDragEnd"
             >
               <span
-                class="shrink-0 cursor-grab text-slate-300 active:cursor-grabbing dark:text-slate-600"
+                class="mt-0.5 shrink-0 cursor-grab text-slate-300 active:cursor-grabbing dark:text-slate-600"
                 :title="t('home.dragProjectHint')"
               >
                 <GripVertical class="h-3.5 w-3.5" />
               </span>
               <button
                 type="button"
-                class="flex min-w-0 flex-1 items-center justify-between gap-1.5 text-left"
+                class="flex min-w-0 flex-1 flex-col gap-1.5 text-left"
                 @click="openProjectWorkspace(proj.id)"
               >
-                <span class="truncate">{{ proj.name }}</span>
-                <span class="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500 dark:bg-slate-800 dark:text-slate-400">
-                  {{ proj.baseCurrency }}
-                </span>
+                <div class="flex w-full items-center justify-between gap-1.5">
+                  <span class="truncate text-xs font-bold">{{ proj.name }}</span>
+                  <span class="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+                    {{ proj.baseCurrency }}
+                  </span>
+                </div>
+                <div class="flex w-full items-baseline justify-between gap-1">
+                  <span class="truncate text-sm font-extrabold tabular-nums text-emerald-700 dark:text-emerald-400">
+                    {{ fmt(store.getProjectTotalExpense(proj.id), proj.baseCurrency) }}
+                  </span>
+                  <span class="shrink-0 text-[10px] font-medium text-slate-400 dark:text-slate-500">
+                    {{ t('project.memberCount', { count: proj.members.length }) }}
+                  </span>
+                </div>
               </button>
             </div>
           </div>
@@ -539,7 +572,7 @@ onBeforeUnmount(() => {
           @edit="startEditTransaction"
           @delete="handleDeleteTransaction"
           @open-project="openProjectWorkspace($event)"
-          @preview-photo="previewPhotoUrl = $event"
+          @preview-photos="openPhotoLightbox"
           @toast="showToast($event)"
         />
       </div>
@@ -595,10 +628,35 @@ onBeforeUnmount(() => {
               </div>
             </div>
 
-            <div>
-              <label class="mb-1.5 block text-xs font-semibold text-slate-600 dark:text-slate-300">
+            <div class="space-y-2">
+              <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300">
                 {{ t('project.membersLabel') }}
               </label>
+
+              <!-- 快速從既有專案帶入成員班底 -->
+              <div
+                v-if="store.activeProjects.length > 0"
+                class="space-y-1"
+              >
+                <div class="text-[11px] font-medium text-slate-400 dark:text-slate-500">
+                  {{ t('project.copyMembersFromProject') }}
+                </div>
+                <div class="flex flex-wrap gap-1.5">
+                  <button
+                    v-for="existingProj in store.activeProjects.slice(0, 6)"
+                    :key="existingProj.id"
+                    type="button"
+                    class="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:border-emerald-400 hover:bg-emerald-50 hover:text-emerald-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:border-emerald-500 dark:hover:text-emerald-300"
+                    @click="copyMembersFromProject(existingProj.id)"
+                  >
+                    <span class="max-w-[120px] truncate">{{ existingProj.name }}</span>
+                    <span class="text-[10px] text-slate-400">
+                      ({{ existingProj.members.length }})
+                    </span>
+                  </button>
+                </div>
+              </div>
+
               <textarea
                 v-model="projectMembersText"
                 rows="3"
@@ -679,15 +737,16 @@ onBeforeUnmount(() => {
           :project-base-currency="store.activeProject.baseCurrency"
           @edit="startEditTransaction"
           @delete="handleDeleteTransaction"
-          @preview-photo="previewPhotoUrl = $event"
+          @preview-photos="openPhotoLightbox"
           @toast="showToast($event)"
         />
 
-        <!-- 分頁 B：結算與一鍵分享 -->
+        <!-- 分頁 B：結算、圓餅圖統計與一鍵分享 -->
         <ProjectSettleTab
           v-else-if="projectTab === 'settle' && store.activeProjectSettleUp"
           :project="store.activeProject"
           :settle-up="store.activeProjectSettleUp"
+          :expenses="store.activeProjectExpenses"
           :settlements="store.activeProjectSettlements"
           @record-payment="openRecordSettlementModal"
           @edit-settlement="startEditTransaction"
@@ -744,7 +803,7 @@ onBeforeUnmount(() => {
       :prefill="quickIntakePrefill"
       @close="closeProjectExpenseSheet"
       @saved="showToast($event)"
-      @preview-photo="previewPhotoUrl = $event"
+      @preview-photos="openPhotoLightbox"
       @toast="showToast($event)"
     />
 
@@ -760,10 +819,11 @@ onBeforeUnmount(() => {
       @saved="showToast($event)"
     />
 
-    <!-- 收據圖片全螢幕預覽燈箱 -->
+    <!-- 收據圖片全螢幕多圖預覽燈箱 -->
     <PhotoLightboxModal
-      :photo-url="previewPhotoUrl"
-      @close="previewPhotoUrl = null"
+      :photos="previewPhotos"
+      :initial-index="previewPhotoIndex"
+      @close="closePhotoLightbox"
     />
   </div>
 </template>

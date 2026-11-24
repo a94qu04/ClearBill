@@ -146,6 +146,15 @@ export const CustomCategorySchema = z.object({
 })
 export type CustomCategory = z.infer<typeof CustomCategorySchema>
 
+/** 備份與同步用之分類管理項目結構（供跨裝置同步自訂分類名稱與色標） */
+export const ManagedCategoryBackupSchema = z.object({
+  key: z.string().trim().min(1).max(64),
+  customLabel: z.string().trim().min(1).max(32).optional(),
+  color: z.string().trim().min(1).max(32),
+  isBuiltin: z.boolean().optional(),
+})
+export type ManagedCategoryBackup = z.infer<typeof ManagedCategoryBackupSchema>
+
 /** 外部快速入帳（iOS 捷徑 / Web Share / 剪貼簿）輸入驗證結構 */
 export const QuickIntakeParamsSchema = z.object({
   amount: z.union([z.string(), z.number()]).optional(),
@@ -160,11 +169,12 @@ export const QuickIntakeParamsSchema = z.object({
 })
 export type QuickIntakeParams = z.infer<typeof QuickIntakeParamsSchema>
 
-/** 完整 JSON 備份與同步封包結構 */
+/** 完整 JSON 備份與同步封包結構（categories 為選填，完整向下相容舊版備份檔） */
 export const LedgerBackupSchema = z.object({
   schemaVersion: z.literal(CURRENT_SCHEMA_VERSION),
   exportedAt: z.number().int().nonnegative(),
   projects: z.array(ProjectSchema),
   transactions: z.array(TransactionSchema),
+  categories: z.array(ManagedCategoryBackupSchema).optional(),
 })
 export type LedgerBackup = z.infer<typeof LedgerBackupSchema>
