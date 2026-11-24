@@ -4,7 +4,11 @@ import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { VitePWA } from 'vite-plugin-pwa'
 
+const rawBase = process.env.VITE_BASE_PATH?.trim() || '/'
+const basePath = rawBase.endsWith('/') ? rawBase : `${rawBase}/`
+
 export default defineConfig({
+  base: basePath,
   plugins: [
     vue(),
     VitePWA({
@@ -17,7 +21,8 @@ export default defineConfig({
         theme_color: '#0f172a',
         background_color: '#f8fafc',
         display: 'standalone',
-        start_url: '/',
+        scope: basePath,
+        start_url: basePath,
         icons: [
           {
             src: 'favicon.svg',
@@ -28,7 +33,7 @@ export default defineConfig({
         ],
         // Web Share Target：接收系統分享的刷卡通知、訂單連結或文字
         share_target: {
-          action: '/#/quick-add',
+          action: `${basePath}#/quick-add`,
           method: 'GET',
           params: {
             title: 'merchant',
