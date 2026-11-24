@@ -19,6 +19,7 @@ interface Props {
   allowDecimals?: boolean
   enableExpression?: boolean
   showServiceFeeButton?: boolean
+  showMathToolbar?: boolean
   placeholder?: string
   size?: 'sm' | 'md' | 'lg'
   autofocus?: boolean
@@ -32,6 +33,7 @@ const props = withDefaults(defineProps<Props>(), {
   allowDecimals: undefined,
   enableExpression: false,
   showServiceFeeButton: false,
+  showMathToolbar: false,
   placeholder: '0',
   size: 'md',
   autofocus: false,
@@ -44,6 +46,11 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+
+const inputElRef = ref<HTMLInputElement | null>(null)
+const isFocused = ref(false)
+/** 可反悔的 +10% 服務費原始基數：非 null 代表目前已套用 +10%，再點一次還原原價 */
+const serviceFeeBase = ref<number | null>(null)
 
 const effectiveAllowDecimals = computed(() => {
   if (props.allowDecimals !== undefined) return props.allowDecimals
@@ -77,10 +84,21 @@ const formattedExpressionPreview = computed(() => {
   )
 })
 
+const formattedServiceFeeBase = computed(() => {
+  if (serviceFeeBase.value === null) return ''
+  return formatGroupedNumberInput(
+    serviceFeeBase.value,
+    effectiveAllowDecimals.value,
+  )
+})
+
+const isServiceFeeApplied = computed(() => serviceFeeBase.value !== null)
+
 watch(
   () => [props.modelValue, effectiveAllowDecimals.value] as const,
   ([nextVal, allowDec]) => {
     if (nextVal === null || nextVal === undefined) {
+      serviceFeeBase.value = null
       if (displayValue.value !== '') {
         displayValue.value = ''
       }
@@ -90,6 +108,7 @@ watch(
       ? evaluatedExpressionValue.value
       : parseGroupedNumberInput(displayValue.value)
     if (currentParsed !== nextVal) {
+      serviceFeeBase.value = null
       displayValue.value = formatGroupedNumberInput(nextVal, allowDec)
     }
   },
@@ -98,9 +117,10 @@ watch(
 function handleInput(event: Event) {
   const target = event.target as HTMLInputElement
   const raw = target.value
+  // 手動修改數值時自動解除 +10% 狀態鎖定，避免原價基準與當前數字脫鉤
+  serviceFeeBase.value = null
 
   if (props.enableExpression && hasMathExpression(raw)) {
-    // 允許數字、小數點、千分位逗號與常用加減乘除括號百分比符號
     const sanitized = raw.replace(/[^\d.,+\-*/()%×÷＋－（）％xX\s]/g, '')
     displayValue.value = sanitized
     if (target.value !== sanitized) {
@@ -132,6 +152,11 @@ function commitExpressionIfValid() {
   }
 }
 
+function handleBlur() {
+  isFocused.value = false
+  commitExpressionIfValid()
+}
+
 function handleKeydown(event: KeyboardEvent) {
   if (event.key === 'Enter' && isExpressionInput.value) {
     event.preventDefault()
@@ -139,12 +164,44 @@ function handleKeydown(event: KeyboardEvent) {
   }
 }
 
-function applyServiceFeeTenPercent() {
+function appendOperator(op: '+' | '-' | '×' | '÷') {
+  if (!props.enableExpression) return
+  serviceFeeBase.value = null
+  const current = displayValue.value.trim()
+  if (!current) return
+
+  // 若尾端已是運算子，直接替換避免出現 "100+×"
+  const replaced = /[+\-×÷*/]$/.test(current)
+    ? `${current.slice(0, -1)}${op}`
+    : `${current}${op}`
+
+  displayValue.value = replaced
+  const evaluated = evaluateAmountExpression(replaced, targetDecimals.value)
+  if (evaluated !== null) {
+    emit('update:modelValue', evaluated)
+  }
+  inputElRef.value?.focus()
+}
+
+function toggleServiceFeeTenPercent() {
+  // 若已套用 +10%，再點一次直接還原原價（防誤觸連點變 +21%）
+  if (serviceFeeBase.value !== null) {
+    const original = serviceFeeBase.value
+    serviceFeeBase.value = null
+    displayValue.value = formatGroupedNumberInput(
+      original,
+      effectiveAllowDecimals.value,
+    )
+    emit('update:modelValue', original)
+    return
+  }
+
   const baseVal = isExpressionInput.value
     ? evaluatedExpressionValue.value
     : parseGroupedNumberInput(displayValue.value)
   if (baseVal === null || baseVal <= 0) return
 
+  serviceFeeBase.value = baseVal
   const factor = 10 ** targetDecimals.value
   const withFee = Math.round(baseVal * 1.1 * factor) / factor
   displayValue.value = formatGroupedNumberInput(
@@ -163,7 +220,7 @@ const sizeClasses = computed(() => {
   if (props.size === 'lg') {
     return {
       wrapper: 'rounded-2xl',
-      select: 'w-[80px] py-3 pl-2.5 pr-1 text-xs font-bold',
+      select: 'w-[72px] py-3 pl-2.5 pr-1 text-xs font-bold',
       input: 'px-3.5 py-3 text-xl font-bold',
       feeBtn: 'px-2.5 text-xs',
     }
@@ -171,14 +228,14 @@ const sizeClasses = computed(() => {
   if (props.size === 'sm') {
     return {
       wrapper: 'rounded-lg',
-      select: 'w-[70px] py-1.5 pl-2 pr-1 text-[11px] font-bold',
+      select: 'w-[62px] py-1.5 pl-2 pr-1 text-[11px] font-bold',
       input: 'px-2.5 py-1.5 text-sm font-medium',
       feeBtn: 'px-1.5 text-[10px]',
     }
   }
   return {
     wrapper: 'rounded-xl',
-    select: 'w-[76px] py-2.5 pl-2 pr-1 text-xs font-bold',
+    select: 'w-[68px] py-2.5 pl-2 pr-1 text-xs font-bold',
     input: 'px-3 py-2.5 text-base font-bold',
     feeBtn: 'px-2 text-[11px]',
   }
@@ -186,7 +243,7 @@ const sizeClasses = computed(() => {
 </script>
 
 <template>
-  <div class="space-y-1">
+  <div class="space-y-1.5">
     <div
       class="flex items-stretch overflow-hidden border border-slate-200 bg-slate-50 transition focus-within:border-emerald-500 focus-within:bg-white focus-within:ring-2 focus-within:ring-emerald-500/20 dark:border-slate-700 dark:bg-slate-800 dark:focus-within:bg-slate-950"
       :class="sizeClasses.wrapper"
@@ -203,10 +260,12 @@ const sizeClasses = computed(() => {
         </option>
       </select>
 
+      <!-- 始終保留手機友善數字鍵盤 inputmode="decimal"，搭配下方迷你運算按鈕列支援算式 -->
       <input
+        ref="inputElRef"
         :value="displayValue"
         type="text"
-        :inputmode="enableExpression ? 'text' : 'decimal'"
+        inputmode="decimal"
         autocomplete="off"
         :autofocus="autofocus"
         :placeholder="placeholder"
@@ -215,41 +274,92 @@ const sizeClasses = computed(() => {
           sizeClasses.input,
           align === 'right' ? 'text-right' : 'text-left',
         ]"
+        @focus="isFocused = true"
         @input="handleInput"
-        @blur="commitExpressionIfValid"
+        @blur="handleBlur"
         @keydown="handleKeydown"
       />
 
+      <!-- 可反悔之 +10% 服務費開關（已套用時高亮，再點一下還原原價） -->
       <button
         v-if="showServiceFeeButton"
         type="button"
-        :disabled="(modelValue ?? 0) <= 0"
-        :title="t('project.serviceFeeTitle')"
-        class="shrink-0 border-l border-slate-200 bg-emerald-50/80 font-bold text-emerald-700 transition hover:bg-emerald-100 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:bg-emerald-950/50 dark:text-emerald-300 dark:hover:bg-emerald-950/80"
-        :class="sizeClasses.feeBtn"
-        @click="applyServiceFeeTenPercent"
+        :disabled="!isServiceFeeApplied && (modelValue ?? 0) <= 0"
+        :aria-pressed="isServiceFeeApplied"
+        :title="
+          isServiceFeeApplied
+            ? t('project.serviceFeeUndoTitle')
+            : t('project.serviceFeeTitle')
+        "
+        class="shrink-0 border-l border-slate-200 font-bold transition active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700"
+        :class="[
+          sizeClasses.feeBtn,
+          isServiceFeeApplied
+            ? 'bg-emerald-600 text-white hover:bg-emerald-700 dark:bg-emerald-500 dark:text-slate-950'
+            : 'bg-emerald-50/80 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-950/50 dark:text-emerald-300 dark:hover:bg-emerald-950/80',
+        ]"
+        @mousedown.prevent
+        @click="toggleServiceFeeTenPercent"
       >
-        +10%
+        {{ isServiceFeeApplied ? '+10% ✓' : '+10%' }}
       </button>
     </div>
 
-    <!-- 算式即時運算結果預覽列 -->
+    <!-- 手機友善迷你運算按鈕列（不犧牲數字鍵盤，也能一指點加減乘除） -->
     <div
-      v-if="isExpressionInput"
-      class="flex items-center justify-between px-1 text-[11px]"
+      v-if="enableExpression && (showMathToolbar || isFocused || isExpressionInput)"
+      class="flex flex-wrap items-center justify-between gap-1.5 px-0.5"
     >
-      <span class="text-slate-400 dark:text-slate-500">
-        {{ t('project.expressionHint') }}
-      </span>
-      <span
-        v-if="evaluatedExpressionValue !== null"
-        class="font-bold tabular-nums text-emerald-600 dark:text-emerald-400"
-      >
-        = {{ formattedExpressionPreview }}
-      </span>
-      <span v-else class="font-medium text-amber-600 dark:text-amber-400">
-        {{ t('project.expressionIncomplete') }}
-      </span>
+      <div class="flex items-center gap-1">
+        <button
+          v-for="op in (['+', '-', '×', '÷'] as const)"
+          :key="op"
+          type="button"
+          class="inline-flex h-6 min-w-[28px] items-center justify-center rounded-lg border border-slate-200 bg-white px-2 text-xs font-bold text-slate-700 shadow-sm transition hover:bg-slate-100 active:scale-95 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+          @mousedown.prevent
+          @click="appendOperator(op)"
+        >
+          {{ op }}
+        </button>
+        <button
+          v-if="isExpressionInput && evaluatedExpressionValue !== null"
+          type="button"
+          class="inline-flex h-6 items-center justify-center rounded-lg bg-emerald-600 px-2.5 text-xs font-bold text-white shadow-sm transition hover:bg-emerald-700 active:scale-95 dark:bg-emerald-500 dark:text-slate-950"
+          @mousedown.prevent
+          @click="commitExpressionIfValid"
+        >
+          =
+        </button>
+      </div>
+
+      <div class="text-[11px]">
+        <span
+          v-if="isExpressionInput && evaluatedExpressionValue !== null"
+          class="font-bold tabular-nums text-emerald-600 dark:text-emerald-400"
+        >
+          = {{ formattedExpressionPreview }}
+        </span>
+        <span
+          v-else-if="isExpressionInput"
+          class="font-medium text-amber-600 dark:text-amber-400"
+        >
+          {{ t('project.expressionIncomplete') }}
+        </span>
+        <span
+          v-else-if="isServiceFeeApplied"
+          class="font-semibold text-emerald-700 dark:text-emerald-400"
+        >
+          {{ t('project.serviceFeeAppliedHint', { base: formattedServiceFeeBase }) }}
+        </span>
+      </div>
+    </div>
+
+    <!-- 若未顯示運算列但已套用 +10% 服務費，仍顯示可還原提示 -->
+    <div
+      v-else-if="isServiceFeeApplied"
+      class="px-1 text-right text-[11px] font-semibold text-emerald-700 dark:text-emerald-400"
+    >
+      {{ t('project.serviceFeeAppliedHint', { base: formattedServiceFeeBase }) }}
     </div>
   </div>
 </template>

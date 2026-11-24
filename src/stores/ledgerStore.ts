@@ -300,7 +300,8 @@ export const useLedgerStore = defineStore('ledger', () => {
     return Array.from(set)
   })
 
-  const activeProjects = computed(() => {
+  /** 所有未刪除之專案（含已封存），供查詢與總額對照使用 */
+  const allNonDeletedProjects = computed(() => {
     const orderIndex = new Map<string, number>()
     projectOrder.value.forEach((id, idx) => orderIndex.set(id, idx))
 
@@ -315,6 +316,16 @@ export const useLedgerStore = defineStore('ledger', () => {
         return b.updatedAt - a.updatedAt
       })
   })
+
+  /** 進行中（未刪除且未封存）之專案清單 */
+  const activeProjects = computed(() =>
+    allNonDeletedProjects.value.filter((p) => !p.isArchived),
+  )
+
+  /** 已封存（結案歸檔）之專案清單 */
+  const archivedProjects = computed(() =>
+    allNonDeletedProjects.value.filter((p) => Boolean(p.isArchived)),
+  )
 
   function reorderProjects(sourceId: string, targetId: string): void {
     if (!sourceId || !targetId || sourceId === targetId) return
@@ -351,10 +362,14 @@ export const useLedgerStore = defineStore('ledger', () => {
 
   const activeProject = computed<Project | null>(() => {
     if (!activeProjectId.value) {
-      return activeProjects.value.find((p) => p.isActive) ?? null
+      return (
+        activeProjects.value.find((p) => p.isActive) ??
+        activeProjects.value[0] ??
+        null
+      )
     }
     return (
-      activeProjects.value.find((p) => p.id === activeProjectId.value) ??
+      allNonDeletedProjects.value.find((p) => p.id === activeProjectId.value) ??
       activeProjects.value[0] ??
       null
     )
@@ -415,7 +430,7 @@ export const useLedgerStore = defineStore('ledger', () => {
     }
 
     const result: Record<string, number> = {}
-    for (const proj of activeProjects.value) {
+    for (const proj of allNonDeletedProjects.value) {
       const projTxs = txByProject.get(proj.id) ?? []
       if (projTxs.length === 0) {
         result[proj.id] = 0
@@ -454,7 +469,7 @@ export const useLedgerStore = defineStore('ledger', () => {
 
   function getProjectById(projectId: string | undefined): Project | null {
     if (!projectId) return null
-    return activeProjects.value.find((p) => p.id === projectId) ?? null
+    return allNonDeletedProjects.value.find((p) => p.id === projectId) ?? null
   }
 
   function getAnyProjectById(projectId: string | undefined): Project | null {
@@ -745,6 +760,159 @@ export const useLedgerStore = defineStore('ledger', () => {
     const saved = await saveProjectToNormalVault(updated)
     projects.value = projects.value.map((p) => (p.id === projectId ? saved : p))
     return { ok: true }
+  }
+
+  async function toggleArchiveProject(
+    projectId: string,
+  ): Promise<Project | null> {
+    const existing = projects.value.find((p) => p.id === projectId && !p.isDeleted)
+    if (!existing) return null
+
+    const nextArchived = !existing.isArchived
+    const updated: Project = {
+      ...existing,
+      isArchived: nextArchived,
+      isActive: !nextArchived,
+      members: existing.members.map((m) => ({ ...m })),
+      updatedAt: Date.now(),
+    }
+    const saved = await saveProjectToNormalVault(updated)
+    projects.value = projects.value.map((p) => (p.id === projectId ? saved : p))
+
+    if (nextArchived && activeProjectId.value === projectId) {
+      const next = activeProjects.value[0]?.id ?? null
+      activeProjectId.value = next
+      persistActiveProjectId(next)
+    } else if (!nextArchived) {
+      activeProjectId.value = saved.id
+      persistActiveProjectId(saved.id)
+    }
+    return saved
+  }
+
+  async function createDemoProject(labels: {
+    projectName: string
+    members: [string, string, string]
+    hotelNote: string
+    dinnerNote: string
+    shoppingNote: string
+    taxRefundNote: string
+    repaymentNote: string
+  }): Promise<Project> {
+    const proj = await createProject({
+      name: labels.projectName,
+      baseCurrency: 'TWD',
+      memberNames: labels.members,
+      defaultSplitMode: 'equal',
+    })
+
+    const [m1, m2, m3] = proj.members
+    const today = new Date()
+    const fmtDate = (offsetDays: number) => {
+      const d = new Date(today.getTime() - offsetDays * 86400000)
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    }
+
+    // 1. 住宿（台幣，m1 墊付，三人均攤）
+    await addTransaction({
+      projectId: proj.id,
+      type: 'expense',
+      amount: 9600,
+      currency: 'TWD',
+      exchangeRateToBase: 1,
+      categoryKey: 'cat_lodging',
+      date: fmtDate(2),
+      time: '15:00',
+      note: labels.hotelNote,
+      splitConfig: {
+        payerId: m1.id,
+        mode: 'equal',
+        shares: [
+          { memberId: m1.id, finalAmount: 3200, customAmount: 0, isIncludedInRemainder: true },
+          { memberId: m2.id, finalAmount: 3200, customAmount: 0, isIncludedInRemainder: true },
+          { memberId: m3.id, finalAmount: 3200, customAmount: 0, isIncludedInRemainder: true },
+        ],
+      },
+    })
+
+    // 2. 燒肉晚餐（日圓外幣，m2 墊付，混合拆帳：m3 多點酒 2000，其餘均攤）
+    await addTransaction({
+      projectId: proj.id,
+      type: 'expense',
+      amount: 14000,
+      currency: 'JPY',
+      exchangeRateToBase: 0.215,
+      categoryKey: 'cat_food',
+      date: fmtDate(1),
+      time: '19:30',
+      note: labels.dinnerNote,
+      splitConfig: {
+        payerId: m2.id,
+        mode: 'custom_plus_equal',
+        shares: [
+          { memberId: m1.id, finalAmount: 4000, customAmount: 0, isIncludedInRemainder: true },
+          { memberId: m2.id, finalAmount: 4000, customAmount: 0, isIncludedInRemainder: true },
+          { memberId: m3.id, finalAmount: 6000, customAmount: 2000, isIncludedInRemainder: true },
+        ],
+      },
+    })
+
+    // 3. 藥妝購物（日圓，m1 墊付，m1 與 m2 平分）
+    await addTransaction({
+      projectId: proj.id,
+      type: 'expense',
+      amount: 10000,
+      currency: 'JPY',
+      exchangeRateToBase: 0.215,
+      categoryKey: 'cat_shopping',
+      date: fmtDate(0),
+      time: '14:20',
+      note: labels.shoppingNote,
+      splitConfig: {
+        payerId: m1.id,
+        mode: 'equal',
+        shares: [
+          { memberId: m1.id, finalAmount: 5000, customAmount: 0, isIncludedInRemainder: true },
+          { memberId: m2.id, finalAmount: 5000, customAmount: 0, isIncludedInRemainder: true },
+          { memberId: m3.id, finalAmount: 0, customAmount: 0, isIncludedInRemainder: false },
+        ],
+      },
+    })
+
+    // 4. 退稅退款（日圓退款，退給 m1，m1 與 m2 平分）
+    await addTransaction({
+      projectId: proj.id,
+      type: 'refund',
+      amount: 1000,
+      currency: 'JPY',
+      exchangeRateToBase: 0.215,
+      categoryKey: 'cat_shopping',
+      date: fmtDate(0),
+      time: '14:35',
+      note: labels.taxRefundNote,
+      splitConfig: {
+        payerId: m1.id,
+        mode: 'equal',
+        shares: [
+          { memberId: m1.id, finalAmount: 500, customAmount: 0, isIncludedInRemainder: true },
+          { memberId: m2.id, finalAmount: 500, customAmount: 0, isIncludedInRemainder: true },
+          { memberId: m3.id, finalAmount: 0, customAmount: 0, isIncludedInRemainder: false },
+        ],
+      },
+    })
+
+    // 5. 部分還款範例（m3 先轉給 m1 2000）
+    await recordSettlementPayment({
+      projectId: proj.id,
+      fromMemberId: m3.id,
+      toMemberId: m1.id,
+      amount: 2000,
+      currency: 'TWD',
+      date: fmtDate(0),
+      note: labels.repaymentNote,
+    })
+
+    return proj
   }
 
   async function softDeleteProject(projectId: string): Promise<void> {
@@ -1067,7 +1235,9 @@ export const useLedgerStore = defineStore('ledger', () => {
     enabledCurrencies,
     categories,
     availableCurrencies,
+    allNonDeletedProjects,
     activeProjects,
+    archivedProjects,
     activeProject,
     visibleTransactions,
     deletedTransactions,
@@ -1093,9 +1263,11 @@ export const useLedgerStore = defineStore('ledger', () => {
     initFromIndexedDb,
     setStoragePersisted,
     createProject,
+    createDemoProject,
     reorderProjects,
     moveProjectOrder,
     updateProject,
+    toggleArchiveProject,
     addProjectMember,
     updateProjectMember,
     removeProjectMember,

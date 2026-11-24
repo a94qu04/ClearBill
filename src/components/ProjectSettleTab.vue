@@ -3,8 +3,9 @@ import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   Coins,
-  FileJson,
   FileSpreadsheet,
+  ImageDown,
+  Loader2,
   Pencil,
   Share2,
   Trash2,
@@ -13,11 +14,12 @@ import type { Project, Transaction } from '@/schemas/ledgerSchema'
 import type { SettleUpResult } from '@/core/settleUpEngine'
 import { formatCurrencyAmount } from '@/core/currency'
 import { buildProjectSettlementShareText } from '@/core/shareFormatter'
-import { buildProjectCsvContent } from '@/core/csvExporter'
+import { buildProjectExcelBytes } from '@/core/excelExporter'
+import { generateProjectReportPngBlob } from '@/core/reportImageGenerator'
 import {
   getTodayIso,
   sanitizeExportFilename,
-  triggerTextFileDownload,
+  triggerBinaryFileDownload,
 } from '@/core/ledgerHelpers'
 import { useLedgerStore, type ManagedCategory } from '@/stores/ledgerStore'
 import CategoryPieChart from '@/components/CategoryPieChart.vue'
@@ -42,6 +44,7 @@ const { t, locale } = useI18n()
 const store = useLedgerStore()
 
 const includeDetailsInShare = ref(false)
+const isGeneratingImage = ref(false)
 
 function fmt(amount: number, currency: string): string {
   return formatCurrencyAmount(amount, currency, locale.value)
@@ -152,51 +155,128 @@ async function handleShareSettlement() {
   }
 }
 
-function handleExportCsv() {
-  const allProjectTxs = [...props.expenses, ...props.settlements]
-  const csv = buildProjectCsvContent(props.project, allProjectTxs, {
-    headers: {
-      date: t('export.csvDate'),
-      time: t('export.csvTime'),
-      type: t('export.csvType'),
-      category: t('export.csvCategory'),
-      note: t('export.csvNote'),
-      originalAmount: t('export.csvOriginalAmount'),
-      currency: t('export.csvCurrency'),
-      exchangeRate: t('export.csvExchangeRate'),
-      baseAmount: t('export.csvBaseAmount'),
-      baseCurrency: t('export.csvBaseCurrency'),
-      payers: t('export.csvPayers'),
-      shares: t('export.csvShares'),
-    },
-    typeNames: {
-      expense: t('project.typeExpense'),
-      refund: t('project.typeRefund'),
-      transfer: t('home.settlementBadge'),
-      income: t('daily.typeIncome'),
-      card_repayment: 'card_repayment',
-    },
-    resolveCategoryLabel: getCategoryLabel,
-  })
-  const safeName = sanitizeExportFilename(props.project.name)
-  triggerTextFileDownload(
-    csv,
-    `clearbill-${safeName}-${getTodayIso()}.csv`,
-    'text/csv;charset=utf-8',
-  )
-  emit('toast', t('export.csvExportedToast'))
+function getCategoryColor(key: string): string {
+  return store.categories.find((c) => c.key === key)?.color ?? '#64748b'
 }
 
-function handleExportSingleProjectJson() {
-  const backup = store.exportProjectBackup(props.project.id)
-  if (!backup) return
-  const safeName = sanitizeExportFilename(props.project.name)
-  triggerTextFileDownload(
-    JSON.stringify(backup, null, 2),
-    `clearbill-${safeName}-${getTodayIso()}.json`,
-    'application/json;charset=utf-8',
+function handleExportExcel() {
+  const allProjectTxs = [...props.expenses, ...props.settlements]
+  const bytes = buildProjectExcelBytes(
+    props.project,
+    allProjectTxs,
+    props.settleUp,
+    {
+      sheets: {
+        entries: t('export.excelSheetEntries'),
+        summary: t('export.excelSheetSummary'),
+      },
+      headers: {
+        date: t('export.csvDate'),
+        time: t('export.csvTime'),
+        type: t('export.csvType'),
+        category: t('export.csvCategory'),
+        note: t('export.csvNote'),
+        originalAmount: t('export.csvOriginalAmount'),
+        currency: t('export.csvCurrency'),
+        exchangeRate: t('export.csvExchangeRate'),
+        baseAmount: t('export.csvBaseAmount'),
+        baseCurrency: t('export.csvBaseCurrency'),
+        payers: t('export.csvPayers'),
+        shares: t('export.csvShares'),
+      },
+      summaryHeaders: {
+        member: t('export.excelMember'),
+        totalExpense: t('settle.memberTotalExpense'),
+        totalPaid: t('settle.memberTotalPaid'),
+        netAmount: t('export.excelNetAmount'),
+        transferFrom: t('settle.fromLabel'),
+        transferTo: t('settle.toLabel'),
+        transferAmount: t('daily.amountLabel'),
+        projectTotal: t('settle.projectTotalSpend'),
+        transfersTitle: t('settle.suggestionsTitle'),
+      },
+      typeNames: {
+        expense: t('project.typeExpense'),
+        refund: t('project.typeRefund'),
+        transfer: t('home.settlementBadge'),
+        income: t('daily.typeIncome'),
+        card_repayment: 'card_repayment',
+      },
+      resolveCategoryLabel: getCategoryLabel,
+    },
   )
-  emit('toast', t('export.projectJsonExportedToast'))
+  const safeName = sanitizeExportFilename(props.project.name)
+  triggerBinaryFileDownload(
+    bytes,
+    `clearbill-${safeName}-${getTodayIso()}.xlsx`,
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  )
+  emit('toast', t('export.excelExportedToast'))
+}
+
+async function handleExportLongImage() {
+  if (isGeneratingImage.value) return
+  isGeneratingImage.value = true
+  try {
+    const blob = await generateProjectReportPngBlob(
+      props.project,
+      props.settleUp,
+      props.expenses,
+      {
+        brandTitle: t('app.name'),
+        totalSpendLabel: t('settle.projectTotalSpend'),
+        memberCountLabel: t('project.memberCount', {
+          count: props.project.members.length,
+        }),
+        categorySectionTitle: t('stats.title'),
+        memberSectionTitle: t('settle.balancesTitle'),
+        spentLabel: t('settle.memberTotalExpense'),
+        paidLabel: t('settle.memberTotalPaid'),
+        shouldReceive: t('settle.shouldReceive'),
+        shouldPay: t('settle.shouldPay'),
+        settled: t('settle.settled'),
+        transfersSectionTitle: t('settle.suggestionsTitle'),
+        allSettledText: t('settle.allSettled'),
+        entriesSectionTitle: t('share.detailsTitle'),
+        refundBadge: t('project.refundBadge'),
+        footerTagline: t('share.footerTagline'),
+        resolveCategoryLabel: getCategoryLabel,
+        resolveCategoryColor: getCategoryColor,
+      },
+      locale.value,
+    )
+
+    const safeName = sanitizeExportFilename(props.project.name)
+    const filename = `clearbill-${safeName}-${getTodayIso()}.png`
+
+    // 行動端優先使用原生分享圖片檔（直接丟進 LINE 群組）；不支援則自動下載 PNG
+    if (
+      typeof navigator !== 'undefined' &&
+      typeof navigator.share === 'function' &&
+      typeof File !== 'undefined'
+    ) {
+      const file = new File([blob], filename, { type: 'image/png' })
+      if (!navigator.canShare || navigator.canShare({ files: [file] })) {
+        try {
+          await navigator.share({
+            title: `${t('share.headerPrefix')} ${props.project.name}`,
+            files: [file],
+          })
+          emit('toast', t('share.sharedToast'))
+          return
+        } catch (err) {
+          if (err instanceof Error && err.name === 'AbortError') return
+        }
+      }
+    }
+
+    triggerBinaryFileDownload(blob, filename, 'image/png')
+    emit('toast', t('export.longImageExportedToast'))
+  } catch {
+    emit('toast', t('export.longImageFailedToast'))
+  } finally {
+    isGeneratingImage.value = false
+  }
 }
 </script>
 
@@ -312,25 +392,27 @@ function handleExportSingleProjectJson() {
         </div>
       </div>
 
-      <!-- 單一專案快速匯出列（Excel CSV 與旅伴合併 JSON） -->
+      <!-- 匯出報表列：標準 Excel (.xlsx) 與高解析長截圖報表 (PNG) -->
       <div
         class="mt-3 grid grid-cols-2 gap-2 border-t border-slate-100 pt-3 dark:border-slate-800"
       >
         <button
           type="button"
           class="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2 text-[11px] font-bold text-slate-700 transition hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800/80 dark:text-slate-200 dark:hover:bg-slate-800"
-          @click="handleExportCsv"
+          @click="handleExportExcel"
         >
           <FileSpreadsheet class="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
-          <span class="truncate">{{ t('export.csvButton') }}</span>
+          <span class="truncate">{{ t('export.excelButton') }}</span>
         </button>
         <button
           type="button"
-          class="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2 text-[11px] font-bold text-slate-700 transition hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800/80 dark:text-slate-200 dark:hover:bg-slate-800"
-          @click="handleExportSingleProjectJson"
+          :disabled="isGeneratingImage"
+          class="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2 text-[11px] font-bold text-slate-700 transition hover:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800/80 dark:text-slate-200 dark:hover:bg-slate-800"
+          @click="handleExportLongImage"
         >
-          <FileJson class="h-3.5 w-3.5 text-sky-600 dark:text-sky-400" />
-          <span class="truncate">{{ t('export.projectJsonButton') }}</span>
+          <Loader2 v-if="isGeneratingImage" class="h-3.5 w-3.5 animate-spin text-sky-600" />
+          <ImageDown v-else class="h-3.5 w-3.5 text-sky-600 dark:text-sky-400" />
+          <span class="truncate">{{ t('export.longImageButton') }}</span>
         </button>
       </div>
     </section>

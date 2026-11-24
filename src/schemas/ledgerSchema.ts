@@ -132,6 +132,7 @@ export const ProjectSchema = z.object({
   defaultSplitMode: SplitModeSchema.default('equal'),
   defaultPayerId: z.string().trim().min(1).optional(),
   isActive: z.boolean().default(true),
+  isArchived: z.boolean().optional(),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
   isDeleted: z.boolean().optional(),

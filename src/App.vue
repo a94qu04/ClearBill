@@ -2,16 +2,21 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
+  Archive,
   ArrowLeft,
   Check,
   GripVertical,
   LayoutGrid,
   Plus,
   Receipt,
+  Settings,
+  Sparkles,
   Undo2,
+  X,
 } from 'lucide-vue-next'
-import { useLedgerStore } from '@/stores/ledgerStore'
+import { AVATAR_PALETTE, useLedgerStore } from '@/stores/ledgerStore'
 import { formatCurrencyAmount } from '@/core/currency'
+import { refreshLiveExchangeRates } from '@/services/exchangeRateService'
 import {
   parseQuickIntake,
   type ParsedQuickIntakeResult,
@@ -55,7 +60,8 @@ function closePhotoLightbox() {
 function copyMembersFromProject(sourceProjectId: string) {
   const source = store.getProjectById(sourceProjectId)
   if (!source) return
-  projectMembersText.value = source.members.map((m) => m.name).join(', ')
+  projectMembersList.value = source.members.map((m) => m.name)
+  newProjectMemberInput.value = ''
   showToast(
     t('project.membersCopiedToast', {
       name: source.name,
@@ -73,12 +79,64 @@ let toastTimer: ReturnType<typeof setTimeout> | null = null
 const draggingProjectId = ref<string | null>(null)
 const dragOverProjectId = ref<string | null>(null)
 
-// 建立新專案表單狀態
+// 建立新專案表單狀態（現代成員膠囊 Tag Chip）
 const projectName = ref('')
 const projectCurrency = ref(store.defaultCurrency)
 const projectDefaultSplitMode = ref<SplitMode>('equal')
-const projectMembersText = ref('')
+const projectMembersList = ref<string[]>([])
+const newProjectMemberInput = ref('')
 const projectFormError = ref('')
+
+function commitNewMemberChips() {
+  const raw = newProjectMemberInput.value
+  if (!raw.trim()) return
+  const parts = raw
+    .split(/[,，\n]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+  if (parts.length > 0) {
+    projectMembersList.value = [...projectMembersList.value, ...parts]
+  }
+  newProjectMemberInput.value = ''
+}
+
+function handleMemberInputKeydown(event: KeyboardEvent) {
+  if (event.key === 'Enter' || event.key === ',' || event.key === '，') {
+    event.preventDefault()
+    commitNewMemberChips()
+  } else if (
+    event.key === 'Backspace' &&
+    !newProjectMemberInput.value &&
+    projectMembersList.value.length > 0
+  ) {
+    projectMembersList.value = projectMembersList.value.slice(0, -1)
+  }
+}
+
+function removeMemberChip(index: number) {
+  projectMembersList.value = projectMembersList.value.filter(
+    (_, idx) => idx !== index,
+  )
+}
+
+async function handleCreateDemoProject() {
+  try {
+    await store.createDemoProject({
+      projectName: t('demo.projectName'),
+      members: [t('demo.member1'), t('demo.member2'), t('demo.member3')],
+      hotelNote: t('demo.hotelNote'),
+      dinnerNote: t('demo.dinnerNote'),
+      shoppingNote: t('demo.shoppingNote'),
+      taxRefundNote: t('demo.taxRefundNote'),
+      repaymentNote: t('demo.repaymentNote'),
+    })
+    projectTab.value = 'expenses'
+    activeView.value = 'project_workspace'
+    showToast(t('demo.createdToast'))
+  } catch {
+    showToast(t('home.saveFailed'))
+  }
+}
 
 // 支出與還款彈窗狀態
 const projExpenseSheetOpen = ref(false)
@@ -148,9 +206,11 @@ function fmt(amount: number, currency: string): string {
 }
 
 const homeProjectTransactions = computed(() =>
-  store.visibleTransactions.filter(
-    (tx) => Boolean(tx.projectId) && Boolean(store.getProjectById(tx.projectId)),
-  ),
+  store.visibleTransactions.filter((tx) => {
+    if (!tx.projectId) return false
+    const proj = store.getProjectById(tx.projectId)
+    return Boolean(proj && !proj.isArchived)
+  }),
 )
 
 const activeProjectTotalSpent = computed(
@@ -188,24 +248,28 @@ function openCreateProjectView() {
   projectName.value = ''
   projectCurrency.value = store.defaultCurrency
   projectDefaultSplitMode.value = 'equal'
-  projectMembersText.value = [
+  projectMembersList.value = [
     t('project.defaultMember1'),
     t('project.defaultMember2'),
     t('project.defaultMember3'),
-  ].join(', ')
+  ]
+  newProjectMemberInput.value = ''
   activeView.value = 'project_create'
 }
 
 async function handleCreateProject() {
   projectFormError.value = ''
+  if (newProjectMemberInput.value.trim()) {
+    commitNewMemberChips()
+  }
+
   const trimmedName = projectName.value.trim()
   if (!trimmedName) {
     projectFormError.value = t('validation.projectNameRequired')
     return
   }
 
-  const members = projectMembersText.value
-    .split(/[,，\n]+/)
+  const members = projectMembersList.value
     .map((m) => m.trim())
     .filter(Boolean)
 
@@ -368,6 +432,7 @@ function handleHashQuickAdd() {
 onMounted(async () => {
   initTheme()
   detectTouchDevice()
+  void refreshLiveExchangeRates()
   await store.initFromIndexedDb()
   handleHashQuickAdd()
   window.addEventListener('hashchange', handleHashQuickAdd)
@@ -383,50 +448,70 @@ onBeforeUnmount(() => {
   <div
     class="min-h-screen bg-slate-50 pb-24 text-slate-900 transition-colors duration-200 dark:bg-slate-950 dark:text-slate-100"
   >
-    <!-- 極簡 App 頂部導覽列（設定由左上 App Icon 點擊開啟） -->
+    <!-- 極簡 App 頂部導覽列（左上小收據 Icon 回首頁，右上同水平線放明確設定齒輪） -->
     <header
       class="sticky top-0 z-30 border-b border-slate-200/80 bg-white/90 backdrop-blur-md transition-colors dark:border-slate-800/80 dark:bg-slate-950/90"
     >
-      <div class="mx-auto flex h-14 max-w-xl items-center justify-between px-4">
+      <div class="mx-auto flex h-13 max-w-xl items-center justify-between gap-2 px-4 py-2">
         <div class="flex min-w-0 items-center gap-2">
           <button
             v-if="activeView !== 'home'"
             type="button"
             :aria-label="t('home.backToHome')"
-            class="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-slate-600 transition hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+            class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-slate-600 transition hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
             @click="activeView = 'home'"
           >
-            <ArrowLeft class="h-5 w-5" />
+            <ArrowLeft class="h-4 w-4" />
           </button>
 
           <button
             type="button"
-            :aria-label="t('app.openSettings')"
-            :title="t('app.openSettings')"
-            class="relative inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-slate-900 text-emerald-400 shadow-sm transition hover:scale-105 active:scale-95 dark:bg-emerald-500/15 dark:ring-1 dark:ring-emerald-500/40"
-            @click="settingsOpen = true"
+            :aria-label="t('home.backToHome')"
+            :title="t('app.name')"
+            class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-slate-900 text-emerald-400 shadow-sm transition hover:scale-105 active:scale-95 dark:bg-emerald-500/15 dark:ring-1 dark:ring-emerald-500/40"
+            @click="activeView = 'home'"
           >
-            <Receipt class="h-4 w-4" />
-            <span
-              v-if="store.deletedTransactions.length > 0"
-              class="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-rose-500 ring-2 ring-white dark:ring-slate-950"
-            />
+            <Receipt class="h-3.5 w-3.5" />
           </button>
 
-          <h1 class="truncate text-base font-bold tracking-tight text-slate-900 dark:text-white">
+          <h1 class="truncate text-sm font-bold tracking-tight text-slate-900 dark:text-white sm:text-base">
             {{ topBarTitle }}
           </h1>
         </div>
 
-        <button
-          v-if="activeView === 'project_workspace' && store.activeProjects.length > 0"
-          type="button"
-          class="inline-flex shrink-0 items-center gap-1 rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
-          @click="allProjectsSheetOpen = true"
-        >
-          <LayoutGrid class="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
-          <span>{{ t('home.viewAllProjects', { count: store.activeProjects.length }) }}</span>
-        </button>
+        <div class="flex shrink-0 items-center gap-1.5">
+          <button
+            v-if="
+              activeView === 'project_workspace' &&
+              store.allNonDeletedProjects.length > 0
+            "
+            type="button"
+            class="inline-flex h-7 shrink-0 items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2 text-[11px] font-semibold text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+            @click="allProjectsSheetOpen = true"
+          >
+            <LayoutGrid class="h-3 w-3 text-emerald-600 dark:text-emerald-400" />
+            <span>{{
+              t('home.viewAllProjects', {
+                count: store.allNonDeletedProjects.length,
+              })
+            }}</span>
+          </button>
+
+          <!-- 右上角明確設定齒輪按鈕（與左上 Icon 同水平線、精緻小尺寸） -->
+          <button
+            type="button"
+            :aria-label="t('settings.title')"
+            :title="t('settings.title')"
+            class="relative inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-600 transition hover:bg-slate-100 hover:text-slate-900 active:scale-95 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white"
+            @click="settingsOpen = true"
+          >
+            <Settings class="h-3.5 w-3.5" />
+            <span
+              v-if="store.deletedTransactions.length > 0"
+              class="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-rose-500 ring-2 ring-white dark:ring-slate-950"
+            />
+          </button>
+        </div>
       </div>
     </header>
 
@@ -481,13 +566,20 @@ onBeforeUnmount(() => {
 
             <div class="flex items-center gap-2">
               <button
-                v-if="store.activeProjects.length >= 2"
+                v-if="
+                  store.activeProjects.length >= 2 ||
+                  store.archivedProjects.length > 0
+                "
                 type="button"
                 class="inline-flex items-center gap-1 rounded-lg bg-slate-100 px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-200"
                 @click="allProjectsSheetOpen = true"
               >
                 <LayoutGrid class="h-3 w-3" />
-                <span>{{ t('home.viewAllProjects', { count: store.activeProjects.length }) }}</span>
+                <span>{{
+                  t('home.viewAllProjects', {
+                    count: store.allNonDeletedProjects.length,
+                  })
+                }}</span>
               </button>
               <button
                 type="button"
@@ -500,15 +592,25 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <button
-            v-if="store.activeProjects.length === 0"
-            type="button"
-            class="flex w-full items-center justify-center gap-2 rounded-2xl border border-dashed border-slate-300 bg-white px-4 py-6 text-sm font-semibold text-emerald-600 transition hover:border-emerald-400 hover:bg-emerald-50/40 dark:border-slate-700 dark:bg-slate-900 dark:text-emerald-400"
-            @click="openCreateProjectView"
-          >
-            <Plus class="h-4 w-4" />
-            <span>{{ t('home.createFirstProject') }}</span>
-          </button>
+          <div v-if="store.activeProjects.length === 0" class="space-y-2.5">
+            <button
+              type="button"
+              class="flex w-full items-center justify-center gap-2 rounded-2xl border border-dashed border-slate-300 bg-white px-4 py-6 text-sm font-semibold text-emerald-600 transition hover:border-emerald-400 hover:bg-emerald-50/40 dark:border-slate-700 dark:bg-slate-900 dark:text-emerald-400"
+              @click="openCreateProjectView"
+            >
+              <Plus class="h-4 w-4" />
+              <span>{{ t('home.createFirstProject') }}</span>
+            </button>
+
+            <button
+              type="button"
+              class="flex w-full items-center justify-center gap-1.5 rounded-2xl border border-emerald-200 bg-emerald-50/70 px-4 py-3 text-xs font-bold text-emerald-800 transition hover:bg-emerald-100 dark:border-emerald-800/70 dark:bg-emerald-950/40 dark:text-emerald-300 dark:hover:bg-emerald-950/70"
+              @click="handleCreateDemoProject"
+            >
+              <Sparkles class="h-4 w-4" />
+              <span>{{ t('demo.tryButton') }}</span>
+            </button>
+          </div>
 
           <div v-else class="grid grid-cols-2 gap-2.5">
             <div
@@ -635,7 +737,7 @@ onBeforeUnmount(() => {
 
               <!-- 快速從既有專案帶入成員班底 -->
               <div
-                v-if="store.activeProjects.length > 0"
+                v-if="store.allNonDeletedProjects.length > 0"
                 class="space-y-1"
               >
                 <div class="text-[11px] font-medium text-slate-400 dark:text-slate-500">
@@ -643,7 +745,7 @@ onBeforeUnmount(() => {
                 </div>
                 <div class="flex flex-wrap gap-1.5">
                   <button
-                    v-for="existingProj in store.activeProjects.slice(0, 6)"
+                    v-for="existingProj in store.allNonDeletedProjects.slice(0, 6)"
                     :key="existingProj.id"
                     type="button"
                     class="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:border-emerald-400 hover:bg-emerald-50 hover:text-emerald-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:border-emerald-500 dark:hover:text-emerald-300"
@@ -657,12 +759,54 @@ onBeforeUnmount(() => {
                 </div>
               </div>
 
-              <textarea
-                v-model="projectMembersText"
-                rows="3"
-                :placeholder="t('project.membersPlaceholder')"
-                class="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-sm text-slate-900 focus:border-emerald-500 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white"
-              />
+              <!-- 現代成員膠囊（Tag Chip）輸入盒 -->
+              <div
+                class="space-y-2 rounded-2xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-800/80"
+              >
+                <div v-if="projectMembersList.length > 0" class="flex flex-wrap gap-1.5">
+                  <span
+                    v-for="(memberName, idx) in projectMembersList"
+                    :key="`${memberName}-${idx}`"
+                    class="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white py-1 pl-2.5 pr-1.5 text-xs font-semibold text-slate-800 shadow-sm dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                  >
+                    <span
+                      class="h-2 w-2 rounded-full"
+                      :style="{
+                        backgroundColor:
+                          AVATAR_PALETTE[idx % AVATAR_PALETTE.length],
+                      }"
+                    />
+                    <span>{{ memberName }}</span>
+                    <button
+                      type="button"
+                      :aria-label="t('home.deleteTx')"
+                      class="rounded-full p-0.5 text-slate-400 hover:bg-rose-50 hover:text-rose-500 dark:hover:bg-rose-950/60"
+                      @click="removeMemberChip(idx)"
+                    >
+                      <X class="h-3 w-3" />
+                    </button>
+                  </span>
+                </div>
+
+                <div class="flex gap-1.5">
+                  <input
+                    v-model="newProjectMemberInput"
+                    type="text"
+                    :placeholder="t('project.memberChipPlaceholder')"
+                    class="min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-900 focus:border-emerald-500 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+                    @keydown="handleMemberInputKeydown"
+                  />
+                  <button
+                    type="button"
+                    :disabled="!newProjectMemberInput.trim()"
+                    class="inline-flex shrink-0 items-center gap-1 rounded-xl bg-slate-900 px-3 py-2 text-xs font-bold text-white disabled:opacity-40 dark:bg-emerald-500 dark:text-slate-950"
+                    @click="commitNewMemberChips"
+                  >
+                    <Plus class="h-3.5 w-3.5" />
+                    <span>{{ t('project.addMemberButton') }}</span>
+                  </button>
+                </div>
+              </div>
             </div>
 
             <p v-if="projectFormError" class="text-xs font-medium text-rose-500">
@@ -688,9 +832,18 @@ onBeforeUnmount(() => {
           class="flex items-center justify-between rounded-2xl bg-slate-900 px-5 py-4 text-white dark:border dark:border-slate-800"
         >
           <div>
-            <div class="text-xs font-medium text-emerald-400">
-              {{ t('project.memberCount', { count: store.activeProject.members.length }) }}
-              · {{ store.activeProject.baseCurrency }}
+            <div class="flex flex-wrap items-center gap-1.5 text-xs font-medium text-emerald-400">
+              <span>
+                {{ t('project.memberCount', { count: store.activeProject.members.length }) }}
+                · {{ store.activeProject.baseCurrency }}
+              </span>
+              <span
+                v-if="store.activeProject.isArchived"
+                class="inline-flex items-center gap-1 rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-bold text-amber-300"
+              >
+                <Archive class="h-3 w-3" />
+                <span>{{ t('project.archivedBadge') }}</span>
+              </span>
             </div>
             <div class="mt-0.5 text-lg font-bold">{{ store.activeProject.name }}</div>
           </div>
@@ -793,6 +946,7 @@ onBeforeUnmount(() => {
       @close="allProjectsSheetOpen = false"
       @select-project="openProjectWorkspace($event)"
       @create-project="openCreateProjectView"
+      @toast="showToast($event)"
     />
 
     <!-- 專案支出新增／修改抽屜 -->

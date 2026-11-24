@@ -22,6 +22,7 @@ let startY = 0
 let directionLocked: 'horizontal' | 'vertical' | null = null
 let activePointerId: number | null = null
 let captureEl: HTMLElement | null = null
+let suppressNextClick = false
 
 type PendingAction = 'none' | 'edit' | 'delete'
 
@@ -99,7 +100,18 @@ function onPointerMove(event: PointerEvent) {
   if (directionLocked !== 'horizontal') return
 
   // 取消右滑：僅允許向左滑動（offsetX <= 0）
+  if (Math.abs(dx) > 10) {
+    suppressNextClick = true
+  }
   offsetX.value = Math.max(MAX_LEFT_PULL, Math.min(0, dx))
+}
+
+function onClickCapture(event: MouseEvent) {
+  if (suppressNextClick) {
+    suppressNextClick = false
+    event.preventDefault()
+    event.stopPropagation()
+  }
 }
 
 function finishDrag() {
@@ -133,6 +145,7 @@ function finishDrag() {
 <template>
   <div
     class="relative overflow-hidden select-none touch-pan-y"
+    @click.capture="onClickCapture"
     @pointerdown="onPointerDown"
     @pointermove="onPointerMove"
     @pointerup="finishDrag"

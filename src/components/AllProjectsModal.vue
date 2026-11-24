@@ -2,6 +2,8 @@
 import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
+  Archive,
+  ArchiveRestore,
   Check,
   ChevronDown,
   ChevronUp,
@@ -23,10 +25,20 @@ const emit = defineEmits<{
   (e: 'close'): void
   (e: 'selectProject', projectId: string): void
   (e: 'createProject'): void
+  (e: 'toast', message: string): void
 }>()
 
 const { t, locale } = useI18n()
 const store = useLedgerStore()
+
+const showArchived = ref(false)
+
+async function handleUnarchive(projectId: string) {
+  const updated = await store.toggleArchiveProject(projectId)
+  if (updated) {
+    emit('toast', t('project.unarchivedToast', { name: updated.name }))
+  }
+}
 
 function fmtProjectTotal(projectId: string, currency: string): string {
   return formatCurrencyAmount(
@@ -187,6 +199,62 @@ function onDragEnd() {
             </div>
           </li>
         </ul>
+
+        <!-- 已封存專案折疊區 -->
+        <div
+          v-if="store.archivedProjects.length > 0"
+          class="mt-4 border-t border-slate-100 pt-3 dark:border-slate-800"
+        >
+          <button
+            type="button"
+            class="flex w-full items-center justify-between text-xs font-semibold text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200"
+            @click="showArchived = !showArchived"
+          >
+            <span class="inline-flex items-center gap-1.5">
+              <Archive class="h-3.5 w-3.5" />
+              <span>{{
+                t('project.archivedSectionTitle', {
+                  count: store.archivedProjects.length,
+                })
+              }}</span>
+            </span>
+            <ChevronUp v-if="showArchived" class="h-4 w-4" />
+            <ChevronDown v-else class="h-4 w-4" />
+          </button>
+
+          <ul v-if="showArchived" class="mt-2 space-y-2">
+            <li
+              v-for="proj in store.archivedProjects"
+              :key="proj.id"
+              class="flex items-center justify-between gap-2 rounded-2xl border border-slate-200/80 bg-slate-50/70 px-3 py-2.5 opacity-85 transition hover:opacity-100 dark:border-slate-800 dark:bg-slate-800/40"
+            >
+              <button
+                type="button"
+                class="min-w-0 flex-1 text-left"
+                @click="emit('selectProject', proj.id)"
+              >
+                <div class="truncate text-sm font-bold text-slate-700 dark:text-slate-200">
+                  {{ proj.name }}
+                </div>
+                <div class="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-slate-400">
+                  <span>{{ t('project.memberCount', { count: proj.members.length }) }}</span>
+                  <span>·</span>
+                  <span class="font-bold tabular-nums text-slate-600 dark:text-slate-300">
+                    {{ fmtProjectTotal(proj.id, proj.baseCurrency) }}
+                  </span>
+                </div>
+              </button>
+              <button
+                type="button"
+                class="inline-flex shrink-0 items-center gap-1 rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-bold text-emerald-700 hover:bg-emerald-50 dark:border-slate-700 dark:bg-slate-900 dark:text-emerald-400"
+                @click.stop="handleUnarchive(proj.id)"
+              >
+                <ArchiveRestore class="h-3.5 w-3.5" />
+                <span>{{ t('project.unarchiveButton') }}</span>
+              </button>
+            </li>
+          </ul>
+        </div>
 
         <button
           type="button"

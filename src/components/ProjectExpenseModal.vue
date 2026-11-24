@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Camera, Clock, Plus, X } from 'lucide-vue-next'
+import { Camera, Clock, Plus, RefreshCw, X } from 'lucide-vue-next'
 import { useLedgerStore, type ManagedCategory } from '@/stores/ledgerStore'
 import { formatCurrencyAmount } from '@/core/currency'
 import { compressImageFileToDataUrl } from '@/core/imageCompressor'
@@ -10,6 +10,10 @@ import {
   getSuggestedExchangeRate,
   getTodayIso,
 } from '@/core/ledgerHelpers'
+import {
+  getCachedLiveExchangeRate,
+  refreshLiveExchangeRates,
+} from '@/services/exchangeRateService'
 import type { ParsedQuickIntakeResult } from '@/core/quickIntakeParser'
 import type { Project, SplitConfig, Transaction } from '@/schemas/ledgerSchema'
 import CurrencyAmountInput from '@/components/CurrencyAmountInput.vue'
@@ -43,7 +47,8 @@ const splitResetKey = ref(0)
 const amount = ref<number | null>(null)
 const currency = ref('TWD')
 const exchangeRate = ref<number | null>(1)
-const exchangeRateSource = ref<'remembered' | 'estimated' | 'saved'>('estimated')
+const exchangeRateSource = ref<'remembered' | 'live' | 'estimated' | 'saved'>('estimated')
+const isFetchingLiveRate = ref(false)
 const categoryKey = ref<string>(store.categories[0]?.key ?? 'cat_food')
 const note = ref('')
 const date = ref(getTodayIso())
@@ -104,7 +109,7 @@ function cloneSplitConfig(config: SplitConfig | undefined): SplitConfig | null {
 function resolveExchangeRateForCurrency(
   fromCurrency: string,
   baseCurrency: string,
-): { rate: number; source: 'remembered' | 'estimated' } {
+): { rate: number; source: 'remembered' | 'live' | 'estimated' } {
   if (fromCurrency.toUpperCase() === baseCurrency.toUpperCase()) {
     return { rate: 1, source: 'estimated' }
   }
@@ -112,9 +117,31 @@ function resolveExchangeRateForCurrency(
   if (remembered !== null) {
     return { rate: remembered, source: 'remembered' }
   }
+  const live = getCachedLiveExchangeRate(fromCurrency, baseCurrency)
+  if (live !== null) {
+    return { rate: live.rate, source: 'live' }
+  }
   return {
     rate: getSuggestedExchangeRate(fromCurrency, baseCurrency),
     source: 'estimated',
+  }
+}
+
+async function handleApplyLiveRate() {
+  if (!props.project || !needsExchangeRate.value || isFetchingLiveRate.value) return
+  isFetchingLiveRate.value = true
+  try {
+    await refreshLiveExchangeRates(true)
+    const live = getCachedLiveExchangeRate(currency.value, props.project.baseCurrency)
+    if (live) {
+      exchangeRate.value = live.rate
+      exchangeRateSource.value = 'live'
+      emit('toast', t('project.liveRateAppliedToast', { rate: live.rate }))
+    } else {
+      emit('toast', t('project.liveRateUnavailableToast'))
+    }
+  } finally {
+    isFetchingLiveRate.value = false
   }
 }
 
@@ -365,6 +392,7 @@ async function handleSubmit() {
             :currencies="currencyOptions"
             show-currency-select
             enable-expression
+            show-math-toolbar
             show-service-fee-button
             size="lg"
             autofocus
@@ -373,7 +401,7 @@ async function handleSubmit() {
 
           <div
             v-if="needsExchangeRate"
-            class="space-y-1 rounded-xl border border-amber-200 bg-amber-50/70 px-3 py-2 text-xs dark:border-amber-800/60 dark:bg-amber-950/30"
+            class="space-y-1.5 rounded-xl border border-amber-200 bg-amber-50/70 px-3 py-2 text-xs dark:border-amber-800/60 dark:bg-amber-950/30"
           >
             <div class="flex flex-wrap items-center gap-2">
               <span class="font-semibold text-amber-900 dark:text-amber-200">
@@ -400,15 +428,33 @@ async function handleSubmit() {
                 }}
               </span>
             </div>
-            <div
-              v-if="exchangeRateSource !== 'saved'"
-              class="text-[10px] font-medium text-amber-700/90 dark:text-amber-300/80"
-            >
-              {{
-                exchangeRateSource === 'remembered'
-                  ? t('project.exchangeRateRememberedHint')
-                  : t('project.exchangeRateEstimatedHint')
-              }}
+            <div class="flex flex-wrap items-center justify-between gap-2 text-[10px]">
+              <span
+                v-if="exchangeRateSource !== 'saved'"
+                class="font-medium text-amber-700/90 dark:text-amber-300/80"
+              >
+                {{
+                  exchangeRateSource === 'remembered'
+                    ? t('project.exchangeRateRememberedHint')
+                    : exchangeRateSource === 'live'
+                      ? t('project.exchangeRateLiveHint')
+                      : t('project.exchangeRateEstimatedHint')
+                }}
+              </span>
+              <span v-else />
+
+              <button
+                type="button"
+                :disabled="isFetchingLiveRate"
+                class="inline-flex items-center gap-1 rounded-md bg-amber-200/70 px-2 py-0.5 font-bold text-amber-900 transition hover:bg-amber-200 disabled:opacity-50 dark:bg-amber-900/60 dark:text-amber-200"
+                @click="handleApplyLiveRate"
+              >
+                <RefreshCw
+                  class="h-3 w-3"
+                  :class="isFetchingLiveRate ? 'animate-spin' : ''"
+                />
+                <span>{{ t('project.refreshLiveRateButton') }}</span>
+              </button>
             </div>
           </div>
 

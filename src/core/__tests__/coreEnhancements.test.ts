@@ -5,6 +5,8 @@ import {
 } from '@/core/expressionEvaluator'
 import { calculateCategoryStats } from '@/core/categoryStats'
 import { buildProjectCsvContent, escapeCsvCell } from '@/core/csvExporter'
+import { buildProjectExcelBytes } from '@/core/excelExporter'
+import { computeCrossRateFromUsdTable } from '@/services/exchangeRateService'
 import {
   createSingleProjectBackupPayload,
   parseAndMergeLedgerBackup,
@@ -277,5 +279,68 @@ describe('單一專案備份匯出與含明細分享文字', () => {
     expect(text).toContain('▎消費與退款明細')
     expect(text).toContain('道頓堀燒肉')
     expect(text).toContain('[退款] 藥妝退稅')
+  })
+})
+
+describe('excelExporter & exchangeRateService - 標準 .xlsx 匯出與即時匯率換算', () => {
+  it('能產生有效 ZIP/OOXML 結構之雙工作表 Excel (.xlsx) 位元組陣列', () => {
+    const settleUp = calculateSettleUp(sampleTxs, 'TWD', ['me', 'amy'])
+    const bytes = buildProjectExcelBytes(sampleProject, sampleTxs, settleUp, {
+      sheets: { entries: '消費明細', summary: '結算總表' },
+      headers: {
+        date: '日期',
+        time: '時間',
+        type: '類型',
+        category: '分類',
+        note: '備註',
+        originalAmount: '原始金額',
+        currency: '幣別',
+        exchangeRate: '匯率',
+        baseAmount: '折合主幣別',
+        baseCurrency: '主幣別',
+        payers: '墊付人',
+        shares: '分攤明細',
+      },
+      summaryHeaders: {
+        member: '成員',
+        totalExpense: '總支出',
+        totalPaid: '已墊付',
+        netAmount: '淨收支',
+        transferFrom: '付款人',
+        transferTo: '收款人',
+        transferAmount: '金額',
+        projectTotal: '專案總支出',
+        transfersTitle: '待還款建議',
+      },
+      typeNames: {
+        expense: '消費',
+        refund: '退款',
+        transfer: '還款',
+        income: '收入',
+        card_repayment: '卡費',
+      },
+      resolveCategoryLabel: (k) => k,
+    })
+
+    // 檢查標準 ZIP Local File Header（PK\x03\x04）
+    expect(bytes[0]).toBe(0x50)
+    expect(bytes[1]).toBe(0x4b)
+    expect(bytes[2]).toBe(0x03)
+    expect(bytes[3]).toBe(0x04)
+
+    const decoded = new TextDecoder().decode(bytes)
+    expect(decoded).toContain('xl/worksheets/sheet1.xml')
+    expect(decoded).toContain('xl/worksheets/sheet2.xml')
+    expect(decoded).toContain('道頓堀燒肉')
+    expect(decoded).toContain('<v>-1000</v>')
+    expect(decoded).toContain('<v>2940</v>')
+  })
+
+  it('依 USD 基準匯率表正確交叉換算任意兩幣別（JPY -> TWD）', () => {
+    const table = { USD: 1, TWD: 32, JPY: 150, KRW: 1380 }
+    expect(computeCrossRateFromUsdTable(table, 'TWD', 'TWD')).toBe(1)
+    expect(computeCrossRateFromUsdTable(table, 'JPY', 'TWD')).toBe(0.2133)
+    expect(computeCrossRateFromUsdTable(table, 'USD', 'JPY')).toBe(150)
+    expect(computeCrossRateFromUsdTable(table, 'XXX', 'TWD')).toBeNull()
   })
 })

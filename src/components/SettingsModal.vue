@@ -409,11 +409,11 @@ function fmt(amount: number, currency: string): string {
     >
       <div
         v-if="open"
-        class="fixed inset-0 z-50 flex justify-start bg-slate-950/50 backdrop-blur-sm"
+        class="fixed inset-0 z-50 flex justify-end bg-slate-950/50 backdrop-blur-sm"
         @click.self="emit('close')"
       >
         <aside
-          class="flex h-full w-full max-w-sm flex-col border-r border-slate-200 bg-white shadow-2xl dark:border-slate-800 dark:bg-slate-900"
+          class="flex h-full w-full max-w-sm flex-col border-l border-slate-200 bg-white shadow-2xl dark:border-slate-800 dark:bg-slate-900"
         >
           <!-- 標題列 -->
           <div
