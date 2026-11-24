@@ -416,7 +416,7 @@
     "setupStep2": "將專案根目錄的 firestore.rules 貼上至 Firestore 規則頁並發布",
     "setupStep3": "複製 Web App 的 firebaseConfig 貼於下方（或設定至 .env 環境變數）",
     "configInputLabel": "貼上 Firebase Web Config（JSON 或 JS 物件皆可）",
-    "configInputPlaceholder": "{\n  \"apiKey\": \"...\",\n  \"authDomain\": \"...\",\n  \"projectId\": \"...\",\n  \"appId\": \"...\"\n}",
+    "configInputPlaceholder": "{'{'}\n  \"apiKey\": \"...\",\n  \"authDomain\": \"...\",\n  \"projectId\": \"...\",\n  \"appId\": \"...\"\n{'}'}",
     "saveConfigButton": "儲存設定並啟用",
     "configSavedToast": "已儲存 Firebase 設定，可以開始多人即時共享！",
     "configResetToast": "已清除自訂 Firebase 設定",

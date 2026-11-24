@@ -416,7 +416,7 @@
     "setupStep2": "Publish firestore.rules from the repo root in Firestore Rules",
     "setupStep3": "Paste your Web App firebaseConfig below (or configure VITE_FIREBASE_* env vars)",
     "configInputLabel": "Paste Firebase Web Config (JSON or JS snippet)",
-    "configInputPlaceholder": "{\n  \"apiKey\": \"...\",\n  \"authDomain\": \"...\",\n  \"projectId\": \"...\",\n  \"appId\": \"...\"\n}",
+    "configInputPlaceholder": "{'{'}\n  \"apiKey\": \"...\",\n  \"authDomain\": \"...\",\n  \"projectId\": \"...\",\n  \"appId\": \"...\"\n{'}'}",
     "saveConfigButton": "Save & Enable",
     "configSavedToast": "Firebase config saved! Ready for real-time sharing.",
     "configResetToast": "Custom Firebase config cleared",

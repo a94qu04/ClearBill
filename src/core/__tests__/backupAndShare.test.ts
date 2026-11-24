@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { createI18n } from 'vue-i18n'
 import {
   createLedgerBackupPayload,
   parseAndMergeLedgerBackup,
@@ -11,6 +12,9 @@ import { SchemaMigrationError } from '@/core/migrationEngine'
 import { buildProjectSettlementShareText } from '@/core/shareFormatter'
 import { calculateSettleUp } from '@/core/settleUpEngine'
 import type { Project, Transaction } from '@/schemas/ledgerSchema'
+import zhTW from '@/locales/zh-TW.json'
+import en from '@/locales/en.json'
+import ja from '@/locales/ja.json'
 
 const projectA: Project = {
   id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
@@ -301,5 +305,38 @@ describe('googleConnectLink - Google 雲端跨裝置快速連線連結', () => {
     expect(() =>
       buildGoogleConnectLink('https://example.com/', 'not-a-valid-client-id'),
     ).toThrow()
+  })
+})
+
+describe('i18n locales - 全站三語系鍵值對齊與 vue-i18n 實機編譯健檢', () => {
+  const flattenKeys = (obj: Record<string, unknown>, prefix = ''): string[] =>
+    Object.entries(obj).flatMap(([k, v]) =>
+      v && typeof v === 'object' && !Array.isArray(v)
+        ? flattenKeys(v as Record<string, unknown>, prefix ? `${prefix}.${k}` : k)
+        : [prefix ? `${prefix}.${k}` : k],
+    )
+
+  it('zh-TW / en / ja 三語系鍵值 100% 一致且全部可被 vue-i18n 零錯誤編譯', () => {
+    const zhKeys = flattenKeys(zhTW).sort()
+    const enKeys = flattenKeys(en).sort()
+    const jaKeys = flattenKeys(ja).sort()
+
+    expect(enKeys).toEqual(zhKeys)
+    expect(jaKeys).toEqual(zhKeys)
+
+    const i18n = createI18n({
+      legacy: false,
+      locale: 'zh-TW',
+      messages: { 'zh-TW': zhTW, en, ja },
+    })
+
+    for (const loc of ['zh-TW', 'en', 'ja'] as const) {
+      i18n.global.locale.value = loc
+      for (const key of zhKeys) {
+        const rendered = i18n.global.t(key)
+        expect(typeof rendered).toBe('string')
+        expect(rendered.length).toBeGreaterThan(0)
+      }
+    }
   })
 })

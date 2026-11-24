@@ -416,7 +416,7 @@
     "setupStep2": "ルート直下の firestore.rules を Firestore ルールへ貼り付けて公開",
     "setupStep3": "Web アプリの firebaseConfig を下に貼り付け（または .env で設定）",
     "configInputLabel": "Firebase Web Config を貼り付け（JSON / JS 形式対応）",
-    "configInputPlaceholder": "{\n  \"apiKey\": \"...\",\n  \"authDomain\": \"...\",\n  \"projectId\": \"...\",\n  \"appId\": \"...\"\n}",
+    "configInputPlaceholder": "{'{'}\n  \"apiKey\": \"...\",\n  \"authDomain\": \"...\",\n  \"projectId\": \"...\",\n  \"appId\": \"...\"\n{'}'}",
     "saveConfigButton": "設定を保存して有効化",
     "configSavedToast": "Firebase 設定を保存しました！共有を開始できます。",
     "configResetToast": "カスタム Firebase 設定を削除しました",
