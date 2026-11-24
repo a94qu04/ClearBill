@@ -1,0 +1,170 @@
+import { z } from 'zod'
+
+/** 當前資料庫與 JSON 備份之 Schema 版本 */
+export const CURRENT_SCHEMA_VERSION = 1 as const
+
+/** 三層隱私金庫層級 */
+export const VaultLevelSchema = z.enum(['normal', 'private', 'hidden'])
+export type VaultLevel = z.infer<typeof VaultLevelSchema>
+
+/** 交易類型 */
+export const TransactionTypeSchema = z.enum([
+  'expense',
+  'income',
+  'transfer',
+  'card_repayment',
+  'refund',
+])
+export type TransactionType = z.infer<typeof TransactionTypeSchema>
+
+/** 拆帳模式：equal（全員均攤）| custom_plus_equal（指定金額外其餘均攤） */
+export const SplitModeSchema = z.enum(['equal', 'custom_plus_equal'])
+export type SplitMode = z.infer<typeof SplitModeSchema>
+
+/** ISO 4217 三碼大寫幣別代碼（如 TWD、JPY、USD、KRW） */
+export const CurrencyCodeSchema = z
+  .string()
+  .trim()
+  .toUpperCase()
+  .regex(/^[A-Z]{3}$/, '幣別必須為 ISO 4217 三位大寫代碼')
+export type CurrencyCode = z.infer<typeof CurrencyCodeSchema>
+
+/** 日期格式 YYYY-MM-DD */
+export const IsoDateSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, '日期格式必須為 YYYY-MM-DD')
+
+/** 時間格式 HH:mm（未指定一律預設 00:00） */
+export const Time24hSchema = z
+  .string()
+  .regex(/^([01]\d|2[0-3]):[0-5]\d$/, '時間格式必須為 HH:mm')
+
+/** 單一成員拆帳輸入結構（用於 splitCalculator） */
+export const MemberSplitInputSchema = z.object({
+  memberId: z.string().trim().min(1, '成員 ID 不可為空'),
+  customAmount: z.number().finite().min(0, '指定金額不可為負數').default(0),
+  isIncludedInRemainder: z.boolean().default(true),
+})
+export type MemberSplitInput = z.input<typeof MemberSplitInputSchema>
+export type NormalizedMemberSplitInput = z.output<typeof MemberSplitInputSchema>
+
+/** 單一墊付人實付金額結構（支援多人同時墊付同一筆消費） */
+export const SplitPayerSchema = z.object({
+  memberId: z.string().trim().min(1, '墊付人 ID 不可為空'),
+  amount: z.number().finite().min(0, '墊付金額不可為負數'),
+})
+export type SplitPayer = z.infer<typeof SplitPayerSchema>
+
+/** 單一成員最終分攤金額（保留選填原始輸入欄位，讓修改帳目可 100% 精準還原） */
+export const SplitShareSchema = z.object({
+  memberId: z.string().trim().min(1),
+  finalAmount: z.number().finite().min(0),
+  customAmount: z.number().finite().min(0).optional(),
+  isIncludedInRemainder: z.boolean().optional(),
+})
+export type SplitShare = z.infer<typeof SplitShareSchema>
+
+/** 交易內嵌之拆帳結果設定（支援單人 payerId 與多人 payers，完整向下相容） */
+export const SplitConfigSchema = z.object({
+  payerId: z.string().trim().min(1, '付款人 ID 不可為空'),
+  payers: z.array(SplitPayerSchema).min(1).optional(),
+  mode: SplitModeSchema,
+  shares: z.array(SplitShareSchema).min(1, '拆帳分攤名單不可為空'),
+})
+export type SplitConfig = z.infer<typeof SplitConfigSchema>
+
+/** 外部訂單或地圖連結（1~3 組有效 HTTP/HTTPS URL） */
+export const ExternalLinksSchema = z
+  .array(
+    z
+      .string()
+      .trim()
+      .url('必須為有效的 URL')
+      .refine(
+        (url) => url.startsWith('http://') || url.startsWith('https://'),
+        '僅允許 http 或 https 連結',
+      ),
+  )
+  .min(1)
+  .max(3)
+
+/** 核心交易紀錄結構 */
+export const TransactionSchema = z.object({
+  id: z.string().uuid('交易 ID 必須為標準 UUID'),
+  schemaVersion: z.literal(CURRENT_SCHEMA_VERSION).default(CURRENT_SCHEMA_VERSION),
+  projectId: z.string().trim().min(1).optional(),
+  vaultLevel: VaultLevelSchema,
+  type: TransactionTypeSchema,
+  amount: z.number().finite().min(0, '金額不可為負數'),
+  currency: CurrencyCodeSchema,
+  exchangeRateToBase: z.number().finite().positive('匯率必須大於 0').default(1),
+  categoryKey: z.string().trim().min(1, '分類鍵值不可為空'),
+  date: IsoDateSchema,
+  time: z.preprocess(
+    (val) => (val === undefined || val === null || val === '' ? '00:00' : val),
+    Time24hSchema,
+  ),
+  updatedAt: z.number().int().nonnegative(),
+  isDeleted: z.boolean().optional(),
+  note: z.string().max(1000).optional(),
+  links: ExternalLinksSchema.optional(),
+  receiptImages: z.array(z.string().min(1)).max(3).optional(),
+  isReimbursable: z.boolean().optional(),
+  splitConfig: SplitConfigSchema.optional(),
+})
+export type Transaction = z.infer<typeof TransactionSchema>
+
+/** 專案成員結構 */
+export const ProjectMemberSchema = z.object({
+  id: z.string().trim().min(1, '成員 ID 不可為空'),
+  name: z.string().trim().min(1, '成員名稱不可為空').max(50),
+  avatarColor: z.string().trim().max(32).optional(),
+})
+export type ProjectMember = z.infer<typeof ProjectMemberSchema>
+
+/** 旅遊 / 分帳專案結構 */
+export const ProjectSchema = z.object({
+  id: z.string().uuid('專案 ID 必須為標準 UUID'),
+  schemaVersion: z.literal(CURRENT_SCHEMA_VERSION).default(CURRENT_SCHEMA_VERSION),
+  name: z.string().trim().min(1, '專案名稱不可為空').max(100),
+  baseCurrency: CurrencyCodeSchema.default('TWD'),
+  members: z.array(ProjectMemberSchema).min(1, '專案至少須包含一位成員'),
+  defaultSplitMode: SplitModeSchema.default('equal'),
+  defaultPayerId: z.string().trim().min(1).optional(),
+  isActive: z.boolean().default(true),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+  isDeleted: z.boolean().optional(),
+})
+export type Project = z.infer<typeof ProjectSchema>
+
+/** 自訂消費分類結構 */
+export const CustomCategorySchema = z.object({
+  key: z.string().trim().min(1).max(64),
+  label: z.string().trim().min(1).max(32),
+  color: z.string().trim().max(32).optional(),
+})
+export type CustomCategory = z.infer<typeof CustomCategorySchema>
+
+/** 外部快速入帳（iOS 捷徑 / Web Share / 剪貼簿）輸入驗證結構 */
+export const QuickIntakeParamsSchema = z.object({
+  amount: z.union([z.string(), z.number()]).optional(),
+  merchant: z.string().max(200).optional(),
+  sourceApp: z.string().max(80).optional(),
+  rawText: z.string().max(4000).optional(),
+  currency: z.string().max(10).optional(),
+  sourceUrl: z.string().max(1000).optional(),
+  categoryKey: z.string().max(64).optional(),
+  date: z.string().max(32).optional(),
+  time: z.string().max(16).optional(),
+})
+export type QuickIntakeParams = z.infer<typeof QuickIntakeParamsSchema>
+
+/** 完整 JSON 備份與同步封包結構 */
+export const LedgerBackupSchema = z.object({
+  schemaVersion: z.literal(CURRENT_SCHEMA_VERSION),
+  exportedAt: z.number().int().nonnegative(),
+  projects: z.array(ProjectSchema),
+  transactions: z.array(TransactionSchema),
+})
+export type LedgerBackup = z.infer<typeof LedgerBackupSchema>

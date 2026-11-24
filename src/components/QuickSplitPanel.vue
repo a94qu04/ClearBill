@@ -1,0 +1,689 @@
+<script setup lang="ts">
+import { computed, reactive, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
+import {
+  AlertCircle,
+  CheckCircle2,
+  Info,
+  RotateCcw,
+  Users,
+} from 'lucide-vue-next'
+import type {
+  ProjectMember,
+  SplitConfig,
+  SplitMode,
+  SplitPayer,
+} from '@/schemas/ledgerSchema'
+import {
+  calculateSplit,
+  SplitCalculationError,
+  type SplitCalculationResult,
+} from '@/core/splitCalculator'
+import {
+  formatCurrencyAmount,
+  fromMinorUnits,
+  toMinorUnits,
+} from '@/core/currency'
+import CurrencyAmountInput from '@/components/CurrencyAmountInput.vue'
+
+interface Props {
+  totalAmount: number
+  currency: string
+  members: ProjectMember[]
+  defaultPayerId?: string
+  initialMode?: SplitMode
+  initialSplitConfig?: SplitConfig | null
+  resetKey?: number
+}
+
+const props = withDefaults(defineProps<Props>(), {
+  defaultPayerId: undefined,
+  initialMode: 'equal',
+  initialSplitConfig: null,
+  resetKey: 0,
+})
+
+const emit = defineEmits<{
+  (e: 'update:splitConfig', value: SplitConfig | null): void
+  (e: 'validityChange', isValid: boolean): void
+}>()
+
+const { t, locale } = useI18n()
+
+const mode = ref<SplitMode>(props.initialMode)
+const payerId = ref<string>(props.defaultPayerId || props.members[0]?.id || '')
+const isMultiPayer = ref(false)
+const multiPayerAmounts = reactive<Record<string, number | null>>({})
+
+interface MemberRowState {
+  customAmount: number | null
+  isIncludedInRemainder: boolean
+}
+
+const memberStateMap = reactive<Record<string, MemberRowState>>({})
+
+function applyPresetFromConfig(config: SplitConfig | null | undefined) {
+  const validIds = new Set(props.members.map((m) => m.id))
+  for (const existingId of Object.keys(memberStateMap)) {
+    if (!validIds.has(existingId)) {
+      delete memberStateMap[existingId]
+    }
+  }
+  for (const existingId of Object.keys(multiPayerAmounts)) {
+    if (!validIds.has(existingId)) {
+      delete multiPayerAmounts[existingId]
+    }
+  }
+
+  for (const member of props.members) {
+    multiPayerAmounts[member.id] = null
+  }
+
+  if (config) {
+    mode.value = config.mode
+    payerId.value = validIds.has(config.payerId)
+      ? config.payerId
+      : props.defaultPayerId || props.members[0]?.id || ''
+
+    // 還原單人或多人墊付設定
+    const activePayers = (config.payers ?? []).filter(
+      (p) => p.amount > 0 && validIds.has(p.memberId),
+    )
+    if (activePayers.length > 1) {
+      isMultiPayer.value = true
+      for (const p of activePayers) {
+        multiPayerAmounts[p.memberId] = p.amount
+      }
+    } else {
+      isMultiPayer.value = false
+      if (activePayers.length === 1) {
+        payerId.value = activePayers[0].memberId
+        multiPayerAmounts[activePayers[0].memberId] = activePayers[0].amount
+      }
+    }
+
+    const shareMap = new Map(config.shares.map((s) => [s.memberId, s]))
+
+    for (const member of props.members) {
+      const savedShare = shareMap.get(member.id)
+      if (!savedShare) {
+        memberStateMap[member.id] = {
+          customAmount: null,
+          isIncludedInRemainder: false,
+        }
+        continue
+      }
+
+      // 優先使用保存下來的原始輸入狀態，100% 精準還原修改前資料
+      if (
+        savedShare.customAmount !== undefined ||
+        savedShare.isIncludedInRemainder !== undefined
+      ) {
+        memberStateMap[member.id] = {
+          customAmount:
+            savedShare.customAmount && savedShare.customAmount > 0
+              ? savedShare.customAmount
+              : null,
+          isIncludedInRemainder: savedShare.isIncludedInRemainder ?? false,
+        }
+      } else if (config.mode === 'custom_plus_equal') {
+        memberStateMap[member.id] = {
+          customAmount: savedShare.finalAmount > 0 ? savedShare.finalAmount : null,
+          isIncludedInRemainder: false,
+        }
+      } else {
+        memberStateMap[member.id] = {
+          customAmount: null,
+          isIncludedInRemainder: savedShare.finalAmount > 0,
+        }
+      }
+    }
+    return
+  }
+
+  mode.value = props.initialMode
+  isMultiPayer.value = false
+  payerId.value =
+    (props.defaultPayerId && validIds.has(props.defaultPayerId)
+      ? props.defaultPayerId
+      : props.members[0]?.id) ?? ''
+
+  for (const member of props.members) {
+    memberStateMap[member.id] = {
+      customAmount: null,
+      isIncludedInRemainder: true,
+    }
+  }
+}
+
+watch(
+  () => [props.members, props.initialSplitConfig, props.resetKey] as const,
+  ([, nextConfig]) => {
+    applyPresetFromConfig(nextConfig)
+  },
+  { immediate: true, deep: true },
+)
+
+const normalizedTotal = computed(() =>
+  Number.isFinite(props.totalAmount) && props.totalAmount > 0
+    ? props.totalAmount
+    : 0,
+)
+
+function toggleMultiPayerMode() {
+  isMultiPayer.value = !isMultiPayer.value
+  if (isMultiPayer.value) {
+    const hasAnyAmount = props.members.some(
+      (m) => (multiPayerAmounts[m.id] ?? 0) > 0,
+    )
+    if (!hasAnyAmount && payerId.value && normalizedTotal.value > 0) {
+      multiPayerAmounts[payerId.value] = normalizedTotal.value
+    }
+  } else {
+    // 切回單人墊付時自動以墊付金額最高者作為主墊付人
+    const topPayer = props.members
+      .map((m) => ({ id: m.id, amt: multiPayerAmounts[m.id] ?? 0 }))
+      .sort((a, b) => b.amt - a.amt)[0]
+    if (topPayer && topPayer.amt > 0) {
+      payerId.value = topPayer.id
+    }
+  }
+}
+
+function fillRemainingToPayer(memberId: string) {
+  if (normalizedTotal.value <= 0) return
+  const totalUnits = toMinorUnits(normalizedTotal.value, props.currency)
+  let othersUnits = 0
+  for (const member of props.members) {
+    if (member.id === memberId) continue
+    const val = multiPayerAmounts[member.id] ?? 0
+    if (val > 0) {
+      othersUnits += toMinorUnits(val, props.currency)
+    }
+  }
+  const remainUnits = Math.max(0, totalUnits - othersUnits)
+  multiPayerAmounts[memberId] =
+    remainUnits > 0 ? fromMinorUnits(remainUnits, props.currency) : null
+}
+
+function resetAllSharesToEqual() {
+  for (const member of props.members) {
+    memberStateMap[member.id] = {
+      customAmount: null,
+      isIncludedInRemainder: true,
+    }
+  }
+}
+
+function handleSwitchMode(nextMode: SplitMode) {
+  mode.value = nextMode
+  if (nextMode === 'equal') {
+    const anyChecked = props.members.some(
+      (m) => memberStateMap[m.id]?.isIncludedInRemainder,
+    )
+    if (!anyChecked) {
+      for (const member of props.members) {
+        if (memberStateMap[member.id]) {
+          memberStateMap[member.id].isIncludedInRemainder = true
+        }
+      }
+    }
+  }
+}
+
+const multiPayerCheck = computed(() => {
+  if (!isMultiPayer.value) {
+    return {
+      isValid: Boolean(payerId.value),
+      paidTotal: normalizedTotal.value,
+      diff: 0,
+      payers: [] as SplitPayer[],
+    }
+  }
+
+  const totalUnits = toMinorUnits(normalizedTotal.value, props.currency)
+  let paidUnits = 0
+  const payers: SplitPayer[] = []
+
+  for (const member of props.members) {
+    const raw = multiPayerAmounts[member.id] ?? 0
+    if (raw > 0) {
+      const units = toMinorUnits(raw, props.currency)
+      paidUnits += units
+      payers.push({
+        memberId: member.id,
+        amount: fromMinorUnits(units, props.currency),
+      })
+    }
+  }
+
+  const diffUnits = totalUnits - paidUnits
+  return {
+    isValid: totalUnits > 0 && diffUnits === 0 && payers.length > 0,
+    paidTotal: fromMinorUnits(paidUnits, props.currency),
+    diff: fromMinorUnits(diffUnits, props.currency),
+    payers,
+  }
+})
+
+interface EvaluationState {
+  result: SplitCalculationResult | null
+  errorCode: string | null
+  unallocatedRemainder: number
+}
+
+const evaluation = computed<EvaluationState>(() => {
+  if (props.members.length === 0) {
+    return { result: null, errorCode: null, unallocatedRemainder: 0 }
+  }
+
+  const inputs = props.members.map((member) => {
+    const state = memberStateMap[member.id] ?? {
+      customAmount: null,
+      isIncludedInRemainder: true,
+    }
+    return {
+      memberId: member.id,
+      customAmount:
+        state.customAmount !== null && state.customAmount > 0
+          ? state.customAmount
+          : 0,
+      isIncludedInRemainder: state.isIncludedInRemainder,
+    }
+  })
+
+  try {
+    const result = calculateSplit({
+      totalAmount: normalizedTotal.value,
+      currency: props.currency,
+      mode: mode.value,
+      members: inputs,
+    })
+    return { result, errorCode: null, unallocatedRemainder: 0 }
+  } catch (error) {
+    if (error instanceof SplitCalculationError) {
+      const customSum =
+        mode.value === 'custom_plus_equal'
+          ? inputs.reduce((acc, m) => acc + m.customAmount, 0)
+          : 0
+      return {
+        result: null,
+        errorCode: error.code,
+        unallocatedRemainder: Math.max(0, normalizedTotal.value - customSum),
+      }
+    }
+    return {
+      result: null,
+      errorCode: 'ERR_INVALID_TOTAL_AMOUNT',
+      unallocatedRemainder: 0,
+    }
+  }
+})
+
+const shareByMemberId = computed<Record<string, number>>(() => {
+  const map: Record<string, number> = {}
+  if (!evaluation.value.result) return map
+  for (const share of evaluation.value.result.shares) {
+    map[share.memberId] = share.finalAmount
+  }
+  return map
+})
+
+function fmt(amount: number): string {
+  return formatCurrencyAmount(amount, props.currency, locale.value)
+}
+
+const dynamicHint = computed<{
+  tone: 'info' | 'success' | 'error'
+  text: string
+}>(() => {
+  if (normalizedTotal.value <= 0) {
+    return {
+      tone: 'info',
+      text: t('split.hintZeroTotal'),
+    }
+  }
+
+  if (isMultiPayer.value && !multiPayerCheck.value.isValid) {
+    if (multiPayerCheck.value.diff > 0) {
+      return {
+        tone: 'error',
+        text: t('split.errMultiPayerShort', {
+          diff: fmt(multiPayerCheck.value.diff),
+        }),
+      }
+    }
+    return {
+      tone: 'error',
+      text: t('split.errMultiPayerExceed', {
+        diff: fmt(Math.abs(multiPayerCheck.value.diff)),
+      }),
+    }
+  }
+
+  if (evaluation.value.errorCode === 'ERR_CUSTOM_EXCEEDS_TOTAL') {
+    return {
+      tone: 'error',
+      text: t('split.errCustomExceedsTotal'),
+    }
+  }
+
+  if (evaluation.value.errorCode === 'ERR_UNALLOCATED_REMAINDER') {
+    return {
+      tone: 'error',
+      text: t('split.errUnallocatedRemainder', {
+        remainder: fmt(evaluation.value.unallocatedRemainder),
+      }),
+    }
+  }
+
+  if (evaluation.value.errorCode) {
+    return {
+      tone: 'error',
+      text: t('split.errInvalidAmount'),
+    }
+  }
+
+  const res = evaluation.value.result
+  if (!res) {
+    return { tone: 'info', text: t('split.hintZeroTotal') }
+  }
+
+  if (res.mode === 'equal') {
+    return {
+      tone: 'success',
+      text: t('split.hintEqual', {
+        total: fmt(res.totalAmount),
+        count: res.remainderMemberCount,
+        perPerson: fmt(res.remainderBasePerMember),
+      }),
+    }
+  }
+
+  if (res.remainderPool === 0) {
+    return {
+      tone: 'success',
+      text: t('split.hintCustomExact', {
+        total: fmt(res.totalAmount),
+      }),
+    }
+  }
+
+  return {
+    tone: 'success',
+    text: t('split.hintCustomRemaining', {
+      customTotal: fmt(res.customTotal),
+      remainder: fmt(res.remainderPool),
+      count: res.remainderMemberCount,
+      perPerson: fmt(res.remainderBasePerMember),
+    }),
+  }
+})
+
+watch(
+  [evaluation, payerId, isMultiPayer, multiPayerCheck, mode, normalizedTotal],
+  () => {
+    const res = evaluation.value.result
+    const payerReady = isMultiPayer.value
+      ? multiPayerCheck.value.isValid
+      : Boolean(payerId.value)
+
+    if (!res || !payerReady || normalizedTotal.value <= 0) {
+      emit('update:splitConfig', null)
+      emit('validityChange', false)
+      return
+    }
+
+    const primaryPayerId = isMultiPayer.value
+      ? multiPayerCheck.value.payers[0].memberId
+      : payerId.value
+
+    const config: SplitConfig = {
+      payerId: primaryPayerId,
+      payers: isMultiPayer.value ? multiPayerCheck.value.payers : undefined,
+      mode: mode.value,
+      shares: res.shares.map((share) => ({
+        memberId: share.memberId,
+        finalAmount: share.finalAmount,
+        customAmount: share.customAmount,
+        isIncludedInRemainder: share.isIncludedInRemainder,
+      })),
+    }
+    emit('update:splitConfig', config)
+    emit('validityChange', true)
+  },
+  { immediate: true },
+)
+</script>
+
+<template>
+  <section
+    class="rounded-2xl border border-slate-200 bg-white p-4 transition-colors dark:border-slate-800 dark:bg-slate-900"
+  >
+    <!-- 付款人區塊（支援單人快選與多人墊付切換） -->
+    <div class="mb-3.5 space-y-2.5">
+      <div class="flex items-center justify-between gap-2">
+        <div class="flex items-center gap-1.5 text-xs font-semibold text-slate-600 dark:text-slate-300">
+          <Users class="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
+          <span>{{ t('split.payerLabel') }}</span>
+        </div>
+
+        <button
+          type="button"
+          class="rounded-lg px-2.5 py-1 text-xs font-semibold transition"
+          :class="
+            isMultiPayer
+              ? 'bg-emerald-600 text-white dark:bg-emerald-500 dark:text-slate-950'
+              : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700'
+          "
+          @click="toggleMultiPayerMode"
+        >
+          {{ isMultiPayer ? t('split.singlePayerMode') : t('split.multiPayerMode') }}
+        </button>
+      </div>
+
+      <!-- 單人墊付膠囊（同步顯示每位成員專屬色標） -->
+      <div v-if="!isMultiPayer" class="flex flex-wrap gap-1.5">
+        <button
+          v-for="member in members"
+          :key="member.id"
+          type="button"
+          class="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold transition"
+          :class="
+            payerId === member.id
+              ? 'text-white shadow-sm ring-2 ring-offset-1 ring-slate-900/20 dark:ring-white/30 dark:ring-offset-slate-900'
+              : 'bg-slate-100 text-slate-700 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700'
+          "
+          :style="
+            payerId === member.id
+              ? { backgroundColor: member.avatarColor || '#0f172a' }
+              : undefined
+          "
+          @click="payerId = member.id"
+        >
+          <span
+            v-if="payerId !== member.id"
+            class="h-2 w-2 rounded-full"
+            :style="{ backgroundColor: member.avatarColor || '#10b981' }"
+          />
+          <span>{{ member.name }}</span>
+        </button>
+      </div>
+
+      <!-- 多人墊付金額輸入列（同步顯示每位成員專屬色標） -->
+      <div
+        v-else
+        class="space-y-2 rounded-xl border border-slate-200 bg-slate-50/70 p-3 dark:border-slate-800 dark:bg-slate-950/50"
+      >
+        <div class="flex items-center justify-between text-[11px] font-medium text-slate-500 dark:text-slate-400">
+          <span>{{ t('split.multiPayerHint') }}</span>
+          <span class="tabular-nums font-semibold">
+            {{ fmt(multiPayerCheck.paidTotal) }} / {{ fmt(normalizedTotal) }}
+          </span>
+        </div>
+
+        <div
+          v-for="member in members"
+          :key="`payer-${member.id}`"
+          class="flex items-center justify-between gap-2"
+        >
+          <div class="flex min-w-[76px] items-center gap-1.5">
+            <span
+              class="h-2.5 w-2.5 shrink-0 rounded-full"
+              :style="{ backgroundColor: member.avatarColor || '#10b981' }"
+            />
+            <span class="truncate text-xs font-medium text-slate-700 dark:text-slate-200">
+              {{ member.name }}
+            </span>
+          </div>
+          <div class="flex items-center gap-1.5">
+            <CurrencyAmountInput
+              v-model="multiPayerAmounts[member.id]"
+              :currency="currency"
+              size="sm"
+              placeholder="0"
+              class="w-28"
+            />
+            <button
+              type="button"
+              class="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+              @click="fillRemainingToPayer(member.id)"
+            >
+              {{ t('split.fillRemaining') }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 雙頁籤切換：全部均攤 / 指定金額外均攤 -->
+    <div class="mb-3 flex items-center gap-2">
+      <div
+        role="tablist"
+        class="grid flex-1 grid-cols-2 rounded-xl bg-slate-100 p-1 dark:bg-slate-800"
+      >
+        <button
+          type="button"
+          role="tab"
+          :aria-selected="mode === 'equal'"
+          class="rounded-lg px-2.5 py-1.5 text-xs font-semibold transition"
+          :class="
+            mode === 'equal'
+              ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-950 dark:text-white'
+              : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'
+          "
+          @click="handleSwitchMode('equal')"
+        >
+          {{ t('split.tabEqual') }}
+        </button>
+        <button
+          type="button"
+          role="tab"
+          :aria-selected="mode === 'custom_plus_equal'"
+          class="rounded-lg px-2.5 py-1.5 text-xs font-semibold transition"
+          :class="
+            mode === 'custom_plus_equal'
+              ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-950 dark:text-white'
+              : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'
+          "
+          @click="handleSwitchMode('custom_plus_equal')"
+        >
+          {{ t('split.tabCustomPlusEqual') }}
+        </button>
+      </div>
+
+      <button
+        v-if="mode === 'custom_plus_equal'"
+        type="button"
+        :title="t('split.resetShares')"
+        class="inline-flex shrink-0 items-center gap-1 rounded-xl border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+        @click="resetAllSharesToEqual"
+      >
+        <RotateCcw class="h-3.5 w-3.5" />
+      </button>
+    </div>
+
+    <!-- 動態白話提示橫幅 -->
+    <div
+      class="mb-3 flex items-start gap-2 rounded-xl px-3 py-2 text-xs leading-relaxed"
+      :class="{
+        'border border-slate-200 bg-slate-50 text-slate-600 dark:border-slate-700 dark:bg-slate-800/70 dark:text-slate-300':
+          dynamicHint.tone === 'info',
+        'border border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-800/70 dark:bg-emerald-950/50 dark:text-emerald-200':
+          dynamicHint.tone === 'success',
+        'border border-rose-200 bg-rose-50 text-rose-900 dark:border-rose-800/70 dark:bg-rose-950/50 dark:text-rose-200':
+          dynamicHint.tone === 'error',
+      }"
+    >
+      <Info
+        v-if="dynamicHint.tone === 'info'"
+        class="mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-400 dark:text-slate-500"
+      />
+      <CheckCircle2
+        v-else-if="dynamicHint.tone === 'success'"
+        class="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600 dark:text-emerald-400"
+      />
+      <AlertCircle
+        v-else
+        class="mt-0.5 h-3.5 w-3.5 shrink-0 text-rose-600 dark:text-rose-400"
+      />
+      <p>{{ dynamicHint.text }}</p>
+    </div>
+
+    <!-- 成員分攤清單（千分位指定金額 + 個別勾選框） -->
+    <ul class="divide-y divide-slate-100 dark:divide-slate-800">
+      <li
+        v-for="member in members"
+        :key="member.id"
+        class="flex flex-wrap items-center justify-between gap-2 py-2.5 first:pt-1 last:pb-0"
+      >
+        <div class="flex min-w-[80px] items-center gap-2">
+          <span
+            class="inline-flex h-7 w-7 items-center justify-center rounded-full text-xs font-bold text-white"
+            :style="{ backgroundColor: member.avatarColor || '#0f172a' }"
+          >
+            {{ member.name.slice(0, 1).toUpperCase() }}
+          </span>
+          <span class="text-sm font-medium text-slate-800 dark:text-slate-100">
+            {{ member.name }}
+          </span>
+        </div>
+
+        <div class="flex flex-1 flex-wrap items-center justify-end gap-2">
+          <CurrencyAmountInput
+            v-if="mode === 'custom_plus_equal'"
+            v-model="memberStateMap[member.id].customAmount"
+            :currency="currency"
+            size="sm"
+            :placeholder="t('split.customAmountPlaceholder')"
+            class="w-24 sm:w-28"
+          />
+
+          <label
+            class="inline-flex cursor-pointer select-none items-center gap-1.5 rounded-lg border px-2 py-1 text-xs font-medium transition"
+            :class="
+              memberStateMap[member.id].isIncludedInRemainder
+                ? 'border-emerald-300 bg-emerald-50/70 text-emerald-900 dark:border-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-200'
+                : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400 dark:hover:bg-slate-800'
+            "
+          >
+            <input
+              v-model="memberStateMap[member.id].isIncludedInRemainder"
+              type="checkbox"
+              class="h-3.5 w-3.5 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 dark:border-slate-600 dark:bg-slate-800"
+            />
+            <span>{{
+              mode === 'equal'
+                ? t('split.includeInEqual')
+                : t('split.includeInRemainder')
+            }}</span>
+          </label>
+
+          <div class="min-w-[74px] text-right text-sm font-semibold tabular-nums text-slate-900 dark:text-slate-100">
+            {{ fmt(shareByMemberId[member.id] ?? 0) }}
+          </div>
+        </div>
+      </li>
+    </ul>
+  </section>
+</template>
