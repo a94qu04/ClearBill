@@ -152,6 +152,43 @@ function getMemberAvatar(memberId: string, projectId?: string): string | undefin
   return proj?.members.find((m) => m.id === memberId)?.avatarImage
 }
 
+function getPayerIndicatorMembers(
+  tx: Transaction,
+): Array<{ memberId: string; name: string; color: string; image?: string }> {
+  if (!tx.splitConfig) return []
+  const multi = (tx.splitConfig.payers ?? []).filter((p) => p.amount > 0)
+  const payerIds = multi.length > 1 ? multi.map((p) => p.memberId) : [tx.splitConfig.payerId]
+  return payerIds.map((memberId) => ({
+    memberId,
+    name: getMemberName(memberId, tx.projectId),
+    color: getMemberColor(memberId, tx.projectId),
+    image: getMemberAvatar(memberId, tx.projectId),
+  }))
+}
+
+function getSplitIndicatorMembers(
+  tx: Transaction,
+): Array<{ memberId: string; name: string; color: string; image?: string }> {
+  if (tx.type === 'transfer' || !tx.splitConfig) return []
+  const activeShares = tx.splitConfig.shares.filter((s) => s.finalAmount > 0)
+  if (activeShares.length === 0) return []
+  return activeShares.map((s) => ({
+    memberId: s.memberId,
+    name: getMemberName(s.memberId, tx.projectId),
+    color: getMemberColor(s.memberId, tx.projectId),
+    image: getMemberAvatar(s.memberId, tx.projectId),
+  }))
+}
+
+function getSplitIndicatorTooltip(tx: Transaction): string {
+  const members = getSplitIndicatorMembers(tx)
+  if (members.length === 0) return ''
+  return t('project.splitIndicatorTooltip', {
+    count: members.length,
+    names: members.map((m) => m.name).join('、'),
+  })
+}
+
 function getPayerBadgeText(tx: Transaction): string {
   if (!tx.splitConfig) return ''
   const multi = (tx.splitConfig.payers ?? []).filter((p) => p.amount > 0)
@@ -847,20 +884,34 @@ defineExpose({ resetFilters, setMemberFilter })
                         </span>
                       </div>
 
-                      <!-- 單行清爽副標（誰先付／所屬專案 · 時間 · 外幣折合） -->
-                      <div class="mt-0.5 flex items-center gap-1 truncate text-xs text-slate-400 dark:text-slate-500">
+                      <!-- 單行清爽副標（所屬專案 ＋ 墊付者小圈圈與名稱 · 時間 · 外幣折合） -->
+                      <div class="mt-0.5 flex items-center gap-1.5 truncate text-xs text-slate-400 dark:text-slate-500">
                         <button
                           v-if="context === 'home' && tx.projectId && store.getProjectById(tx.projectId)"
                           type="button"
-                          class="max-w-[110px] truncate font-medium text-emerald-600 hover:underline dark:text-emerald-400"
+                          class="max-w-[96px] shrink-0 truncate font-medium text-emerald-600 hover:underline dark:text-emerald-400"
                           @click.stop="emit('openProject', tx.projectId)"
                         >
                           {{ store.getProjectById(tx.projectId)?.name }}
                         </button>
-                        <span v-else-if="context === 'project' && tx.splitConfig" class="truncate">
-                          {{ getPayerBadgeText(tx) }}
+                        <span
+                          v-if="tx.splitConfig"
+                          class="inline-flex min-w-0 items-center gap-1 truncate"
+                        >
+                          <span class="inline-flex shrink-0 items-center -space-x-1">
+                            <MemberAvatar
+                              v-for="pm in getPayerIndicatorMembers(tx).slice(0, 3)"
+                              :key="pm.memberId"
+                              :name="pm.name"
+                              :color="pm.color"
+                              :image="pm.image"
+                              size="micro"
+                              ring
+                            />
+                          </span>
+                          <span class="truncate">{{ getPayerBadgeText(tx) }}</span>
                         </span>
-                        <span v-else>{{ getCategoryLabel(tx.categoryKey) }}</span>
+                        <span v-else-if="context !== 'home'">{{ getCategoryLabel(tx.categoryKey) }}</span>
                         <span v-if="tx.time !== '00:00'" class="shrink-0">· {{ tx.time }}</span>
                         <span
                           v-if="
@@ -884,22 +935,48 @@ defineExpose({ resetFilters, setMemberFilter })
                   </div>
 
                   <div class="flex shrink-0 items-center gap-1.5">
-                    <span
-                      class="text-[15px] font-semibold tabular-nums"
-                      :class="
-                        tx.type === 'income' || tx.type === 'refund'
-                          ? 'text-emerald-600 dark:text-emerald-400'
-                          : 'text-slate-900 dark:text-white'
-                      "
-                    >
-                      {{
-                        tx.type === 'income'
-                          ? '+'
-                          : tx.type === 'refund'
-                            ? '-'
-                            : ''
-                      }}{{ fmt(tx.amount, tx.currency) }}
-                    </span>
+                    <div class="flex flex-col items-end">
+                      <span
+                        class="text-[15px] font-semibold tabular-nums leading-tight"
+                        :class="
+                          tx.type === 'income' || tx.type === 'refund'
+                            ? 'text-emerald-600 dark:text-emerald-400'
+                            : 'text-slate-900 dark:text-white'
+                        "
+                      >
+                        {{
+                          tx.type === 'income'
+                            ? '+'
+                            : tx.type === 'refund'
+                              ? '-'
+                              : ''
+                        }}{{ fmt(tx.amount, tx.currency) }}
+                      </span>
+                      <!-- 金額下方精巧分攤成員小圈圈（首頁與專案明細皆顯示） -->
+                      <div
+                        v-if="getSplitIndicatorMembers(tx).length > 0"
+                        :title="getSplitIndicatorTooltip(tx)"
+                        class="mt-1 flex items-center justify-end"
+                      >
+                        <div class="flex items-center -space-x-1">
+                          <MemberAvatar
+                            v-for="m in getSplitIndicatorMembers(tx).slice(0, 4)"
+                            :key="m.memberId"
+                            :name="m.name"
+                            :color="m.color"
+                            :image="m.image"
+                            size="micro"
+                            ring
+                          />
+                          <span
+                            v-if="getSplitIndicatorMembers(tx).length > 4"
+                            class="inline-flex h-3 min-w-[12px] items-center justify-center rounded-full bg-slate-200 px-1 text-[7px] font-bold text-slate-600 ring-1 ring-white dark:bg-slate-700 dark:text-slate-200 dark:ring-[#1C1C1E]"
+                          >
+                            +{{ getSplitIndicatorMembers(tx).length - 4 }}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
                     <ChevronDown
                       class="h-3.5 w-3.5 text-slate-300 transition-transform dark:text-slate-600"
                       :class="expandedTxId === tx.id ? 'rotate-180 text-emerald-600 dark:text-emerald-400' : ''"
