@@ -140,6 +140,17 @@ export function migrateLedgerBackup(raw: unknown): LedgerBackup {
     !Array.isArray(payload.userProfile)
       ? payload.userProfile
       : undefined
+  const rawProjectOrder = Array.isArray(payload.projectOrder)
+    ? payload.projectOrder.filter(
+        (id): id is string => typeof id === 'string' && id.trim().length > 0,
+      )
+    : undefined
+  const rawProjectOrderUpdatedAt =
+    typeof payload.projectOrderUpdatedAt === 'number' &&
+    Number.isFinite(payload.projectOrderUpdatedAt) &&
+    payload.projectOrderUpdatedAt >= 0
+      ? Math.floor(payload.projectOrderUpdatedAt)
+      : undefined
 
   return LedgerBackupSchema.parse({
     schemaVersion: CURRENT_SCHEMA_VERSION,
@@ -149,5 +160,11 @@ export function migrateLedgerBackup(raw: unknown): LedgerBackup {
     transactions: migratedTransactions,
     ...(rawCategories ? { categories: rawCategories } : {}),
     ...(rawUserProfile ? { userProfile: rawUserProfile } : {}),
+    ...(rawProjectOrder && rawProjectOrder.length > 0
+      ? { projectOrder: rawProjectOrder }
+      : {}),
+    ...(rawProjectOrderUpdatedAt !== undefined
+      ? { projectOrderUpdatedAt: rawProjectOrderUpdatedAt }
+      : {}),
   })
 }

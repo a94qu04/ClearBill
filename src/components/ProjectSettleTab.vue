@@ -1,12 +1,14 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
+  ArrowLeftRight,
   Coins,
   FileSpreadsheet,
   ImageDown,
   Loader2,
   Pencil,
+  RefreshCw,
   Share2,
   Trash2,
 } from 'lucide-vue-next'
@@ -46,6 +48,123 @@ const store = useLedgerStore()
 
 const includeDetailsInShare = ref(false)
 const isGeneratingImage = ref(false)
+const customSettleRateDrafts = ref<Record<string, string>>({})
+
+const foreignCurrenciesInProject = computed<string[]>(() => {
+  const base = props.project.baseCurrency.trim().toUpperCase()
+  const set = new Set<string>()
+  for (const tx of props.expenses) {
+    const cur = tx.currency.trim().toUpperCase()
+    if (cur && cur !== base) set.add(cur)
+  }
+  return Array.from(set)
+})
+
+const currentRateMode = computed<'per_tx' | 'live' | 'custom'>(
+  () => props.project.settlementRateMode ?? 'per_tx',
+)
+
+const formattedLiveRatesFetchedAt = computed(() => {
+  const ts = store.liveRatesFetchedAt
+  if (!ts) return ''
+  try {
+    return new Intl.DateTimeFormat(locale.value, {
+      month: 'numeric',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(new Date(ts))
+  } catch {
+    return ''
+  }
+})
+
+function syncSettleRateDrafts() {
+  const base = props.project.baseCurrency
+  const next: Record<string, string> = {}
+  for (const cur of foreignCurrenciesInProject.value) {
+    const saved = props.project.settlementCustomRates?.[cur]
+    const live = store.getLiveExchangeRate(cur, base)
+    const fallbackTx = props.expenses.find(
+      (tx) => tx.currency.trim().toUpperCase() === cur && tx.exchangeRateToBase > 0,
+    )?.exchangeRateToBase
+    const val = saved ?? live ?? fallbackTx
+    next[cur] = val !== undefined && val !== null ? String(val) : ''
+  }
+  customSettleRateDrafts.value = next
+}
+
+watch(
+  () => [
+    props.project.id,
+    props.project.settlementRateMode,
+    JSON.stringify(props.project.settlementCustomRates ?? {}),
+    foreignCurrenciesInProject.value.join(','),
+    store.liveRatesFetchedAt,
+  ],
+  () => {
+    syncSettleRateDrafts()
+  },
+  { immediate: true },
+)
+
+async function handleSelectSettleRateMode(mode: 'per_tx' | 'live' | 'custom') {
+  if (mode === 'live' && !store.liveRatesFetchedAt) {
+    await store.refreshExchangeRates(false)
+  }
+  if (mode === 'custom') {
+    const parsedMap: Record<string, number> = {}
+    for (const cur of foreignCurrenciesInProject.value) {
+      const val = Number(customSettleRateDrafts.value[cur])
+      if (Number.isFinite(val) && val > 0) {
+        parsedMap[cur] = val
+      }
+    }
+    await store.updateProjectSettlementRateConfig(props.project.id, 'custom', parsedMap)
+  } else {
+    await store.updateProjectSettlementRateConfig(props.project.id, mode)
+  }
+}
+
+async function handleSaveCustomSettleRates() {
+  const parsedMap: Record<string, number> = {}
+  for (const cur of foreignCurrenciesInProject.value) {
+    const val = Number(customSettleRateDrafts.value[cur])
+    if (!Number.isFinite(val) || val <= 0) {
+      emit('toast', t('validation.exchangeRateRequired'))
+      return
+    }
+    parsedMap[cur] = val
+  }
+  await store.updateProjectSettlementRateConfig(props.project.id, 'custom', parsedMap)
+  emit('toast', t('rates.settleCustomAppliedToast'))
+}
+
+async function handleFillLiveToCustomSettleRate(cur: string) {
+  let live = store.getLiveExchangeRate(cur, props.project.baseCurrency)
+  if (live === null) {
+    await store.refreshExchangeRates(true)
+    live = store.getLiveExchangeRate(cur, props.project.baseCurrency)
+  }
+  if (live === null) {
+    emit('toast', t('project.liveRateUnavailableToast'))
+    return
+  }
+  customSettleRateDrafts.value = {
+    ...customSettleRateDrafts.value,
+    [cur]: String(live),
+  }
+  await handleSaveCustomSettleRates()
+}
+
+async function handleRefreshRatesInSettle() {
+  const res = await store.refreshExchangeRates(true)
+  if (res) {
+    emit('toast', t('rates.refreshedToast'))
+  } else {
+    emit('toast', t('project.liveRateUnavailableToast'))
+  }
+}
 
 function fmt(amount: number, currency: string): string {
   return formatCurrencyAmount(amount, currency, locale.value)
@@ -283,6 +402,133 @@ async function handleExportLongImage() {
 
 <template>
   <div class="space-y-4">
+    <!-- 結算金額使用匯率選擇卡片（當專案含外幣時顯示，可自由切換各筆原匯率／即時匯率／自訂結算匯率） -->
+    <section
+      v-if="foreignCurrenciesInProject.length > 0"
+      class="space-y-2.5 rounded-2xl border border-amber-200/80 bg-amber-50/40 p-3.5 shadow-sm dark:border-amber-900/60 dark:bg-amber-950/20"
+    >
+      <div class="flex items-center justify-between gap-2">
+        <div class="flex items-center gap-1.5 text-xs font-bold text-slate-800 dark:text-slate-100">
+          <ArrowLeftRight class="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
+          <span>{{ t('rates.settleRateTitle') }}</span>
+        </div>
+        <button
+          type="button"
+          :disabled="store.isRefreshingLiveRates"
+          class="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700 hover:underline disabled:opacity-50 dark:text-amber-300"
+          @click="handleRefreshRatesInSettle"
+        >
+          <RefreshCw
+            class="h-3 w-3"
+            :class="store.isRefreshingLiveRates ? 'animate-spin' : ''"
+          />
+          <span>
+            {{
+              formattedLiveRatesFetchedAt
+                ? t('rates.updatedAtShort', { time: formattedLiveRatesFetchedAt })
+                : t('rates.refreshNow')
+            }}
+          </span>
+        </button>
+      </div>
+
+      <div class="grid grid-cols-3 gap-1 rounded-xl bg-white/80 p-1 text-[11px] font-bold dark:bg-slate-900/80">
+        <button
+          type="button"
+          class="rounded-lg py-1.5 transition"
+          :class="
+            currentRateMode === 'per_tx'
+              ? 'bg-slate-900 text-white shadow-sm dark:bg-emerald-500 dark:text-slate-950'
+              : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
+          "
+          @click="handleSelectSettleRateMode('per_tx')"
+        >
+          {{ t('rates.modePerTx') }}
+        </button>
+        <button
+          type="button"
+          class="rounded-lg py-1.5 transition"
+          :class="
+            currentRateMode === 'live'
+              ? 'bg-slate-900 text-white shadow-sm dark:bg-emerald-500 dark:text-slate-950'
+              : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
+          "
+          @click="handleSelectSettleRateMode('live')"
+        >
+          {{ t('rates.modeLive') }}
+        </button>
+        <button
+          type="button"
+          class="rounded-lg py-1.5 transition"
+          :class="
+            currentRateMode === 'custom'
+              ? 'bg-slate-900 text-white shadow-sm dark:bg-emerald-500 dark:text-slate-950'
+              : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
+          "
+          @click="handleSelectSettleRateMode('custom')"
+        >
+          {{ t('rates.modeCustom') }}
+        </button>
+      </div>
+
+      <!-- 即時匯率對照顯示 -->
+      <div
+        v-if="currentRateMode === 'live'"
+        class="flex flex-wrap items-center gap-2 text-[11px] text-amber-900 dark:text-amber-200"
+      >
+        <span
+          v-for="cur in foreignCurrenciesInProject"
+          :key="cur"
+          class="inline-flex items-center gap-1 rounded-lg bg-white/90 px-2.5 py-1 font-bold tabular-nums shadow-sm dark:bg-slate-900"
+        >
+          <span>1 {{ cur }} =</span>
+          <span class="text-emerald-700 dark:text-emerald-400">
+            {{ store.getLiveExchangeRate(cur, project.baseCurrency) ?? '—' }}
+          </span>
+          <span>{{ project.baseCurrency }}</span>
+        </span>
+      </div>
+
+      <!-- 自訂結算匯率輸入列 -->
+      <div v-else-if="currentRateMode === 'custom'" class="space-y-1.5">
+        <div
+          v-for="cur in foreignCurrenciesInProject"
+          :key="cur"
+          class="flex items-center gap-1.5 rounded-xl bg-white/90 px-2.5 py-1.5 text-xs dark:bg-slate-900"
+        >
+          <span class="shrink-0 font-bold text-slate-700 dark:text-slate-200">
+            1 {{ cur }} =
+          </span>
+          <input
+            v-model="customSettleRateDrafts[cur]"
+            type="number"
+            step="any"
+            min="0"
+            inputmode="decimal"
+            class="min-w-0 flex-1 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-bold tabular-nums text-slate-900 focus:border-emerald-500 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+            @keyup.enter="handleSaveCustomSettleRates"
+          />
+          <span class="shrink-0 text-[11px] font-bold text-slate-500">
+            {{ project.baseCurrency }}
+          </span>
+          <button
+            type="button"
+            class="shrink-0 rounded-lg border border-slate-200 px-2 py-1 text-[10px] font-semibold text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300"
+            @click="handleFillLiveToCustomSettleRate(cur)"
+          >
+            {{ t('rates.useLiveShort') }}
+          </button>
+        </div>
+        <button
+          type="button"
+          class="w-full rounded-xl bg-slate-900 py-1.5 text-[11px] font-bold text-white hover:bg-slate-800 dark:bg-emerald-500 dark:text-slate-950"
+          @click="handleSaveCustomSettleRates"
+        >
+          {{ t('rates.applySettleCustomButton') }}
+        </button>
+      </div>
+    </section>
+
     <!-- 各成員總支出與結算總覽（含一鍵分享精簡／明細切換與報表匯出） -->
     <section
       class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900"

@@ -270,4 +270,41 @@ describe('settleUpEngine - 多人債務最小化結算演算法', () => {
       netAmount: 0,
     })
   })
+
+  it('支援依自訂或即時結算匯率（overrideRatesByCurrency）統一重算外幣結算金額', () => {
+    // 一筆 10,000 JPY（原紀錄匯率 0.20 = 2,000 TWD），Alice 墊付、兩人平分
+    const transactions: Transaction[] = [
+      createExpenseTx({
+        id: '88888888-8888-4888-8888-888888888888',
+        amount: 10000,
+        currency: 'JPY',
+        exchangeRateToBase: 0.2,
+        splitConfig: {
+          payerId: 'alice',
+          mode: 'equal',
+          shares: [
+            { memberId: 'alice', finalAmount: 5000 },
+            { memberId: 'bob', finalAmount: 5000 },
+          ],
+        },
+      }),
+    ]
+
+    // 各筆原匯率：總額 2000 TWD，Bob 付 Alice 1000 TWD
+    const perTx = calculateSettleUp(transactions, 'TWD')
+    expect(perTx.totalProjectExpense).toBe(2000)
+    expect(perTx.transfers).toEqual([
+      { fromMemberId: 'bob', toMemberId: 'alice', amount: 1000, currency: 'TWD' },
+    ])
+
+    // 結算改選用 0.22 匯率：總額 2200 TWD，Bob 付 Alice 1100 TWD
+    const overridden = calculateSettleUp(transactions, 'TWD', [], {
+      overrideRatesByCurrency: { JPY: 0.22 },
+    })
+    expect(overridden.totalProjectExpense).toBe(2200)
+    expect(overridden.transfers).toEqual([
+      { fromMemberId: 'bob', toMemberId: 'alice', amount: 1100, currency: 'TWD' },
+    ])
+    expect(overridden.balances.reduce((acc, b) => acc + b.netAmount, 0)).toBe(0)
+  })
 })

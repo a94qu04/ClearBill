@@ -1,11 +1,13 @@
 /**
  * 免費公開即時匯率快取服務（Local-First 離線降級設計）：
- * - 連網時背景抓取最新 USD 基準公開匯率並快取 12 小時於 localStorage
- * - 離線或請求失敗時靜默退回快取匯率或內建估算值，絕不阻塞操作
+ * - 連網時每小時自動從免費公開匯率資料庫抓取最新匯率，並快取於 localStorage
+ * - 多重免費備援（open.er-api.com -> fawazahmed0 currency-api CDN -> frankfurter.app）
+ * - 離線或請求失敗時靜默退回最近快取匯率，絕不阻塞操作
  */
 
 const LIVE_RATES_STORAGE_KEY = 'clearbill_live_rates_v1'
-const CACHE_TTL_MS = 12 * 60 * 60 * 1000 // 12 小時
+/** 每小時自動重新抓取一次最新免費即時匯率 */
+export const LIVE_RATES_CACHE_TTL_MS = 60 * 60 * 1000
 
 export interface LiveRatesCache {
   /** 以 USD 為基準（1 USD = N 該幣別）的匯率表 */
@@ -90,17 +92,17 @@ export function computeCrossRateFromUsdTable(
 export function getCachedLiveExchangeRate(
   from: string,
   to: string,
-): { rate: number; fetchedAt: number } | null {
+): { rate: number; fetchedAt: number; source: string } | null {
   const cache = loadCachedLiveRates()
   if (!cache) return null
   const rate = computeCrossRateFromUsdTable(cache.ratesPerUsd, from, to)
   if (rate === null) return null
-  return { rate, fetchedAt: cache.fetchedAt }
+  return { rate, fetchedAt: cache.fetchedAt, source: cache.source }
 }
 
 async function fetchFromOpenErApi(): Promise<LiveRatesCache | null> {
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 5000)
+  const timer = setTimeout(() => controller.abort(), 6000)
   try {
     const res = await fetch('https://open.er-api.com/v6/latest/USD', {
       signal: controller.signal,
@@ -110,7 +112,11 @@ async function fetchFromOpenErApi(): Promise<LiveRatesCache | null> {
       result?: string
       rates?: Record<string, number>
     }
-    if (data.rates && typeof data.rates === 'object' && Object.keys(data.rates).length > 10) {
+    if (
+      data.rates &&
+      typeof data.rates === 'object' &&
+      Object.keys(data.rates).length > 10
+    ) {
       return {
         ratesPerUsd: { ...data.rates, USD: 1 },
         fetchedAt: Date.now(),
@@ -125,9 +131,43 @@ async function fetchFromOpenErApi(): Promise<LiveRatesCache | null> {
   }
 }
 
+async function fetchFromFawazCurrencyApi(): Promise<LiveRatesCache | null> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 6000)
+  try {
+    const res = await fetch(
+      'https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/usd.json',
+      { signal: controller.signal },
+    )
+    if (!res.ok) return null
+    const data = (await res.json()) as {
+      usd?: Record<string, number>
+    }
+    if (!data.usd || typeof data.usd !== 'object') return null
+    const normalized: Record<string, number> = { USD: 1 }
+    for (const [k, v] of Object.entries(data.usd)) {
+      if (/^[a-z]{3}$/i.test(k) && typeof v === 'number' && Number.isFinite(v) && v > 0) {
+        normalized[k.toUpperCase()] = v
+      }
+    }
+    if (Object.keys(normalized).length > 10) {
+      return {
+        ratesPerUsd: normalized,
+        fetchedAt: Date.now(),
+        source: 'currency-api',
+      }
+    }
+    return null
+  } catch {
+    return null
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 async function fetchFromFrankfurter(): Promise<LiveRatesCache | null> {
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 5000)
+  const timer = setTimeout(() => controller.abort(), 6000)
   try {
     const res = await fetch('https://api.frankfurter.app/latest?from=USD', {
       signal: controller.signal,
@@ -136,7 +176,11 @@ async function fetchFromFrankfurter(): Promise<LiveRatesCache | null> {
     const data = (await res.json()) as {
       rates?: Record<string, number>
     }
-    if (data.rates && typeof data.rates === 'object' && Object.keys(data.rates).length > 10) {
+    if (
+      data.rates &&
+      typeof data.rates === 'object' &&
+      Object.keys(data.rates).length > 10
+    ) {
       return {
         ratesPerUsd: { ...data.rates, USD: 1 },
         fetchedAt: Date.now(),
@@ -152,13 +196,13 @@ async function fetchFromFrankfurter(): Promise<LiveRatesCache | null> {
 }
 
 /**
- * 連網靜默更新即時參考匯率（若快取未過期則直接回傳，force=true 時強制重抓）
+ * 連網靜默更新即時參考匯率（預設每小時快取一次；force=true 時強制重抓）
  */
 export async function refreshLiveExchangeRates(
   force = false,
 ): Promise<LiveRatesCache | null> {
   const existing = loadCachedLiveRates()
-  if (!force && existing && Date.now() - existing.fetchedAt < CACHE_TTL_MS) {
+  if (!force && existing && Date.now() - existing.fetchedAt < LIVE_RATES_CACHE_TTL_MS) {
     return existing
   }
   if (typeof fetch === 'undefined') return existing
@@ -170,7 +214,8 @@ export async function refreshLiveExchangeRates(
 
   inFlightPromise = (async () => {
     const primary = await fetchFromOpenErApi()
-    const fresh = primary ?? (await fetchFromFrankfurter())
+    const secondary = primary ?? (await fetchFromFawazCurrencyApi())
+    const fresh = secondary ?? (await fetchFromFrankfurter())
     if (fresh) {
       saveLiveRatesCache(fresh)
       return fresh

@@ -21,7 +21,16 @@ import {
   saveProjectToNormalVault,
   saveTransactionToNormalVault,
 } from '@/db/normalVaultDb'
-import { calculateSettleUp } from '@/core/settleUpEngine'
+import {
+  applySettlementRatesToTransactions,
+  calculateSettleUp,
+} from '@/core/settleUpEngine'
+import {
+  computeCrossRateFromUsdTable,
+  loadCachedLiveRates,
+  refreshLiveExchangeRates,
+  type LiveRatesCache,
+} from '@/services/exchangeRateService'
 import {
   createLedgerBackupPayload,
   createSingleProjectBackupPayload,
@@ -186,6 +195,7 @@ interface PersistedUserPrefsV2 {
   enabledCurrencies: string[]
   categories: ManagedCategory[]
   projectOrder?: string[]
+  projectOrderUpdatedAt?: number
   exchangeRates?: Record<string, number>
   userProfile?: UserProfile
 }
@@ -255,6 +265,12 @@ function loadUserPrefs(): PersistedUserPrefsV2 {
       const projectOrder = Array.isArray(parsed.projectOrder)
         ? parsed.projectOrder.filter((id): id is string => typeof id === 'string')
         : []
+      const projectOrderUpdatedAt =
+        typeof parsed.projectOrderUpdatedAt === 'number' &&
+        Number.isFinite(parsed.projectOrderUpdatedAt) &&
+        parsed.projectOrderUpdatedAt >= 0
+          ? Math.floor(parsed.projectOrderUpdatedAt)
+          : undefined
 
       const exchangeRates: Record<string, number> = {}
       if (parsed.exchangeRates && typeof parsed.exchangeRates === 'object') {
@@ -302,6 +318,7 @@ function loadUserPrefs(): PersistedUserPrefsV2 {
         enabledCurrencies: Array.from(enabledSet),
         categories,
         projectOrder,
+        projectOrderUpdatedAt,
         exchangeRates,
         userProfile,
       }
@@ -396,12 +413,49 @@ export const useLedgerStore = defineStore('ledger', () => {
   const enabledCurrencies = ref<string[]>(initialPrefs.enabledCurrencies)
   const categories = ref<ManagedCategory[]>(initialPrefs.categories)
   const projectOrder = ref<string[]>(initialPrefs.projectOrder ?? [])
+  const projectOrderUpdatedAt = ref<number>(
+    initialPrefs.projectOrderUpdatedAt ?? 0,
+  )
   const rememberedExchangeRates = ref<Record<string, number>>(
     initialPrefs.exchangeRates ?? {},
   )
   const userProfile = ref<UserProfile>(
     initialPrefs.userProfile ?? createDefaultUserProfile(),
   )
+
+  // 即時參考匯率響應式快取（每小時自動向免費公開資料庫更新，含抓取時間戳）
+  const liveRatesCache = ref<LiveRatesCache | null>(loadCachedLiveRates())
+  const isRefreshingLiveRates = ref(false)
+  const liveRatesFetchedAt = computed<number | null>(
+    () => liveRatesCache.value?.fetchedAt ?? null,
+  )
+  const liveRatesSource = computed<string>(
+    () => liveRatesCache.value?.source ?? '',
+  )
+
+  async function refreshExchangeRates(force = false): Promise<LiveRatesCache | null> {
+    if (isRefreshingLiveRates.value && !force) return liveRatesCache.value
+    isRefreshingLiveRates.value = true
+    try {
+      const fresh = await refreshLiveExchangeRates(force)
+      if (fresh) {
+        liveRatesCache.value = fresh
+      }
+      return liveRatesCache.value
+    } finally {
+      isRefreshingLiveRates.value = false
+    }
+  }
+
+  function getLiveExchangeRate(from: string, to: string): number | null {
+    const f = from.trim().toUpperCase()
+    const tCode = to.trim().toUpperCase()
+    if (!f || !tCode) return null
+    if (f === tCode) return 1
+    const cache = liveRatesCache.value
+    if (!cache) return null
+    return computeCrossRateFromUsdTable(cache.ratesPerUsd, f, tCode)
+  }
 
   function saveUserPrefs() {
     if (typeof window === 'undefined') return
@@ -411,6 +465,7 @@ export const useLedgerStore = defineStore('ledger', () => {
         enabledCurrencies: enabledCurrencies.value,
         categories: categories.value,
         projectOrder: projectOrder.value,
+        projectOrderUpdatedAt: projectOrderUpdatedAt.value || undefined,
         exchangeRates: rememberedExchangeRates.value,
         userProfile: userProfile.value,
       }
@@ -491,6 +546,96 @@ export const useLedgerStore = defineStore('ledger', () => {
     saveUserPrefs()
   }
 
+  function clearRememberedExchangeRate(from: string, to: string): void {
+    const f = from.trim().toUpperCase()
+    const tCode = to.trim().toUpperCase()
+    const key = `${f}_${tCode}`
+    if (!(key in rememberedExchangeRates.value)) return
+    const next = { ...rememberedExchangeRates.value }
+    delete next[key]
+    rememberedExchangeRates.value = next
+    saveUserPrefs()
+  }
+
+  /**
+   * 依據專案設定的結算匯率模式（per_tx / live / custom）產出外幣結算匯率覆寫表
+   */
+  function getProjectSettlementRateOverrides(
+    project: Project,
+    projectTxs?: Transaction[],
+  ): Record<string, number> | undefined {
+    const mode = project.settlementRateMode ?? 'per_tx'
+    if (mode === 'per_tx') return undefined
+
+    const base = project.baseCurrency.trim().toUpperCase()
+    const txs =
+      projectTxs ??
+      visibleTransactions.value.filter((tx) => tx.projectId === project.id)
+    const foreignCurrencies = new Set<string>()
+    for (const tx of txs) {
+      const c = tx.currency.trim().toUpperCase()
+      if (c && c !== base) foreignCurrencies.add(c)
+    }
+
+    const overrides: Record<string, number> = {}
+    for (const cur of foreignCurrencies) {
+      if (mode === 'live') {
+        const live = getLiveExchangeRate(cur, base)
+        if (live !== null && live > 0) {
+          overrides[cur] = live
+        }
+      } else if (mode === 'custom') {
+        const custom = project.settlementCustomRates?.[cur]
+        if (typeof custom === 'number' && Number.isFinite(custom) && custom > 0) {
+          overrides[cur] = custom
+        } else {
+          const live = getLiveExchangeRate(cur, base)
+          if (live !== null && live > 0) {
+            overrides[cur] = live
+          }
+        }
+      }
+    }
+
+    return Object.keys(overrides).length > 0 ? overrides : undefined
+  }
+
+  async function updateProjectSettlementRateConfig(
+    projectId: string,
+    mode: 'per_tx' | 'live' | 'custom',
+    customRates?: Record<string, number>,
+  ): Promise<Project | null> {
+    const existing = projects.value.find((p) => p.id === projectId && !p.isDeleted)
+    if (!existing) return null
+
+    const cleanCustom: Record<string, number> = {}
+    if (customRates) {
+      for (const [k, v] of Object.entries(customRates)) {
+        const code = k.trim().toUpperCase()
+        if (/^[A-Z]{3}$/.test(code) && typeof v === 'number' && Number.isFinite(v) && v > 0) {
+          cleanCustom[code] = v
+        }
+      }
+    }
+
+    const updated: Project = {
+      ...existing,
+      settlementRateMode: mode,
+      settlementCustomRates:
+        Object.keys(cleanCustom).length > 0
+          ? cleanCustom
+          : existing.settlementCustomRates,
+      members: existing.members.map((m) => ({ ...m })),
+      updatedAt: Date.now(),
+    }
+
+    const saved = await saveProjectToNormalVault(updated)
+    projects.value = projects.value.map((p) => (p.id === projectId ? saved : p))
+    await enqueueAndFlushProjectChange(projectId, 'project', saved.id, saved.updatedAt)
+    markGoogleDriveDirty()
+    return saved
+  }
+
   const availableCurrencies = computed(() => {
     const set = new Set<string>(enabledCurrencies.value)
     if (defaultCurrency.value) set.add(defaultCurrency.value)
@@ -535,7 +680,9 @@ export const useLedgerStore = defineStore('ledger', () => {
     const [moved] = next.splice(fromIdx, 1)
     next.splice(toIdx, 0, moved)
     projectOrder.value = next
+    projectOrderUpdatedAt.value = Date.now()
     saveUserPrefs()
+    markGoogleDriveDirty()
   }
 
   function moveProjectOrder(
@@ -553,7 +700,9 @@ export const useLedgerStore = defineStore('ledger', () => {
     const [moved] = next.splice(idx, 1)
     next.splice(targetIdx, 0, moved)
     projectOrder.value = next
+    projectOrderUpdatedAt.value = Date.now()
     saveUserPrefs()
+    markGoogleDriveDirty()
     return true
   }
 
@@ -606,13 +755,33 @@ export const useLedgerStore = defineStore('ledger', () => {
     activeProjectTransactions.value.filter((tx) => tx.type === 'transfer'),
   )
 
+  /** 專案內依當前結算匯率模式套用換算後之消費清單（供圓餅圖、結算與報表 100% 同步一致） */
+  const activeProjectEffectiveExpenses = computed(() => {
+    const proj = activeProject.value
+    if (!proj) return []
+    const overrides = getProjectSettlementRateOverrides(
+      proj,
+      activeProjectTransactions.value,
+    )
+    return applySettlementRatesToTransactions(
+      activeProjectExpenses.value,
+      proj.baseCurrency,
+      overrides,
+    )
+  })
+
   const activeProjectSettleUp = computed(() => {
     const proj = activeProject.value
     if (!proj) return null
+    const overrides = getProjectSettlementRateOverrides(
+      proj,
+      activeProjectTransactions.value,
+    )
     return calculateSettleUp(
       activeProjectTransactions.value,
       proj.baseCurrency,
       proj.members.map((m) => m.id),
+      overrides ? { overrideRatesByCurrency: overrides } : undefined,
     )
   })
 
@@ -633,10 +802,12 @@ export const useLedgerStore = defineStore('ledger', () => {
         result[proj.id] = 0
         continue
       }
+      const overrides = getProjectSettlementRateOverrides(proj, projTxs)
       const settle = calculateSettleUp(
         projTxs,
         proj.baseCurrency,
         proj.members.map((m) => m.id),
+        overrides ? { overrideRatesByCurrency: overrides } : undefined,
       )
       result[proj.id] = settle.totalProjectExpense
     }
@@ -1543,6 +1714,7 @@ export const useLedgerStore = defineStore('ledger', () => {
       saved.id,
       ...projectOrder.value.filter((id) => id !== saved.id),
     ]
+    projectOrderUpdatedAt.value = Date.now()
     saveUserPrefs()
     activeProjectId.value = saved.id
     persistActiveProjectId(saved.id)
@@ -2153,6 +2325,8 @@ export const useLedgerStore = defineStore('ledger', () => {
       Date.now(),
       toPlainClone(categories.value),
       toPlainClone(userProfile.value),
+      toPlainClone(projectOrder.value),
+      projectOrderUpdatedAt.value || undefined,
     )
   }
 
@@ -2179,6 +2353,8 @@ export const useLedgerStore = defineStore('ledger', () => {
         transactions: cloneTransactionsForBackup(transactions.value),
         categories: toPlainClone(categories.value),
         userProfile: toPlainClone(userProfile.value),
+        projectOrder: toPlainClone(projectOrder.value),
+        projectOrderUpdatedAt: projectOrderUpdatedAt.value || undefined,
       },
       raw,
     )
@@ -2203,6 +2379,13 @@ export const useLedgerStore = defineStore('ledger', () => {
     }
     if (merged.userProfileUpdated && merged.userProfile) {
       userProfile.value = toPlainClone(merged.userProfile)
+      prefsChanged = true
+    }
+    if (merged.projectOrderUpdated && merged.projectOrder) {
+      projectOrder.value = toPlainClone(merged.projectOrder)
+      if (merged.projectOrderUpdatedAt !== undefined) {
+        projectOrderUpdatedAt.value = merged.projectOrderUpdatedAt
+      }
       prefsChanged = true
     }
     if (prefsChanged) {
@@ -2247,13 +2430,23 @@ export const useLedgerStore = defineStore('ledger', () => {
     dailyTransactions,
     activeProjectTransactions,
     activeProjectExpenses,
+    activeProjectEffectiveExpenses,
     activeProjectSettlements,
     activeProjectSettleUp,
     projectTotalExpenseMap,
+    liveRatesCache,
+    liveRatesFetchedAt,
+    liveRatesSource,
+    isRefreshingLiveRates,
+    refreshExchangeRates,
+    getLiveExchangeRate,
     getProjectTotalExpense,
     getProjectTransactionCount,
     getRememberedExchangeRate,
     rememberExchangeRate,
+    clearRememberedExchangeRate,
+    getProjectSettlementRateOverrides,
+    updateProjectSettlementRateConfig,
     getProjectById,
     getAnyProjectById,
     setDefaultCurrency,

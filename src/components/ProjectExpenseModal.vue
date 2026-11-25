@@ -10,10 +10,6 @@ import {
   getSuggestedExchangeRate,
   getTodayIso,
 } from '@/core/ledgerHelpers'
-import {
-  getCachedLiveExchangeRate,
-  refreshLiveExchangeRates,
-} from '@/services/exchangeRateService'
 import type { ParsedQuickIntakeResult } from '@/core/quickIntakeParser'
 import type { Project, SplitConfig, Transaction } from '@/schemas/ledgerSchema'
 import CurrencyAmountInput from '@/components/CurrencyAmountInput.vue'
@@ -47,7 +43,7 @@ const splitResetKey = ref(0)
 const amount = ref<number | null>(null)
 const currency = ref('TWD')
 const exchangeRate = ref<number | null>(1)
-const exchangeRateSource = ref<'remembered' | 'live' | 'estimated' | 'saved'>('estimated')
+const exchangeRateSource = ref<'remembered' | 'live' | 'estimated' | 'saved' | 'custom'>('estimated')
 const isFetchingLiveRate = ref(false)
 const categoryKey = ref<string>(store.categories[0]?.key ?? 'cat_food')
 const note = ref('')
@@ -106,6 +102,24 @@ function cloneSplitConfig(config: SplitConfig | undefined): SplitConfig | null {
   }
 }
 
+const currentLiveRateValue = computed(() => {
+  if (!props.project || !needsExchangeRate.value) return null
+  return store.getLiveExchangeRate(currency.value, props.project.baseCurrency)
+})
+
+const formattedRateFetchedTime = computed(() => {
+  const ts = store.liveRatesFetchedAt
+  if (!ts) return ''
+  try {
+    return new Intl.DateTimeFormat(locale.value, {
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(new Date(ts))
+  } catch {
+    return ''
+  }
+})
+
 function resolveExchangeRateForCurrency(
   fromCurrency: string,
   baseCurrency: string,
@@ -117,9 +131,9 @@ function resolveExchangeRateForCurrency(
   if (remembered !== null) {
     return { rate: remembered, source: 'remembered' }
   }
-  const live = getCachedLiveExchangeRate(fromCurrency, baseCurrency)
+  const live = store.getLiveExchangeRate(fromCurrency, baseCurrency)
   if (live !== null) {
-    return { rate: live.rate, source: 'live' }
+    return { rate: live, source: 'live' }
   }
   return {
     rate: getSuggestedExchangeRate(fromCurrency, baseCurrency),
@@ -131,12 +145,12 @@ async function handleApplyLiveRate() {
   if (!props.project || !needsExchangeRate.value || isFetchingLiveRate.value) return
   isFetchingLiveRate.value = true
   try {
-    await refreshLiveExchangeRates(true)
-    const live = getCachedLiveExchangeRate(currency.value, props.project.baseCurrency)
-    if (live) {
-      exchangeRate.value = live.rate
+    await store.refreshExchangeRates(true)
+    const live = store.getLiveExchangeRate(currency.value, props.project.baseCurrency)
+    if (live !== null) {
+      exchangeRate.value = live
       exchangeRateSource.value = 'live'
-      emit('toast', t('project.liveRateAppliedToast', { rate: live.rate }))
+      emit('toast', t('project.liveRateAppliedToast', { rate: live }))
     } else {
       emit('toast', t('project.liveRateUnavailableToast'))
     }
@@ -429,19 +443,25 @@ async function handleSubmit() {
               </span>
             </div>
             <div class="flex flex-wrap items-center justify-between gap-2 text-[10px]">
-              <span
-                v-if="exchangeRateSource !== 'saved'"
-                class="font-medium text-amber-700/90 dark:text-amber-300/80"
-              >
-                {{
-                  exchangeRateSource === 'remembered'
-                    ? t('project.exchangeRateRememberedHint')
-                    : exchangeRateSource === 'live'
-                      ? t('project.exchangeRateLiveHint')
-                      : t('project.exchangeRateEstimatedHint')
-                }}
+              <span class="font-medium text-amber-700/90 dark:text-amber-300/80">
+                <template v-if="currentLiveRateValue !== null">
+                  {{
+                    t('rates.inlineLiveRef', {
+                      rate: currentLiveRateValue,
+                      time: formattedRateFetchedTime || '--:--',
+                    })
+                  }}
+                </template>
+                <template v-else-if="exchangeRateSource !== 'saved'">
+                  {{
+                    exchangeRateSource === 'remembered'
+                      ? t('project.exchangeRateRememberedHint')
+                      : exchangeRateSource === 'live'
+                        ? t('project.exchangeRateLiveHint')
+                        : t('project.exchangeRateEstimatedHint')
+                  }}
+                </template>
               </span>
-              <span v-else />
 
               <button
                 type="button"

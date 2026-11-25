@@ -27,7 +27,10 @@ import {
   useLedgerStore,
   type ManagedCategory,
 } from '@/stores/ledgerStore'
-import { calculateSettleUp } from '@/core/settleUpEngine'
+import {
+  applySettlementRatesToTransactions,
+  calculateSettleUp,
+} from '@/core/settleUpEngine'
 import { buildProjectExcelBytes } from '@/core/excelExporter'
 import { generateProjectReportPngBlob } from '@/core/reportImageGenerator'
 import {
@@ -273,8 +276,17 @@ function getCategoryColor(key: string): string {
 }
 
 function handleExportProjectExcel() {
-  const projectTxs = store.visibleTransactions.filter(
+  const rawProjectTxs = store.visibleTransactions.filter(
     (tx) => tx.projectId === props.project.id,
+  )
+  const overrides = store.getProjectSettlementRateOverrides(
+    props.project,
+    rawProjectTxs,
+  )
+  const projectTxs = applySettlementRatesToTransactions(
+    rawProjectTxs,
+    props.project.baseCurrency,
+    overrides,
   )
   const settleUp = calculateSettleUp(
     projectTxs,
@@ -333,8 +345,17 @@ async function handleExportProjectLongImage() {
   if (isGeneratingImage.value) return
   isGeneratingImage.value = true
   try {
-    const projectTxs = store.visibleTransactions.filter(
+    const rawProjectTxs = store.visibleTransactions.filter(
       (tx) => tx.projectId === props.project.id,
+    )
+    const overrides = store.getProjectSettlementRateOverrides(
+      props.project,
+      rawProjectTxs,
+    )
+    const projectTxs = applySettlementRatesToTransactions(
+      rawProjectTxs,
+      props.project.baseCurrency,
+      overrides,
     )
     const expenses = projectTxs.filter((tx) => tx.type !== 'transfer')
     const settleUp = calculateSettleUp(

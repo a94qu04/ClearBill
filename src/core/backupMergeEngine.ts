@@ -24,6 +24,9 @@ export interface LedgerMergeResult {
   categories: ManagedCategoryBackup[]
   userProfile?: UserProfile
   userProfileUpdated: boolean
+  projectOrder?: string[]
+  projectOrderUpdatedAt?: number
+  projectOrderUpdated: boolean
   stats: LedgerMergeStats
 }
 
@@ -33,6 +36,7 @@ export interface LedgerMergeResult {
  * - 兩端皆有相同 UUID ➔ 保留 updatedAt 較新的版本（時間戳較新才覆寫）
  * - 若備份含自訂分類清單，會自動補入本地缺少的分類鍵值，避免跨裝置顯示原始 key
  * - 若備份含個人成員名稱與大頭貼（userProfile），依 updatedAt 保留最新版本實現跨裝置同步
+ * - 若備份含分帳專案排序（projectOrder），依 projectOrderUpdatedAt 採用最新排序並保留所有專案 ID
  */
 export function mergeLedgerData(
   local: {
@@ -40,6 +44,8 @@ export function mergeLedgerData(
     transactions: Transaction[]
     categories?: ManagedCategoryBackup[]
     userProfile?: UserProfile
+    projectOrder?: string[]
+    projectOrderUpdatedAt?: number
   },
   incomingBackup: LedgerBackup,
 ): LedgerMergeResult {
@@ -130,12 +136,52 @@ export function mergeLedgerData(
     }
   }
 
+  // 合併分帳專案排序（projectOrder）：以 projectOrderUpdatedAt 較新者為主順序，同時補齊另一端獨有之專案 ID
+  let mergedProjectOrder: string[] | undefined = local.projectOrder
+    ? [...local.projectOrder]
+    : undefined
+  let mergedProjectOrderUpdatedAt = local.projectOrderUpdatedAt
+  let projectOrderUpdated = false
+  const incomingOrder = incomingBackup.projectOrder
+  if (incomingOrder && incomingOrder.length > 0) {
+    const localOrder = local.projectOrder ?? []
+    const incomingOrderTs = incomingBackup.projectOrderUpdatedAt ?? 0
+    const localOrderTs = local.projectOrderUpdatedAt ?? 0
+    if (
+      incomingOrderTs > localOrderTs ||
+      (localOrder.length === 0 && localOrderTs === 0)
+    ) {
+      const seen = new Set<string>()
+      const combined: string[] = []
+      for (const id of [...incomingOrder, ...localOrder]) {
+        if (!seen.has(id)) {
+          seen.add(id)
+          combined.push(id)
+        }
+      }
+      mergedProjectOrder = combined
+      mergedProjectOrderUpdatedAt = Math.max(incomingOrderTs, localOrderTs)
+      projectOrderUpdated = true
+    } else if (localOrder.length > 0) {
+      // 本地排序較新：保留本地順序，但將遠端新增的專案 ID 補到末尾
+      const seen = new Set<string>(localOrder)
+      const extras = incomingOrder.filter((id) => !seen.has(id))
+      if (extras.length > 0) {
+        mergedProjectOrder = [...localOrder, ...extras]
+        projectOrderUpdated = true
+      }
+    }
+  }
+
   return {
     projects: Array.from(projectMap.values()),
     transactions: Array.from(txMap.values()),
     categories: Array.from(categoryMap.values()),
     userProfile: mergedUserProfile,
     userProfileUpdated,
+    projectOrder: mergedProjectOrder,
+    projectOrderUpdatedAt: mergedProjectOrderUpdatedAt,
+    projectOrderUpdated,
     stats: {
       projectsAdded,
       projectsUpdated,
@@ -157,6 +203,8 @@ export function createLedgerBackupPayload(
   exportedAt = Date.now(),
   categories?: ManagedCategoryBackup[],
   userProfile?: UserProfile,
+  projectOrder?: string[],
+  projectOrderUpdatedAt?: number,
 ): LedgerBackup {
   return migrateLedgerBackup({
     schemaVersion: CURRENT_SCHEMA_VERSION,
@@ -165,6 +213,8 @@ export function createLedgerBackupPayload(
     transactions,
     ...(categories && categories.length > 0 ? { categories } : {}),
     ...(userProfile ? { userProfile } : {}),
+    ...(projectOrder && projectOrder.length > 0 ? { projectOrder } : {}),
+    ...(projectOrderUpdatedAt !== undefined ? { projectOrderUpdatedAt } : {}),
   })
 }
 
@@ -204,6 +254,8 @@ export function parseAndMergeLedgerBackup(
     transactions: Transaction[]
     categories?: ManagedCategoryBackup[]
     userProfile?: UserProfile
+    projectOrder?: string[]
+    projectOrderUpdatedAt?: number
   },
   rawInput: string | unknown,
 ): LedgerMergeResult {

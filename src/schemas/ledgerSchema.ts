@@ -162,6 +162,10 @@ export const ProjectSchema = z.object({
   cardColor: z.string().trim().max(32).optional(),
   /** 選填：專案小卡自訂封面照片（16:9 輕量壓縮 Data URL） */
   cardCoverImage: z.string().max(280_000).optional(),
+  /** 選填：結算金額使用之匯率模式（per_tx=各筆原匯率 | live=統一套用即時匯率 | custom=統一自訂結算匯率） */
+  settlementRateMode: z.enum(['per_tx', 'live', 'custom']).optional(),
+  /** 選填：當 settlementRateMode 為 custom 時，各外幣折合主幣別之自訂結算匯率 */
+  settlementCustomRates: z.record(z.string(), z.number().finite().positive()).optional(),
   syncMeta: ProjectSyncMetaSchema.optional(),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
@@ -224,7 +228,7 @@ export const QuickIntakeParamsSchema = z.object({
 })
 export type QuickIntakeParams = z.infer<typeof QuickIntakeParamsSchema>
 
-/** 完整 JSON 備份與同步封包結構（categories 與 userProfile 為選填，完整向下相容舊版備份檔） */
+/** 完整備份與同步封包結構（categories、userProfile、projectOrder 為選填，完整向下相容舊版備份檔） */
 export const LedgerBackupSchema = z.object({
   schemaVersion: z.literal(CURRENT_SCHEMA_VERSION),
   exportedAt: z.number().int().nonnegative(),
@@ -232,5 +236,7 @@ export const LedgerBackupSchema = z.object({
   transactions: z.array(TransactionSchema),
   categories: z.array(ManagedCategoryBackupSchema).optional(),
   userProfile: UserProfileSchema.optional(),
+  projectOrder: z.array(z.string().trim().min(1)).optional(),
+  projectOrderUpdatedAt: z.number().int().nonnegative().optional(),
 })
 export type LedgerBackup = z.infer<typeof LedgerBackupSchema>

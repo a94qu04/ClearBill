@@ -28,7 +28,7 @@ import { formatCurrencyAmount } from '@/core/currency'
 import { parseGoogleConnectHash } from '@/core/googleConnectLink'
 import { compressCoverImageFileToDataUrl } from '@/core/imageCompressor'
 import { parseShareInviteHash } from '@/core/realtimeSyncEngine'
-import { refreshLiveExchangeRates } from '@/services/exchangeRateService'
+import { LIVE_RATES_CACHE_TTL_MS } from '@/services/exchangeRateService'
 import {
   GoogleDriveSyncError,
   saveGoogleClientId,
@@ -65,7 +65,7 @@ const store = useLedgerStore()
 const activeView = ref<ActiveView>('home')
 const projectTab = ref<ProjectTab>('expenses')
 const settingsOpen = ref(false)
-const settingsInitialTab = ref<SettingsTab>('general')
+const settingsInitialTab = ref<SettingsTab>('profile')
 const allProjectsSheetOpen = ref(false)
 const shareModalOpen = ref(false)
 const pendingJoinInvite = ref<ShareInviteParams | null>(null)
@@ -73,8 +73,9 @@ const isDark = ref(false)
 const isTouchDevice = ref(false)
 const previewPhotos = ref<string[]>([])
 const previewPhotoIndex = ref(0)
+let hourlyRatesTimer: ReturnType<typeof setInterval> | null = null
 
-function openSettingsModal(tab: SettingsTab = 'general') {
+function openSettingsModal(tab: SettingsTab = 'profile') {
   settingsInitialTab.value = tab
   settingsOpen.value = true
 }
@@ -134,12 +135,12 @@ async function handleTopBarGoogleCloudClick() {
           reason: translated === key ? t('backup.errors.ERR_UNKNOWN') : translated,
         }),
       )
-      openSettingsModal('backup')
+      openSettingsModal('profile')
     }
     return
   }
 
-  openSettingsModal('backup')
+  openSettingsModal('profile')
 }
 
 function openPhotoLightbox(payload: { photos: string[]; index: number }) {
@@ -556,7 +557,7 @@ function handleHashQuickAdd() {
     window.history.replaceState(null, '', window.location.pathname)
     if (parsedConnect) {
       saveGoogleClientId(parsedConnect.clientId)
-      openSettingsModal('backup')
+      openSettingsModal('profile')
       showToast(t('backup.googlePairLinkAppliedToast'))
     } else {
       showToast(t('backup.errors.ERR_MISSING_CLIENT_ID'))
@@ -607,19 +608,25 @@ function handleNetworkOnline() {
   void store.startAllSharedProjectListeners()
   void store.flushAllSharedProjectsOutbox()
   void store.tryBackgroundGoogleDriveSync(true)
-  void refreshLiveExchangeRates()
+  void store.refreshExchangeRates(false)
 }
 
 function handleVisibilityChange() {
   if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
     void store.tryBackgroundGoogleDriveSync(false)
+    void store.refreshExchangeRates(false)
   }
 }
 
 onMounted(async () => {
   initTheme()
   detectTouchDevice()
-  void refreshLiveExchangeRates()
+  void store.refreshExchangeRates(false)
+  if (typeof window !== 'undefined') {
+    hourlyRatesTimer = setInterval(() => {
+      void store.refreshExchangeRates(false)
+    }, LIVE_RATES_CACHE_TTL_MS)
+  }
   await store.initFromIndexedDb()
   void store.startAllSharedProjectListeners()
   void store.flushAllSharedProjectsOutbox()
@@ -636,6 +643,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', handleVisibilityChange)
   store.stopAllSharedProjectListeners()
   if (toastTimer) clearTimeout(toastTimer)
+  if (hourlyRatesTimer) clearInterval(hourlyRatesTimer)
 })
 </script>
 
@@ -741,7 +749,7 @@ onBeforeUnmount(() => {
             :aria-label="t('settings.title')"
             :title="t('settings.title')"
             class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-600 transition hover:bg-slate-100 hover:text-slate-900 active:scale-95 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white"
-            @click="openSettingsModal('general')"
+            @click="openSettingsModal('profile')"
           >
             <Settings class="h-3.5 w-3.5" />
           </button>
@@ -781,49 +789,50 @@ onBeforeUnmount(() => {
       <div v-if="activeView === 'home'" class="space-y-5">
         <!-- 分帳專案區（依裝置調整排序提示，提供「全部 (N)」開啟上移/下移與拖曳排序） -->
         <section class="space-y-2.5">
-          <div class="flex items-center justify-between gap-2">
-            <div class="flex items-center gap-2">
-              <h2 class="text-xs font-semibold text-slate-500 dark:text-slate-400">
+          <div class="space-y-1">
+            <div class="flex items-center justify-between gap-2">
+              <h2 class="whitespace-nowrap text-xs font-semibold text-slate-500 dark:text-slate-400">
                 {{ t('home.myProjects', { count: store.activeProjects.length }) }}
               </h2>
-              <span
-                v-if="store.activeProjects.length > 1"
-                class="text-[10px] text-slate-400 dark:text-slate-500"
-              >
-                {{
-                  isTouchDevice
-                    ? t('home.dragProjectHintTouch')
-                    : t('home.dragProjectHint')
-                }}
-              </span>
+
+              <div class="flex shrink-0 items-center gap-2">
+                <button
+                  v-if="
+                    store.activeProjects.length >= 2 ||
+                    store.archivedProjects.length > 0
+                  "
+                  type="button"
+                  class="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-lg bg-slate-100 px-2.5 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-200"
+                  @click="allProjectsSheetOpen = true"
+                >
+                  <LayoutGrid class="h-3 w-3 shrink-0" />
+                  <span>{{
+                    t('home.viewAllProjects', {
+                      count: store.allNonDeletedProjects.length,
+                    })
+                  }}</span>
+                </button>
+                <button
+                  type="button"
+                  class="inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-xs font-semibold text-emerald-600 hover:underline dark:text-emerald-400"
+                  @click="openCreateProjectView"
+                >
+                  <Plus class="h-3.5 w-3.5 shrink-0" />
+                  <span>{{ t('home.addProjectShort') }}</span>
+                </button>
+              </div>
             </div>
 
-            <div class="flex items-center gap-2">
-              <button
-                v-if="
-                  store.activeProjects.length >= 2 ||
-                  store.archivedProjects.length > 0
-                "
-                type="button"
-                class="inline-flex items-center gap-1 rounded-lg bg-slate-100 px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-200"
-                @click="allProjectsSheetOpen = true"
-              >
-                <LayoutGrid class="h-3 w-3" />
-                <span>{{
-                  t('home.viewAllProjects', {
-                    count: store.allNonDeletedProjects.length,
-                  })
-                }}</span>
-              </button>
-              <button
-                type="button"
-                class="inline-flex items-center gap-1 text-xs font-semibold text-emerald-600 hover:underline dark:text-emerald-400"
-                @click="openCreateProjectView"
-              >
-                <Plus class="h-3.5 w-3.5" />
-                <span>{{ t('home.addProjectShort') }}</span>
-              </button>
-            </div>
+            <p
+              v-if="store.activeProjects.length > 1"
+              class="text-[10px] text-slate-400 dark:text-slate-500"
+            >
+              {{
+                isTouchDevice
+                  ? t('home.dragProjectHintTouch')
+                  : t('home.dragProjectHint')
+              }}
+            </p>
           </div>
 
           <div v-if="store.activeProjects.length === 0" class="space-y-2.5">
@@ -1379,12 +1388,12 @@ onBeforeUnmount(() => {
           @toast="showToast($event)"
         />
 
-        <!-- 分頁 B：結算、圓餅圖統計與一鍵分享 -->
+        <!-- 分頁 B：結算、圓餅圖統計、結算匯率切換與一鍵分享 -->
         <ProjectSettleTab
           v-else-if="projectTab === 'settle' && store.activeProjectSettleUp"
           :project="store.activeProject"
           :settle-up="store.activeProjectSettleUp"
-          :expenses="store.activeProjectExpenses"
+          :expenses="store.activeProjectEffectiveExpenses"
           :settlements="store.activeProjectSettlements"
           @record-payment="openRecordSettlementModal"
           @edit-settlement="startEditTransaction"
@@ -1423,6 +1432,7 @@ onBeforeUnmount(() => {
       @set-theme="setTheme"
       @toast="showToast($event)"
       @restored="handleRestoredFromSettings"
+      @select-project="openProjectWorkspace($event)"
     />
 
     <!-- 所有分帳專案清單（桌機拖曳＋觸控友善上移/下移排序） -->

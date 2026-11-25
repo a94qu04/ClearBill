@@ -198,6 +198,49 @@ describe('backupMergeEngine - JSON 備份匯出與 UUID + updatedAt 合併', () 
     expect(mergedOlder.userProfile?.displayName).toBe('最新暱稱')
   })
 
+  it('能依 projectOrderUpdatedAt 跨裝置同步分帳專案排序並保留本地新專案', () => {
+    const idA = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const idB = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const idC = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+
+    const remoteBackup = createLedgerBackupPayload(
+      [projectA],
+      [txLocalOld],
+      1700000030000,
+      undefined,
+      undefined,
+      [idB, idA],
+      1700000030000,
+    )
+
+    // 情境 A：遠端排序較新 -> 採用 [idB, idA] 並保留本地獨有的 idC
+    const mergedFromNewerRemote = parseAndMergeLedgerBackup(
+      {
+        projects: [projectA],
+        transactions: [txLocalOld],
+        projectOrder: [idA, idB, idC],
+        projectOrderUpdatedAt: 1700000010000,
+      },
+      JSON.stringify(remoteBackup),
+    )
+
+    expect(mergedFromNewerRemote.projectOrderUpdated).toBe(true)
+    expect(mergedFromNewerRemote.projectOrder).toEqual([idB, idA, idC])
+
+    // 情境 B：本地排序較新 -> 保留本地順序，僅補入遠端獨有 ID
+    const mergedWithNewerLocal = parseAndMergeLedgerBackup(
+      {
+        projects: [projectA],
+        transactions: [txLocalOld],
+        projectOrder: [idC, idA],
+        projectOrderUpdatedAt: 1700000099999,
+      },
+      JSON.stringify(remoteBackup),
+    )
+
+    expect(mergedWithNewerLocal.projectOrder).toEqual([idC, idA, idB])
+  })
+
   it('拒絕無效的 JSON 字串與結構損毀之備份資料', () => {
     expect(() =>
       parseAndMergeLedgerBackup(
