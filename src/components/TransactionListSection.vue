@@ -7,7 +7,6 @@ import {
   CopyPlus,
   ExternalLink,
   Pencil,
-  Plus,
   RotateCcw,
   Search,
   SlidersHorizontal,
@@ -19,6 +18,7 @@ import { useLedgerStore, type ManagedCategory } from '@/stores/ledgerStore'
 import { formatCurrencyAmount, fromMinorUnits, toMinorUnits } from '@/core/currency'
 import { matchesDateQuery } from '@/core/ledgerHelpers'
 import type { ProjectMember, Transaction } from '@/schemas/ledgerSchema'
+import CategoryIconBadge from '@/components/CategoryIconBadge.vue'
 import MemberAvatar from '@/components/MemberAvatar.vue'
 import SwipeableTxRow from '@/components/SwipeableTxRow.vue'
 
@@ -56,7 +56,7 @@ const { t, locale } = useI18n()
 const store = useLedgerStore()
 
 const searchQuery = ref('')
-const selectedCategoryFilter = ref<string>('all')
+const selectedCategoryFilters = ref<string[]>([])
 const selectedMemberFilter = ref<string>('all')
 const selectedProjectFilter = ref<string>('all')
 const onlyRefunds = ref(false)
@@ -64,19 +64,30 @@ const onlyWithPhotos = ref(false)
 const filterDrawerOpen = ref(false)
 const homeSearchOpen = ref(false)
 const showAll = ref(false)
-const inlineNewCategoryOpen = ref(false)
-const inlineNewCategoryName = ref('')
 const expandedTxId = ref<string | null>(null)
 
 const activeFilterChipCount = computed(() => {
   let count = 0
   if (selectedProjectFilter.value !== 'all') count += 1
-  if (selectedCategoryFilter.value !== 'all') count += 1
+  count += selectedCategoryFilters.value.length
   if (selectedMemberFilter.value !== 'all') count += 1
   if (onlyRefunds.value) count += 1
   if (onlyWithPhotos.value) count += 1
   return count
 })
+
+function toggleCategoryFilter(categoryKey: string) {
+  if (selectedCategoryFilters.value.includes(categoryKey)) {
+    selectedCategoryFilters.value = selectedCategoryFilters.value.filter(
+      (key) => key !== categoryKey,
+    )
+  } else {
+    selectedCategoryFilters.value = [
+      ...selectedCategoryFilters.value,
+      categoryKey,
+    ]
+  }
+}
 
 function toggleExpandTx(txId: string) {
   expandedTxId.value = expandedTxId.value === txId ? null : txId
@@ -101,6 +112,7 @@ const allCategories = computed(() =>
     key: cat.key,
     label: resolveCategoryLabel(cat),
     color: cat.color,
+    icon: cat.icon,
   })),
 )
 
@@ -113,6 +125,10 @@ function getCategoryLabel(key: string): string {
 
 function getCategoryColor(key: string): string {
   return store.categories.find((c) => c.key === key)?.color ?? '#64748b'
+}
+
+function getCategoryIcon(key: string): string | undefined {
+  return store.categories.find((c) => c.key === key)?.icon
 }
 
 function getMemberName(memberId: string, projectId?: string): string {
@@ -186,8 +202,8 @@ function matchesFilter(tx: Transaction): boolean {
     return false
   }
   if (
-    selectedCategoryFilter.value !== 'all' &&
-    tx.categoryKey !== selectedCategoryFilter.value
+    selectedCategoryFilters.value.length > 0 &&
+    !selectedCategoryFilters.value.includes(tx.categoryKey)
   ) {
     return false
   }
@@ -253,7 +269,7 @@ function matchesFilter(tx: Transaction): boolean {
 const hasActiveFilter = computed(
   () =>
     Boolean(searchQuery.value.trim()) ||
-    selectedCategoryFilter.value !== 'all' ||
+    selectedCategoryFilters.value.length > 0 ||
     selectedMemberFilter.value !== 'all' ||
     selectedProjectFilter.value !== 'all' ||
     onlyRefunds.value ||
@@ -398,24 +414,13 @@ function fmt(amount: number, currency: string): string {
   return formatCurrencyAmount(amount, currency, locale.value)
 }
 
-function confirmInlineAddCategory() {
-  const trimmed = inlineNewCategoryName.value.trim()
-  if (!trimmed) return
-  const created = store.addCategory(trimmed)
-  selectedCategoryFilter.value = created.key
-  inlineNewCategoryName.value = ''
-  inlineNewCategoryOpen.value = false
-  emit('toast', t('settings.categoryAddedToast'))
-}
-
 function resetFilters() {
   searchQuery.value = ''
-  selectedCategoryFilter.value = 'all'
+  selectedCategoryFilters.value = []
   selectedMemberFilter.value = 'all'
   selectedProjectFilter.value = 'all'
   onlyRefunds.value = false
   onlyWithPhotos.value = false
-  inlineNewCategoryOpen.value = false
   expandedTxId.value = null
 }
 
@@ -612,7 +617,7 @@ defineExpose({ resetFilters, setMemberFilter })
           </div>
         </div>
 
-        <!-- 類別篩選＋新增類別 -->
+        <!-- 類別篩選（支援複選，不提供新增類別功能） -->
         <div class="space-y-1.5">
           <div class="text-[11px] font-semibold text-slate-400">
             {{ t('export.csvCategory') }}
@@ -622,11 +627,11 @@ defineExpose({ resetFilters, setMemberFilter })
               type="button"
               class="rounded-full px-2.5 py-1 text-[11px] font-semibold transition"
               :class="
-                selectedCategoryFilter === 'all'
+                selectedCategoryFilters.length === 0
                   ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-950'
                   : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-[#2C2C2E] dark:text-slate-300'
               "
-              @click="selectedCategoryFilter = 'all'"
+              @click="selectedCategoryFilters = []"
             >
               {{ t('search.allCategories') }}
             </button>
@@ -634,54 +639,34 @@ defineExpose({ resetFilters, setMemberFilter })
               v-for="cat in allCategories"
               :key="cat.key"
               type="button"
-              class="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold transition"
+              class="inline-flex items-center gap-1.5 rounded-full py-1 pl-1.5 pr-2.5 text-[11px] font-semibold transition"
+              :style="
+                selectedCategoryFilters.includes(cat.key)
+                  ? { backgroundColor: cat.color }
+                  : undefined
+              "
               :class="
-                selectedCategoryFilter === cat.key
-                  ? 'bg-emerald-600 text-white dark:bg-emerald-500 dark:text-slate-950'
+                selectedCategoryFilters.includes(cat.key)
+                  ? 'text-white shadow-xs'
                   : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-[#2C2C2E] dark:text-slate-300'
               "
-              @click="
-                selectedCategoryFilter =
-                  selectedCategoryFilter === cat.key ? 'all' : cat.key
-              "
+              @click="toggleCategoryFilter(cat.key)"
             >
-              <span
-                class="h-1.5 w-1.5 shrink-0 rounded-full"
-                :style="{
-                  backgroundColor:
-                    selectedCategoryFilter === cat.key ? '#ffffff' : cat.color,
-                }"
+              <CategoryIconBadge
+                v-if="selectedCategoryFilters.includes(cat.key)"
+                :icon="cat.icon"
+                :category-key="cat.key"
+                size="xs"
+                plain
+              />
+              <CategoryIconBadge
+                v-else
+                :icon="cat.icon"
+                :category-key="cat.key"
+                :color="cat.color"
+                size="xs"
               />
               <span>{{ cat.label }}</span>
-            </button>
-            <button
-              type="button"
-              class="inline-flex items-center gap-0.5 rounded-full border border-dashed border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-500 hover:border-emerald-500 hover:text-emerald-600 dark:border-slate-600 dark:text-slate-400"
-              @click="inlineNewCategoryOpen = !inlineNewCategoryOpen"
-            >
-              <Plus class="h-3 w-3 shrink-0" />
-              <span>{{ t('search.addCategoryInline') }}</span>
-            </button>
-          </div>
-
-          <div
-            v-if="inlineNewCategoryOpen"
-            class="flex gap-1.5 pt-1"
-          >
-            <input
-              v-model="inlineNewCategoryName"
-              type="text"
-              maxlength="24"
-              :placeholder="t('search.newCategoryPlaceholder')"
-              class="min-w-0 flex-1 rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs text-slate-900 focus:border-emerald-500 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-[#2C2C2E] dark:text-white"
-              @keyup.enter="confirmInlineAddCategory"
-            />
-            <button
-              type="button"
-              class="rounded-xl bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white"
-              @click="confirmInlineAddCategory"
-            >
-              {{ t('settings.add') }}
             </button>
           </div>
         </div>
@@ -835,13 +820,13 @@ defineExpose({ resetFilters, setMemberFilter })
                         +{{ tx.receiptImages.length - 1 }}
                       </span>
                     </button>
-                    <span
+                    <CategoryIconBadge
                       v-else
-                      class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-xs font-bold text-white"
-                      :style="{ backgroundColor: getCategoryColor(tx.categoryKey) }"
-                    >
-                      {{ getCategoryLabel(tx.categoryKey).slice(0, 1) }}
-                    </span>
+                      :icon="getCategoryIcon(tx.categoryKey)"
+                      :category-key="tx.categoryKey"
+                      :color="getCategoryColor(tx.categoryKey)"
+                      size="lg"
+                    />
 
                     <div class="min-w-0">
                       <div class="flex items-center gap-1.5">

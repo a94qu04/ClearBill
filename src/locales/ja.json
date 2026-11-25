@@ -32,6 +32,9 @@
     "categoryDeletedToast": "カテゴリを削除しました",
     "categoryMinOneError": "カテゴリは最低1件必要です。",
     "categoriesResetToast": "既定カテゴリを復元しました",
+    "categoryColorLabel": "背景色",
+    "categoryIconLabel": "アイコン",
+    "customColorPicker": "カスタム",
     "add": "追加"
   },
   "trash": {

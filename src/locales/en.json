@@ -32,6 +32,9 @@
     "categoryDeletedToast": "Category deleted",
     "categoryMinOneError": "At least one category must remain.",
     "categoriesResetToast": "Default categories restored",
+    "categoryColorLabel": "Color",
+    "categoryIconLabel": "Icon",
+    "customColorPicker": "Custom",
     "add": "Add"
   },
   "trash": {

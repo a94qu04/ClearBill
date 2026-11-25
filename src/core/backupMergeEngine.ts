@@ -104,10 +104,14 @@ export function mergeLedgerData(
     if (!existing) {
       categoryMap.set(incomingCat.key, { ...incomingCat })
       categoriesAdded += 1
-    } else if (!existing.customLabel && incomingCat.customLabel) {
+    } else if (
+      (!existing.customLabel && incomingCat.customLabel) ||
+      (!existing.icon && incomingCat.icon)
+    ) {
       categoryMap.set(incomingCat.key, {
         ...existing,
-        customLabel: incomingCat.customLabel,
+        customLabel: existing.customLabel || incomingCat.customLabel,
+        icon: existing.icon || incomingCat.icon,
       })
     }
   }

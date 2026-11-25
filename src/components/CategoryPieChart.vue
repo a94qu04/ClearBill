@@ -6,6 +6,7 @@ import type { Transaction } from '@/schemas/ledgerSchema'
 import { useLedgerStore, type ManagedCategory } from '@/stores/ledgerStore'
 import { calculateCategoryStats } from '@/core/categoryStats'
 import { formatCurrencyAmount } from '@/core/currency'
+import CategoryIconBadge from '@/components/CategoryIconBadge.vue'
 
 interface Props {
   transactions: Transaction[]
@@ -65,6 +66,10 @@ function getCategoryColor(key: string): string {
   return store.categories.find((c) => c.key === key)?.color ?? '#64748b'
 }
 
+function getCategoryIcon(key: string): string | undefined {
+  return store.categories.find((c) => c.key === key)?.icon
+}
+
 const stats = computed(() =>
   calculateCategoryStats(props.transactions, props.baseCurrency),
 )
@@ -76,6 +81,7 @@ interface ChartSlice {
   categoryKey: string
   label: string
   color: string
+  icon?: string
   amount: number
   percentage: number
   count: number
@@ -102,6 +108,7 @@ const slices = computed<ChartSlice[]>(() => {
       categoryKey: item.categoryKey,
       label: getCategoryLabel(item.categoryKey),
       color: getCategoryColor(item.categoryKey),
+      icon: getCategoryIcon(item.categoryKey),
       amount: item.amount,
       percentage: item.percentage,
       count: item.count,
@@ -249,9 +256,11 @@ function fmt(amount: number, currency = props.baseCurrency): string {
           >
             <div class="flex items-center justify-between gap-2 text-xs">
               <div class="flex min-w-0 items-center gap-2">
-                <span
-                  class="h-2.5 w-2.5 shrink-0 rounded-full"
-                  :style="{ backgroundColor: slice.color }"
+                <CategoryIconBadge
+                  :icon="slice.icon"
+                  :category-key="slice.categoryKey"
+                  :color="slice.color"
+                  size="xs"
                 />
                 <span class="truncate font-semibold text-slate-800 dark:text-slate-100">
                   {{ slice.label }}

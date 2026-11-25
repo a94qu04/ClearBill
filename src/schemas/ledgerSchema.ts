@@ -240,11 +240,12 @@ export const CustomCategorySchema = z.object({
 })
 export type CustomCategory = z.infer<typeof CustomCategorySchema>
 
-/** 備份與同步用之分類管理項目結構（供跨裝置同步自訂分類名稱與色標） */
+/** 備份與同步用之分類管理項目結構（供跨裝置同步自訂分類名稱、底色與圖示） */
 export const ManagedCategoryBackupSchema = z.object({
   key: z.string().trim().min(1).max(64),
   customLabel: z.string().trim().min(1).max(32).optional(),
   color: z.string().trim().min(1).max(32),
+  icon: z.string().trim().min(1).max(32).optional(),
   isBuiltin: z.boolean().optional(),
 })
 export type ManagedCategoryBackup = z.infer<typeof ManagedCategoryBackupSchema>

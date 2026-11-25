@@ -32,6 +32,9 @@
     "categoryDeletedToast": "已刪除分類",
     "categoryMinOneError": "至少需保留一個分類。",
     "categoriesResetToast": "已還原預設分類",
+    "categoryColorLabel": "底色",
+    "categoryIconLabel": "圖案",
+    "customColorPicker": "自訂",
     "add": "新增"
   },
   "trash": {

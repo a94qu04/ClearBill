@@ -25,6 +25,7 @@ import {
 } from '@/core/ledgerHelpers'
 import type { ParsedQuickIntakeResult } from '@/core/quickIntakeParser'
 import type { Project, SplitConfig, Transaction } from '@/schemas/ledgerSchema'
+import CategoryIconBadge from '@/components/CategoryIconBadge.vue'
 import CurrencyAmountInput from '@/components/CurrencyAmountInput.vue'
 import CurrencyQuickAddPicker from '@/components/CurrencyQuickAddPicker.vue'
 import QuickSplitPanel from '@/components/QuickSplitPanel.vue'
@@ -241,6 +242,8 @@ const allCategories = computed(() =>
   store.categories.map((cat) => ({
     key: cat.key,
     label: resolveCategoryLabel(cat),
+    color: cat.color,
+    icon: cat.icon,
   })),
 )
 
@@ -873,15 +876,34 @@ async function handleSubmit(continueAdding = false) {
                     v-for="cat in allCategories"
                     :key="cat.key"
                     type="button"
-                    class="shrink-0 whitespace-nowrap rounded-full px-3 py-1 text-xs font-semibold transition"
+                    class="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full py-1 pl-1.5 pr-3 text-xs font-semibold transition"
+                    :style="
+                      categoryKey === cat.key
+                        ? { backgroundColor: cat.color }
+                        : undefined
+                    "
                     :class="
                       categoryKey === cat.key
-                        ? 'bg-emerald-600 text-white dark:bg-emerald-500 dark:text-slate-950'
+                        ? 'text-white shadow-xs'
                         : 'bg-slate-100 text-slate-600 dark:bg-[#2C2C2E] dark:text-slate-300'
                     "
                     @click="categoryKey = cat.key"
                   >
-                    {{ cat.label }}
+                    <CategoryIconBadge
+                      v-if="categoryKey === cat.key"
+                      :icon="cat.icon"
+                      :category-key="cat.key"
+                      size="xs"
+                      plain
+                    />
+                    <CategoryIconBadge
+                      v-else
+                      :icon="cat.icon"
+                      :category-key="cat.key"
+                      :color="cat.color"
+                      size="xs"
+                    />
+                    <span>{{ cat.label }}</span>
                   </button>
                   <button
                     type="button"

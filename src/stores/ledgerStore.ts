@@ -29,6 +29,10 @@ import {
 } from '@/core/settleUpEngine'
 import { getSuggestedExchangeRate } from '@/core/ledgerHelpers'
 import {
+  isValidCategoryIconKey,
+  resolveDefaultCategoryIcon,
+} from '@/core/categoryIcons'
+import {
   computeCrossRateFromUsdTable,
   loadCachedLiveRates,
   refreshLiveExchangeRates,
@@ -114,17 +118,19 @@ export interface ManagedCategory {
   /** 若使用者未修改過內建分類，維持 undefined 以便自動套用當前語系翻譯；修改過則顯示此自訂名稱 */
   customLabel?: string
   color: string
+  /** 分類圖示鍵值（對應 categoryIcons.ts） */
+  icon?: string
   isBuiltin?: boolean
 }
 
 export const DEFAULT_MANAGED_CATEGORIES: ManagedCategory[] = [
-  { key: 'cat_food', color: '#ea580c', isBuiltin: true },
-  { key: 'cat_transport', color: '#2563eb', isBuiltin: true },
-  { key: 'cat_lodging', color: '#7c3aed', isBuiltin: true },
-  { key: 'cat_shopping', color: '#db2777', isBuiltin: true },
-  { key: 'cat_entertainment', color: '#0891b2', isBuiltin: true },
-  { key: 'cat_daily', color: '#ca8a04', isBuiltin: true },
-  { key: 'cat_other', color: '#475569', isBuiltin: true },
+  { key: 'cat_food', color: '#ea580c', icon: 'utensils', isBuiltin: true },
+  { key: 'cat_transport', color: '#2563eb', icon: 'train', isBuiltin: true },
+  { key: 'cat_lodging', color: '#7c3aed', icon: 'bed', isBuiltin: true },
+  { key: 'cat_shopping', color: '#db2777', icon: 'shopping_bag', isBuiltin: true },
+  { key: 'cat_entertainment', color: '#0891b2', icon: 'ticket', isBuiltin: true },
+  { key: 'cat_daily', color: '#ca8a04', icon: 'package', isBuiltin: true },
+  { key: 'cat_other', color: '#475569', icon: 'tag', isBuiltin: true },
 ]
 
 function generateUuid(): string {
@@ -286,15 +292,21 @@ function loadUserPrefs(): PersistedUserPrefsV2 {
                   typeof c.key === 'string' &&
                   c.key.trim().length > 0,
               )
-              .map((c) => ({
-                key: c.key.trim(),
-                customLabel:
-                  typeof c.customLabel === 'string' && c.customLabel.trim()
-                    ? c.customLabel.trim()
-                    : undefined,
-                color: typeof c.color === 'string' && c.color ? c.color : '#10b981',
-                isBuiltin: Boolean(c.isBuiltin),
-              }))
+              .map((c) => {
+                const key = c.key.trim()
+                return {
+                  key,
+                  customLabel:
+                    typeof c.customLabel === 'string' && c.customLabel.trim()
+                      ? c.customLabel.trim()
+                      : undefined,
+                  color: typeof c.color === 'string' && c.color ? c.color : '#10b981',
+                  icon: isValidCategoryIconKey(c.icon)
+                    ? c.icon
+                    : resolveDefaultCategoryIcon(key),
+                  isBuiltin: Boolean(c.isBuiltin),
+                }
+              })
           : cloneDefaultCategories()
 
       const projectOrder = Array.isArray(parsed.projectOrder)
@@ -1298,7 +1310,11 @@ export const useLedgerStore = defineStore('ledger', () => {
   }
 
   // ==================== 消費分類管理（所有分類皆可新增、修改、刪除） ====================
-  function addCategory(label: string, color?: string): ManagedCategory {
+  function addCategory(
+    label: string,
+    color?: string,
+    icon?: string,
+  ): ManagedCategory {
     const trimmed = label.trim()
     const key = `custom_${Date.now().toString(36)}`
     const cat: ManagedCategory = {
@@ -1306,6 +1322,7 @@ export const useLedgerStore = defineStore('ledger', () => {
       customLabel: trimmed,
       color:
         color || AVATAR_PALETTE[categories.value.length % AVATAR_PALETTE.length],
+      icon: isValidCategoryIconKey(icon) ? icon : 'tag',
       isBuiltin: false,
     }
     categories.value = [...categories.value, cat]
@@ -1316,7 +1333,7 @@ export const useLedgerStore = defineStore('ledger', () => {
 
   function updateCategory(
     key: string,
-    patch: { customLabel?: string; color?: string },
+    patch: { customLabel?: string; color?: string; icon?: string },
   ): void {
     categories.value = categories.value.map((cat) => {
       if (cat.key !== key) return cat
@@ -1328,6 +1345,7 @@ export const useLedgerStore = defineStore('ledger', () => {
         ...cat,
         customLabel: nextLabel,
         color: patch.color ?? cat.color,
+        icon: isValidCategoryIconKey(patch.icon) ? patch.icon : cat.icon,
       }
     })
     saveUserPrefs()
