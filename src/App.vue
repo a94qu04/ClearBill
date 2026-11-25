@@ -47,12 +47,14 @@ import type {
 } from '@/schemas/ledgerSchema'
 import type { SettingsTab } from '@/components/SettingsModal.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
+import CurrencyQuickAddPicker from '@/components/CurrencyQuickAddPicker.vue'
 import MemberAvatar from '@/components/MemberAvatar.vue'
 import ProjectExpenseModal from '@/components/ProjectExpenseModal.vue'
 import ProjectSettleTab from '@/components/ProjectSettleTab.vue'
 import ProjectSettingsTab from '@/components/ProjectSettingsTab.vue'
 import SettlementPaymentModal from '@/components/SettlementPaymentModal.vue'
 import TransactionListSection from '@/components/TransactionListSection.vue'
+import { askConfirm } from '@/composables/useConfirm'
 
 // 懶載入大型彈窗與輔助抽屜，大幅縮小首屏初始載入體積
 const AllProjectsModal = defineAsyncComponent(
@@ -205,22 +207,28 @@ function closePhotoLightbox() {
   previewPhotoIndex.value = 0
 }
 
+function getHumanMembers(proj: { members: Array<{ id: string; name: string; avatarColor?: string; avatarImage?: string; isPool?: boolean }> }) {
+  const humans = proj.members.filter((m) => !m.isPool)
+  return humans.length > 0 ? humans : proj.members
+}
+
 function copyMembersFromProject(sourceProjectId: string) {
   const source = store.getProjectById(sourceProjectId)
   if (!source) return
-  projectMembersList.value = source.members.map((m) => m.name)
+  const humans = getHumanMembers(source)
+  projectMembersList.value = humans.map((m) => m.name)
   newProjectMemberInput.value = ''
   showToast(
     t('project.membersCopiedToast', {
       name: source.name,
-      count: source.members.length,
+      count: humans.length,
     }),
   )
 }
 
-// Toast 與即時刪除復原狀態
+// Toast 與即時刪除復原狀態（支援 6 秒內連刪多筆全部一鍵復原，不再覆蓋遺失）
 const toastMessage = ref('')
-const undoDeletedTxId = ref<string | null>(null)
+const undoDeletedTxIds = ref<string[]>([])
 let toastTimer: ReturnType<typeof setTimeout> | null = null
 
 // 專案網格拖曳排序狀態（桌機）
@@ -237,19 +245,41 @@ const projectCardColor = ref<string | undefined>(undefined)
 const projectCardCoverImage = ref<string | undefined>(undefined)
 const projectFormError = ref('')
 const createNewCurrencyOpen = ref(false)
-const createNewCurrencyCode = ref('')
+const createProjectInitialSnapshot = ref('')
 
-function confirmCreateProjectAddCurrency() {
-  const code = createNewCurrencyCode.value.trim().toUpperCase()
-  if (!/^[A-Z]{3}$/.test(code)) {
-    showToast(t('settings.invalidCurrencyCode'))
-    return
+function captureCreateProjectSnapshot(): string {
+  return JSON.stringify({
+    name: projectName.value.trim(),
+    currency: projectCurrency.value,
+    splitMode: projectDefaultSplitMode.value,
+    members: projectMembersList.value,
+    pendingMemberInput: newProjectMemberInput.value.trim(),
+    cardColor: projectCardColor.value ?? null,
+    cardCoverImage: projectCardCoverImage.value ?? null,
+  })
+}
+
+const isCreateProjectDirty = computed(() => {
+  if (activeView.value !== 'project_create') return false
+  return captureCreateProjectSnapshot() !== createProjectInitialSnapshot.value
+})
+
+async function requestNavigateHome() {
+  if (activeView.value === 'project_create' && isCreateProjectDirty.value) {
+    const confirmed = await askConfirm({
+      title: t('project.discardCreateTitle'),
+      message: t('project.discardCreateMessage'),
+      confirmText: t('project.discardButton'),
+      tone: 'danger',
+    })
+    if (!confirmed) return
   }
-  const added = store.addCurrency(code)
-  projectCurrency.value = added
-  createNewCurrencyCode.value = ''
+  activeView.value = 'home'
+}
+
+function handleCreateProjectCurrencyAdded(code: string) {
+  projectCurrency.value = code
   createNewCurrencyOpen.value = false
-  showToast(t('settings.currencyAddedToast', { code: added }))
 }
 
 async function handleCreateProjectCoverUpload(event: Event) {
@@ -300,8 +330,25 @@ function commitNewMemberChips() {
     .split(/[,，\n]+/)
     .map((s) => s.trim())
     .filter(Boolean)
-  if (parts.length > 0) {
-    projectMembersList.value = [...projectMembersList.value, ...parts]
+  const existingKeys = new Set(
+    projectMembersList.value.map((name) => name.trim().toLowerCase()),
+  )
+  const accepted: string[] = []
+  let firstDuplicate = ''
+  for (const name of parts) {
+    const key = name.toLowerCase()
+    if (existingKeys.has(key)) {
+      if (!firstDuplicate) firstDuplicate = name
+      continue
+    }
+    existingKeys.add(key)
+    accepted.push(name)
+  }
+  if (accepted.length > 0) {
+    projectMembersList.value = [...projectMembersList.value, ...accepted]
+  }
+  if (firstDuplicate) {
+    showToast(t('validation.duplicateMemberName', { name: firstDuplicate }))
   }
   newProjectMemberInput.value = ''
 }
@@ -366,7 +413,7 @@ function syncThemeToDom(dark: boolean) {
   document.documentElement.classList.toggle('dark', dark)
   const themeMeta = document.querySelector('meta[name="theme-color"]')
   if (themeMeta) {
-    themeMeta.setAttribute('content', dark ? '#020617' : '#ffffff')
+    themeMeta.setAttribute('content', dark ? '#000000' : '#F2F2F7')
   }
 }
 
@@ -398,14 +445,20 @@ function setTheme(dark: boolean) {
 
 function showToast(message: string, undoTxId: string | null = null) {
   toastMessage.value = message
-  undoDeletedTxId.value = undoTxId
+  if (undoTxId) {
+    if (!undoDeletedTxIds.value.includes(undoTxId)) {
+      undoDeletedTxIds.value = [...undoDeletedTxIds.value, undoTxId]
+    }
+  } else {
+    undoDeletedTxIds.value = []
+  }
   if (toastTimer) clearTimeout(toastTimer)
   toastTimer = setTimeout(
     () => {
       toastMessage.value = ''
-      undoDeletedTxId.value = null
+      undoDeletedTxIds.value = []
     },
-    undoTxId ? 6000 : 2800,
+    undoDeletedTxIds.value.length > 0 ? 6000 : 2800,
   )
 }
 
@@ -471,8 +524,8 @@ function openCreateProjectView() {
   projectCardColor.value = undefined
   projectCardCoverImage.value = undefined
   createNewCurrencyOpen.value = false
-  createNewCurrencyCode.value = ''
   activeView.value = 'project_create'
+  createProjectInitialSnapshot.value = captureCreateProjectSnapshot()
 }
 
 async function handleCreateProject() {
@@ -494,6 +547,16 @@ async function handleCreateProject() {
   if (members.length < 2) {
     projectFormError.value = t('validation.membersRequired')
     return
+  }
+
+  const seenNames = new Set<string>()
+  for (const name of members) {
+    const key = name.toLowerCase()
+    if (seenNames.has(key)) {
+      projectFormError.value = t('validation.duplicateMemberName', { name })
+      return
+    }
+    seenNames.add(key)
   }
 
   try {
@@ -627,18 +690,44 @@ async function handleDeleteTransaction(id: string) {
   showToast(t('trash.deletedUndoToast'), id)
 }
 
+async function handleDeleteTransactionsBatch(ids: string[]) {
+  const deletedIds = await store.softDeleteTransactionsBatch(ids)
+  if (deletedIds.length === 0) return
+  undoDeletedTxIds.value = Array.from(
+    new Set([...undoDeletedTxIds.value, ...deletedIds]),
+  )
+  toastMessage.value = t('pool.batchUndoneToast', { count: deletedIds.length })
+  if (toastTimer) clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => {
+    toastMessage.value = ''
+    undoDeletedTxIds.value = []
+  }, 6000)
+}
+
 async function handleUndoDelete() {
-  if (!undoDeletedTxId.value) return
-  const targetId = undoDeletedTxId.value
-  undoDeletedTxId.value = null
-  const res = await store.restoreTransaction(targetId)
-  if (res.ok) {
-    if (res.projectId) {
-      store.selectProject(res.projectId)
+  if (undoDeletedTxIds.value.length === 0) return
+  const targetIds = [...undoDeletedTxIds.value]
+  undoDeletedTxIds.value = []
+  let restoredCount = 0
+  let lastProjectId: string | undefined
+  for (const id of targetIds) {
+    const res = await store.restoreTransaction(id)
+    if (res.ok) {
+      restoredCount += 1
+      if (res.projectId) lastProjectId = res.projectId
+    }
+  }
+  if (restoredCount > 0) {
+    if (lastProjectId) {
+      store.selectProject(lastProjectId)
     }
     homeTxListRef.value?.resetFilters()
     projectTxListRef.value?.resetFilters()
-    showToast(t('trash.restoredToast'))
+    showToast(
+      restoredCount > 1
+        ? t('trash.restoredMultiToast', { count: restoredCount })
+        : t('trash.restoredToast'),
+    )
   }
 }
 
@@ -754,37 +843,56 @@ onBeforeUnmount(() => {
 
 <template>
   <div
-    class="safe-bottom-page min-h-screen bg-slate-100/90 text-slate-900 transition-colors duration-200 dark:bg-slate-950 dark:text-slate-100"
+    class="safe-bottom-page min-h-screen bg-[#F2F2F7] text-slate-900 transition-colors duration-200 dark:bg-black dark:text-slate-100"
   >
-    <!-- 極簡 App 頂部導覽列（支援 iOS Safe Area、左上小收據 Icon 回首頁、右上設定齒輪） -->
+    <!-- Apple 極簡毛玻璃頂部導覽列（支援 iOS Safe Area、工作區不重複顯示專案標題） -->
     <header
-      class="safe-top sticky top-0 z-30 border-b border-slate-200/80 bg-white/90 backdrop-blur-md transition-colors dark:border-slate-800/80 dark:bg-slate-950/90"
+      class="safe-top sticky top-0 z-30 border-b border-black/[0.06] bg-[#F2F2F7]/85 backdrop-blur-xl transition-colors dark:border-white/10 dark:bg-black/85"
     >
-      <div class="mx-auto flex h-14 max-w-xl items-center justify-between gap-2 px-4 py-2 md:max-w-3xl lg:max-w-5xl">
+      <div class="mx-auto flex h-13 max-w-xl items-center justify-between gap-2 px-4 py-2 md:max-w-3xl lg:max-w-5xl">
         <div class="flex min-w-0 items-center gap-2">
+          <!-- 專案工作區：簡潔返回鍵（不與下方卡片重複專案標題） -->
           <button
-            v-if="activeView !== 'home'"
+            v-if="activeView === 'project_workspace'"
             type="button"
             :aria-label="t('home.backToHome')"
-            class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-slate-600 transition hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
-            @click="activeView = 'home'"
+            class="-ml-1 inline-flex items-center gap-1 rounded-full px-2 py-1 text-sm font-semibold text-emerald-600 transition hover:bg-black/[0.05] active:scale-95 dark:text-emerald-400 dark:hover:bg-white/10"
+            @click="requestNavigateHome"
           >
             <ArrowLeft class="h-4 w-4" />
+            <span>{{ t('home.backToHome') }}</span>
           </button>
 
-          <button
-            type="button"
-            :aria-label="t('home.backToHome')"
-            :title="t('app.name')"
-            class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-slate-900 text-emerald-400 shadow-sm transition hover:scale-105 active:scale-95 dark:bg-emerald-500/15 dark:ring-1 dark:ring-emerald-500/40"
-            @click="activeView = 'home'"
-          >
-            <Receipt class="h-3.5 w-3.5" />
-          </button>
+          <!-- 建立專案頁：返回鍵 + 標題 -->
+          <template v-else-if="activeView === 'project_create'">
+            <button
+              type="button"
+              :aria-label="t('home.backToHome')"
+              class="-ml-1 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-slate-600 transition hover:bg-black/[0.06] active:scale-95 dark:text-slate-300 dark:hover:bg-white/10"
+              @click="requestNavigateHome"
+            >
+              <ArrowLeft class="h-4 w-4" />
+            </button>
+            <h1 class="truncate text-sm font-bold tracking-tight text-slate-900 dark:text-white sm:text-base">
+              {{ topBarTitle }}
+            </h1>
+          </template>
 
-          <h1 class="truncate text-sm font-bold tracking-tight text-slate-900 dark:text-white sm:text-base">
-            {{ topBarTitle }}
-          </h1>
+          <!-- 首頁：品牌收據圖示 + 名稱 -->
+          <template v-else>
+            <button
+              type="button"
+              :aria-label="t('home.backToHome')"
+              :title="t('app.name')"
+              class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-slate-900 text-emerald-400 shadow-sm transition hover:scale-105 active:scale-95 dark:bg-emerald-500/20"
+              @click="activeView = 'home'"
+            >
+              <Receipt class="h-3.5 w-3.5" />
+            </button>
+            <h1 class="truncate text-base font-bold tracking-tight text-slate-900 dark:text-white">
+              {{ topBarTitle }}
+            </h1>
+          </template>
         </div>
 
         <div class="flex shrink-0 items-center gap-1.5">
@@ -794,10 +902,10 @@ onBeforeUnmount(() => {
               store.allNonDeletedProjects.length > 0
             "
             type="button"
-            class="inline-flex h-7 shrink-0 items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2 text-[11px] font-semibold text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+            class="inline-flex h-8 shrink-0 items-center gap-1 rounded-full bg-black/[0.05] px-2.5 text-[11px] font-semibold text-slate-700 transition hover:bg-black/[0.09] dark:bg-white/10 dark:text-slate-200 dark:hover:bg-white/15"
             @click="allProjectsSheetOpen = true"
           >
-            <LayoutGrid class="h-3 w-3 text-emerald-600 dark:text-emerald-400" />
+            <LayoutGrid class="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
             <span>{{
               t('home.viewAllProjects', {
                 count: store.allNonDeletedProjects.length,
@@ -805,21 +913,21 @@ onBeforeUnmount(() => {
             }}</span>
           </button>
 
-          <!-- Google 雲端跨裝置同步快捷按鈕（與設定齒輪同水平線） -->
+          <!-- Google 雲端跨裝置同步快捷按鈕（無框輕量圓角膠囊） -->
           <button
             type="button"
             :aria-label="googleCloudButtonTitle"
             :title="googleCloudButtonTitle"
-            class="relative inline-flex h-7 shrink-0 items-center justify-center gap-1 rounded-lg border px-2 text-[11px] font-semibold transition active:scale-95"
+            class="relative inline-flex h-8 shrink-0 items-center justify-center gap-1 rounded-full px-2.5 text-[11px] font-semibold transition active:scale-95"
             :class="
               store.googleDriveStatus === 'synced'
-                ? 'border-sky-200 bg-sky-50/80 text-sky-700 hover:bg-sky-100 dark:border-sky-900/70 dark:bg-sky-950/50 dark:text-sky-300'
+                ? 'bg-sky-500/12 text-sky-700 hover:bg-sky-500/20 dark:bg-sky-400/15 dark:text-sky-300'
                 : store.googleDriveStatus === 'pending' ||
                     store.googleDriveStatus === 'needs_auth'
-                  ? 'border-amber-200 bg-amber-50/90 text-amber-800 hover:bg-amber-100 dark:border-amber-900/70 dark:bg-amber-950/50 dark:text-amber-300'
+                  ? 'bg-amber-500/15 text-amber-800 hover:bg-amber-500/25 dark:bg-amber-400/15 dark:text-amber-300'
                   : store.googleDriveStatus === 'error'
-                    ? 'border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100 dark:border-rose-900/70 dark:bg-rose-950/50 dark:text-rose-300'
-                    : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800'
+                    ? 'bg-rose-500/12 text-rose-700 hover:bg-rose-500/20 dark:bg-rose-400/15 dark:text-rose-300'
+                    : 'bg-black/[0.05] text-slate-600 hover:bg-black/[0.09] hover:text-slate-900 dark:bg-white/10 dark:text-slate-300 dark:hover:bg-white/15'
             "
             @click="handleTopBarGoogleCloudClick"
           >
@@ -848,15 +956,15 @@ onBeforeUnmount(() => {
             />
           </button>
 
-          <!-- 右上角明確設定齒輪按鈕（與左上 Icon 同水平線、精緻小尺寸） -->
+          <!-- 右上角設定齒輪按鈕 -->
           <button
             type="button"
             :aria-label="t('settings.title')"
             :title="t('settings.title')"
-            class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-600 transition hover:bg-slate-100 hover:text-slate-900 active:scale-95 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white"
+            class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-black/[0.05] text-slate-600 transition hover:bg-black/[0.09] hover:text-slate-900 active:scale-95 dark:bg-white/10 dark:text-slate-300 dark:hover:bg-white/15 dark:hover:text-white"
             @click="openSettingsModal('profile')"
           >
-            <Settings class="h-3.5 w-3.5" />
+            <Settings class="h-4 w-4" />
           </button>
         </div>
       </div>
@@ -873,18 +981,23 @@ onBeforeUnmount(() => {
     >
       <div
         v-if="toastMessage"
-        class="safe-toast-bottom fixed left-1/2 z-50 flex -translate-x-1/2 items-center gap-2.5 whitespace-nowrap rounded-full bg-slate-900 px-4 py-2 text-xs font-semibold text-white shadow-xl dark:bg-slate-100 dark:text-slate-950"
+        role="status"
+        class="safe-toast-bottom fixed left-1/2 z-50 flex w-max max-w-[calc(100vw-2rem)] -translate-x-1/2 items-center gap-2 rounded-2xl bg-slate-900 px-3.5 py-2 text-xs font-semibold text-white shadow-xl dark:bg-slate-100 dark:text-slate-950 sm:rounded-full sm:px-4"
       >
-        <Check class="h-3.5 w-3.5 text-emerald-400 dark:text-emerald-600" />
-        <span>{{ toastMessage }}</span>
+        <Check class="h-3.5 w-3.5 shrink-0 text-emerald-400 dark:text-emerald-600" />
+        <span class="break-words leading-snug">{{ toastMessage }}</span>
         <button
-          v-if="undoDeletedTxId"
+          v-if="undoDeletedTxIds.length > 0"
           type="button"
-          class="inline-flex items-center gap-1 rounded-full bg-emerald-500 px-2.5 py-0.5 text-[11px] font-bold text-slate-950 transition hover:bg-emerald-400"
+          class="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-500 px-2.5 py-0.5 text-[11px] font-bold text-slate-950 transition hover:bg-emerald-400"
           @click="handleUndoDelete"
         >
           <Undo2 class="h-3 w-3" />
-          <span>{{ t('trash.restore') }}</span>
+          <span>{{
+            undoDeletedTxIds.length > 1
+              ? `${t('trash.restore')} (${undoDeletedTxIds.length})`
+              : t('trash.restore')
+          }}</span>
         </button>
       </div>
     </Transition>
@@ -978,7 +1091,7 @@ onBeforeUnmount(() => {
           <div v-if="store.activeProjects.length === 0" class="space-y-2.5">
             <button
               type="button"
-              class="flex w-full items-center justify-center gap-2 rounded-2xl border border-dashed border-slate-300 bg-white px-4 py-6 text-sm font-semibold text-emerald-600 transition hover:border-emerald-400 hover:bg-emerald-50/40 dark:border-slate-700 dark:bg-slate-900 dark:text-emerald-400"
+              class="flex w-full items-center justify-center gap-2 rounded-2xl bg-white px-4 py-6 text-sm font-semibold text-emerald-600 shadow-sm transition hover:bg-white/80 dark:bg-[#1C1C1E] dark:text-emerald-400"
               @click="openCreateProjectView"
             >
               <Plus class="h-4 w-4" />
@@ -987,7 +1100,7 @@ onBeforeUnmount(() => {
 
             <button
               type="button"
-              class="flex w-full items-center justify-center gap-1.5 rounded-2xl border border-emerald-200 bg-emerald-50/70 px-4 py-3 text-xs font-bold text-emerald-800 transition hover:bg-emerald-100 dark:border-emerald-800/70 dark:bg-emerald-950/40 dark:text-emerald-300 dark:hover:bg-emerald-950/70"
+              class="flex w-full items-center justify-center gap-1.5 rounded-2xl bg-emerald-500/12 px-4 py-3 text-xs font-bold text-emerald-700 transition hover:bg-emerald-500/20 dark:bg-emerald-500/15 dark:text-emerald-300"
               @click="handleCreateDemoProject"
             >
               <Sparkles class="h-4 w-4" />
@@ -1001,19 +1114,19 @@ onBeforeUnmount(() => {
               :key="proj.id"
               draggable="true"
               :data-project-id="proj.id"
-              class="relative items-start gap-1.5 overflow-hidden rounded-2xl border px-2.5 py-3 text-left transition"
+              class="relative items-start gap-1.5 overflow-hidden rounded-2xl px-3 py-3 text-left shadow-sm transition"
               :style="getProjectCardStyle(proj)"
               :class="[
                 idx >= 4 ? 'hidden md:flex' : 'flex',
                 hasCustomProjectCardBg(proj)
                   ? store.activeProject?.id === proj.id
-                    ? 'border-emerald-400 text-white ring-2 ring-emerald-400/50'
-                    : 'border-white/15 text-white hover:brightness-105'
+                    ? 'text-white ring-2 ring-emerald-400/70'
+                    : 'text-white hover:brightness-105'
                   : store.activeProject?.id === proj.id
-                    ? 'border-emerald-500 bg-emerald-50 text-emerald-900 dark:border-emerald-500/70 dark:bg-emerald-950/60 dark:text-emerald-200'
-                    : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200',
+                    ? 'bg-white text-slate-900 ring-2 ring-emerald-500/60 dark:bg-[#1C1C1E] dark:text-white'
+                    : 'bg-white text-slate-800 hover:bg-slate-50/90 dark:bg-[#1C1C1E] dark:text-slate-100 dark:hover:bg-[#2C2C2E]',
                 dragOverProjectId === proj.id
-                  ? 'border-dashed border-emerald-500 ring-2 ring-emerald-500/30'
+                  ? 'ring-2 ring-dashed ring-emerald-500'
                   : '',
                 draggingProjectId === proj.id ? 'opacity-50' : '',
               ]"
@@ -1079,11 +1192,11 @@ onBeforeUnmount(() => {
                 </div>
                 <div
                   class="flex w-full items-center justify-between gap-1.5"
-                  :title="proj.members.map((m) => m.name).join('、')"
+                  :title="getHumanMembers(proj).map((m) => m.name).join('、')"
                 >
                   <div class="flex items-center -space-x-1">
                     <MemberAvatar
-                      v-for="m in proj.members.slice(0, 4)"
+                      v-for="m in getHumanMembers(proj).slice(0, 4)"
                       :key="m.id"
                       :name="m.name"
                       :color="m.avatarColor"
@@ -1092,10 +1205,10 @@ onBeforeUnmount(() => {
                       ring
                     />
                     <span
-                      v-if="proj.members.length > 4"
+                      v-if="getHumanMembers(proj).length > 4"
                       class="inline-flex h-3.5 min-w-[14px] items-center justify-center rounded-full bg-slate-200 px-1 text-[8px] font-bold text-slate-700 ring-1 ring-white dark:bg-slate-700 dark:text-slate-200 dark:ring-slate-900"
                     >
-                      +{{ proj.members.length - 4 }}
+                      +{{ getHumanMembers(proj).length - 4 }}
                     </span>
                   </div>
                   <span
@@ -1106,12 +1219,37 @@ onBeforeUnmount(() => {
                         : 'text-slate-400 dark:text-slate-500'
                     "
                   >
-                    {{ t('project.memberCount', { count: proj.members.length }) }}
+                    {{ t('project.memberCount', { count: getHumanMembers(proj).length }) }}
                   </span>
                 </div>
               </button>
             </div>
           </div>
+
+          <!-- 手機超過 4 個（或平板以上超過 6 個）專案時於卡片下方給明確入口，避免以為專案不見 -->
+          <button
+            v-if="store.activeProjects.length > 4"
+            type="button"
+            class="flex w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-slate-300 bg-white/80 py-2 text-xs font-semibold text-slate-600 transition hover:border-emerald-400 hover:text-emerald-700 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-300 dark:hover:text-emerald-400"
+            :class="store.activeProjects.length <= 6 ? 'md:hidden' : ''"
+            @click="allProjectsSheetOpen = true"
+          >
+            <LayoutGrid class="h-3.5 w-3.5" />
+            <span class="md:hidden">
+              {{
+                t('home.moreProjectsHint', {
+                  count: store.activeProjects.length - 4,
+                })
+              }}
+            </span>
+            <span class="hidden md:inline">
+              {{
+                t('home.moreProjectsHint', {
+                  count: store.activeProjects.length - 6,
+                })
+              }}
+            </span>
+          </button>
         </section>
 
         <!-- 首頁近期帳目（支援專案快速篩選、左滑修改／右滑刪除，完成或關閉皆留在首頁） -->
@@ -1136,7 +1274,7 @@ onBeforeUnmount(() => {
       <!-- ==================== 視圖 2：建立旅遊 / 分帳專案 ==================== -->
       <div v-else-if="activeView === 'project_create'" class="mx-auto max-w-xl">
         <section
-          class="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900"
+          class="rounded-3xl bg-white p-5 shadow-sm dark:bg-[#1C1C1E]"
         >
           <form class="space-y-4" @submit.prevent="handleCreateProject">
             <div>
@@ -1195,31 +1333,13 @@ onBeforeUnmount(() => {
               </div>
             </div>
 
-            <!-- 建專案現場新增 3 碼幣別（不必跳離頁面遺失已輸入之成員名單） -->
-            <div v-if="createNewCurrencyOpen" class="flex items-center gap-1.5">
-              <input
-                v-model="createNewCurrencyCode"
-                type="text"
-                maxlength="3"
-                :placeholder="t('project.quickAddCurrencyPlaceholder')"
-                class="min-w-0 flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold uppercase text-slate-900 focus:border-emerald-500 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white"
-                @keyup.enter.prevent="confirmCreateProjectAddCurrency"
-              />
-              <button
-                type="button"
-                class="shrink-0 rounded-xl bg-emerald-600 px-3 py-2 text-xs font-bold text-white dark:bg-emerald-500 dark:text-slate-950"
-                @click="confirmCreateProjectAddCurrency"
-              >
-                {{ t('settings.add') }}
-              </button>
-              <button
-                type="button"
-                class="shrink-0 rounded-xl p-1.5 text-slate-400 hover:text-slate-600"
-                @click="createNewCurrencyOpen = false"
-              >
-                <X class="h-4 w-4" />
-              </button>
-            </div>
+            <!-- 建專案現場中文搜尋新增幣別（不必跳離頁面遺失已輸入之成員名單） -->
+            <CurrencyQuickAddPicker
+              v-if="createNewCurrencyOpen"
+              @added="handleCreateProjectCurrencyAdded"
+              @close="createNewCurrencyOpen = false"
+              @toast="showToast($event)"
+            />
 
             <div class="space-y-2">
               <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300">
@@ -1244,7 +1364,7 @@ onBeforeUnmount(() => {
                   >
                     <span class="max-w-[120px] truncate">{{ existingProj.name }}</span>
                     <span class="text-[10px] text-slate-400">
-                      ({{ existingProj.members.length }})
+                      ({{ getHumanMembers(existingProj).length }})
                     </span>
                   </button>
                 </div>
@@ -1398,7 +1518,7 @@ onBeforeUnmount(() => {
         class="space-y-4"
       >
         <section
-          class="relative space-y-3 overflow-hidden rounded-2xl bg-slate-900 px-5 py-4 text-white dark:border dark:border-slate-800"
+          class="relative space-y-3 overflow-hidden rounded-3xl bg-slate-900 px-5 py-4 text-white shadow-sm dark:bg-[#1C1C1E]"
           :style="getProjectCardStyle(store.activeProject)"
         >
           <div
@@ -1410,13 +1530,13 @@ onBeforeUnmount(() => {
               <div class="flex flex-wrap items-center gap-2 text-xs font-medium text-emerald-400">
                 <button
                   type="button"
-                  :title="store.activeProject.members.map((m) => m.name).join('、')"
+                  :title="getHumanMembers(store.activeProject).map((m) => m.name).join('、')"
                   class="inline-flex items-center gap-1.5 rounded-full transition hover:opacity-90"
                   @click="projectTab = 'settings'"
                 >
                   <span class="inline-flex items-center -space-x-1">
                     <MemberAvatar
-                      v-for="m in store.activeProject.members.slice(0, 6)"
+                      v-for="m in getHumanMembers(store.activeProject).slice(0, 6)"
                       :key="m.id"
                       :name="m.name"
                       :color="m.avatarColor"
@@ -1425,14 +1545,14 @@ onBeforeUnmount(() => {
                       ring
                     />
                     <span
-                      v-if="store.activeProject.members.length > 6"
+                      v-if="getHumanMembers(store.activeProject).length > 6"
                       class="inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-slate-700 px-1 text-[9px] font-bold text-slate-100 ring-1 ring-slate-900"
                     >
-                      +{{ store.activeProject.members.length - 6 }}
+                      +{{ getHumanMembers(store.activeProject).length - 6 }}
                     </span>
                   </span>
                   <span>
-                    {{ t('project.memberCount', { count: store.activeProject.members.length }) }}
+                    {{ t('project.memberCount', { count: getHumanMembers(store.activeProject).length }) }}
                     · {{ store.activeProject.baseCurrency }}
                   </span>
                 </button>
@@ -1531,7 +1651,7 @@ onBeforeUnmount(() => {
         </section>
 
         <nav
-          class="grid grid-cols-3 rounded-xl bg-slate-200/70 p-1 text-xs font-semibold dark:bg-slate-900"
+          class="grid grid-cols-3 rounded-xl bg-black/[0.06] p-1 text-xs font-semibold dark:bg-[#1C1C1E]"
         >
           <button
             v-for="tab in (['expenses', 'settle', 'settings'] as const)"
@@ -1540,7 +1660,7 @@ onBeforeUnmount(() => {
             class="rounded-lg py-2 transition"
             :class="
               projectTab === tab
-                ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-800 dark:text-white'
+                ? 'bg-white text-slate-900 shadow-sm dark:bg-[#2C2C2E] dark:text-white'
                 : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'
             "
             @click="projectTab = tab"
@@ -1588,6 +1708,7 @@ onBeforeUnmount(() => {
           @edit-expense="startEditTransaction"
           @inspect-member="handleInspectMemberInExpenses"
           @delete-settlement="handleDeleteTransaction"
+          @delete-settlements-batch="handleDeleteTransactionsBatch"
           @toast="showToast($event)"
         />
 
@@ -1599,9 +1720,9 @@ onBeforeUnmount(() => {
           @toast="showToast($event)"
         />
 
-        <!-- 浮動「+ 記一筆」按鈕（與主容器右緣對齊並含底部 Safe Area 避讓） -->
+        <!-- 浮動「+ 記一筆」按鈕（僅於明細頁顯示，避免在結算頁遮擋右下角「記錄已付」與刪除按鈕） -->
         <div
-          v-if="projectTab !== 'settings'"
+          v-if="projectTab === 'expenses'"
           class="safe-fab-bottom pointer-events-none fixed inset-x-0 z-40"
         >
           <div class="mx-auto flex max-w-xl justify-end px-4 md:max-w-3xl lg:max-w-5xl">

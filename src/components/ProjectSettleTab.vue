@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   ArrowLeftRight,
   ArrowUpDown,
+  ChevronDown,
   ChevronRight,
   Coins,
   Copy,
@@ -14,6 +15,7 @@ import {
   RefreshCw,
   Share2,
   Trash2,
+  Undo2,
   Wallet,
   X,
 } from 'lucide-vue-next'
@@ -35,6 +37,8 @@ import {
   triggerBinaryFileDownload,
 } from '@/core/ledgerHelpers'
 import { useLedgerStore, type ManagedCategory } from '@/stores/ledgerStore'
+import { askConfirm } from '@/composables/useConfirm'
+import { useModalLayer } from '@/composables/useModalLayer'
 import CategoryPieChart from '@/components/CategoryPieChart.vue'
 import MemberAvatar from '@/components/MemberAvatar.vue'
 
@@ -61,6 +65,7 @@ const emit = defineEmits<{
   (e: 'editExpense', tx: Transaction): void
   (e: 'inspectMember', memberId: string): void
   (e: 'deleteSettlement', id: string): void
+  (e: 'deleteSettlementsBatch', ids: string[]): void
   (e: 'toast', message: string): void
 }>()
 
@@ -69,12 +74,30 @@ const store = useLedgerStore()
 
 const includeDetailsInShare = ref(false)
 const isGeneratingImage = ref(false)
+const rateSettingsExpanded = ref(false)
+const shareSheetOpen = ref(false)
+const shareSheetRef = ref<HTMLElement | null>(null)
 const customSettleRateDrafts = ref<Record<string, string>>({})
 const selectedMemberDetailId = ref<string | null>(null)
+const memberDetailSectionRef = ref<HTMLElement | null>(null)
 const memberSortMode = ref<'project' | 'net_desc'>('project')
 const transferPlanMode = ref<'min_transfers' | 'hub'>('min_transfers')
 const hubMemberId = ref<string>('')
 const onlyMyTransfers = ref(false)
+
+useModalLayer(
+  () => shareSheetOpen.value,
+  () => {
+    shareSheetOpen.value = false
+  },
+  shareSheetRef,
+)
+
+const currentRateModeLabel = computed(() => {
+  if (currentRateMode.value === 'live') return t('rates.modeLive')
+  if (currentRateMode.value === 'custom') return t('rates.modeCustom')
+  return t('rates.modePerTx')
+})
 
 const poolMembers = computed(() => props.project.members.filter((m) => m.isPool))
 const poolMemberIds = computed(() => new Set(poolMembers.value.map((m) => m.id)))
@@ -82,6 +105,61 @@ const poolMemberIds = computed(() => new Set(poolMembers.value.map((m) => m.id))
 const poolBalances = computed(() =>
   props.settleUp.balances.filter((b) => poolMemberIds.value.has(b.memberId)),
 )
+
+/** 辨識最近一次「批次收公費」的轉帳群組，方便打錯金額時一鍵整批撤銷 */
+const latestPoolCollectBatch = computed<{
+  ids: string[]
+  count: number
+  amountPerPerson: number
+  currency: string
+  date: string
+} | null>(() => {
+  if (poolMemberIds.value.size === 0) return null
+  const poolDeposits = props.settlements
+    .filter((tx) => {
+      const toId = tx.splitConfig?.shares[0]?.memberId
+      return Boolean(toId && poolMemberIds.value.has(toId))
+    })
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+
+  const latest = poolDeposits[0]
+  if (!latest) return null
+  const targetPoolId = latest.splitConfig?.shares[0]?.memberId
+  const latestNote = (latest.note ?? '').trim()
+  const batch = poolDeposits.filter(
+    (tx) =>
+      tx.splitConfig?.shares[0]?.memberId === targetPoolId &&
+      tx.date === latest.date &&
+      tx.currency === latest.currency &&
+      Math.abs(tx.amount - latest.amount) < 0.005 &&
+      (tx.note ?? '').trim() === latestNote,
+  )
+  if (batch.length === 0) return null
+  return {
+    ids: batch.map((tx) => tx.id),
+    count: batch.length,
+    amountPerPerson: latest.amount,
+    currency: latest.currency,
+    date: latest.date,
+  }
+})
+
+async function handleUndoLatestPoolBatch() {
+  const batch = latestPoolCollectBatch.value
+  if (!batch) return
+  const confirmed = await askConfirm({
+    title: t('pool.undoBatchTitle'),
+    message: t('pool.undoBatchConfirm', {
+      count: batch.count,
+      amount: fmt(batch.amountPerPerson, batch.currency),
+      total: fmt(batch.amountPerPerson * batch.count, batch.currency),
+    }),
+    confirmText: t('pool.undoBatchConfirmButton'),
+    tone: 'danger',
+  })
+  if (!confirmed) return
+  emit('deleteSettlementsBatch', batch.ids)
+}
 
 const displayedMemberBalances = computed(() => {
   const list = props.settleUp.balances.filter(
@@ -137,8 +215,33 @@ const effectiveSettleUp = computed<SettleUpResult>(() => ({
 }))
 
 function toggleMemberDetail(memberId: string) {
-  selectedMemberDetailId.value =
-    selectedMemberDetailId.value === memberId ? null : memberId
+  const nextId = selectedMemberDetailId.value === memberId ? null : memberId
+  selectedMemberDetailId.value = nextId
+  if (nextId) {
+    void nextTick(() => {
+      memberDetailSectionRef.value?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'nearest',
+      })
+    })
+  }
+}
+
+async function handleRequestDeleteSettlement(tx: Transaction) {
+  const fromName = getMemberName(tx.splitConfig?.payerId ?? '')
+  const toName = getMemberName(tx.splitConfig?.shares[0]?.memberId ?? '')
+  const confirmed = await askConfirm({
+    title: t('settle.deletePaymentTitle'),
+    message: t('settle.deletePaymentConfirm', {
+      from: fromName,
+      to: toName,
+      amount: fmt(tx.amount, tx.currency),
+    }),
+    confirmText: t('home.deleteTx'),
+    tone: 'danger',
+  })
+  if (!confirmed) return
+  emit('deleteSettlement', tx.id)
 }
 
 const sourceRawExpenses = computed<Transaction[]>(
@@ -171,6 +274,13 @@ const settlementToBaseRate = computed<number>(() => {
     }
   }
   return store.getEffectiveExchangeRate(settle, base)
+})
+
+const baseToSettlementRate = computed<number>(() => {
+  const base = props.project.baseCurrency.trim().toUpperCase()
+  const settle = settlementCurrency.value
+  if (base === settle) return 1
+  return store.getEffectiveExchangeRate(base, settle)
 })
 
 function convertSettleAmountToBase(amount: number): number {
@@ -293,8 +403,8 @@ const foreignCurrenciesInProject = computed<string[]>(() => {
   return Array.from(set)
 })
 
-const currentRateMode = computed<'per_tx' | 'live' | 'custom'>(
-  () => props.project.settlementRateMode ?? 'per_tx',
+const currentRateMode = computed<'per_tx' | 'live' | 'custom'>(() =>
+  store.getProjectSettlementRateMode(props.project),
 )
 
 const formattedLiveRatesFetchedAt = computed(() => {
@@ -338,11 +448,12 @@ function syncSettleRateDrafts() {
 watch(
   () => [
     props.project.id,
-    props.project.settlementCurrency,
+    settlementCurrency.value,
     props.project.baseCurrency,
-    props.project.settlementRateMode,
-    JSON.stringify(props.project.settlementCustomRates ?? {}),
-    JSON.stringify(props.project.settlementCustomRatesByCurrency ?? {}),
+    currentRateMode.value,
+    JSON.stringify(
+      store.getProjectCustomRatesForTarget(props.project, settlementCurrency.value) ?? {},
+    ),
     foreignCurrenciesInProject.value.join(','),
     store.liveRatesFetchedAt,
   ],
@@ -541,6 +652,7 @@ async function handleShareMemberStatement(memberId: string) {
 }
 
 async function handleShareSettlement() {
+  shareSheetOpen.value = false
   const summaryText = buildProjectSettlementShareText(
     props.project,
     effectiveSettleUp.value,
@@ -554,6 +666,10 @@ async function handleShareSettlement() {
       pendingTitle: t('share.pendingTitle'),
       allSettledText: t('settle.allSettled'),
       historyTitle: t('share.historyTitle'),
+      poolSectionTitle: t('pool.cardTitle'),
+      poolPaidLabel: t('pool.paidOutLabel'),
+      poolRemainingLabel: t('pool.remainingCashLabel'),
+      poolOverdrawnLabel: t('pool.overdrawnLabel'),
       detailsTitle: t('share.detailsTitle'),
       refundTag: t('project.refundBadge'),
       transferLine: (from, to, amount) =>
@@ -626,6 +742,7 @@ function getCategoryColor(key: string): string {
 }
 
 async function handleExportExcel() {
+  shareSheetOpen.value = false
   const { buildProjectExcelBytes } = await import('@/core/excelExporter')
   const { settlementCurrency: targetCur, options } =
     store.getProjectSettlementOptions(props.project, [
@@ -673,13 +790,16 @@ async function handleExportExcel() {
         transferAmount: t('daily.amountLabel'),
         projectTotal: t('settle.projectTotalSpend'),
         transfersTitle: t('settle.suggestionsTitle'),
+        poolSectionTitle: t('pool.cardTitle'),
+        poolPaidLabel: t('pool.paidOutLabel'),
+        poolRemainingLabel: t('pool.remainingCashLabel'),
       },
       typeNames: {
         expense: t('project.typeExpense'),
         refund: t('project.typeRefund'),
         transfer: t('home.settlementBadge'),
         income: t('daily.typeIncome'),
-        card_repayment: 'card_repayment',
+        card_repayment: t('daily.typeCardRepayment'),
       },
       resolveCategoryLabel: getCategoryLabel,
     },
@@ -712,6 +832,10 @@ async function handleExportLongImage() {
         }),
         categorySectionTitle: t('stats.title'),
         memberSectionTitle: t('settle.balancesTitle'),
+        poolSectionTitle: t('pool.cardTitle'),
+        poolPaidLabel: t('pool.paidOutLabel'),
+        poolRemainingLabel: t('pool.remainingCashLabel'),
+        poolOverdrawnLabel: t('pool.overdrawnLabel'),
         spentLabel: t('settle.memberTotalExpense'),
         paidLabel: t('settle.memberTotalPaid'),
         shouldReceive: t('settle.shouldReceive'),
@@ -763,28 +887,56 @@ async function handleExportLongImage() {
     emit('toast', t('export.longImageFailedToast'))
   } finally {
     isGeneratingImage.value = false
+    shareSheetOpen.value = false
   }
 }
 </script>
 
 <template>
-  <div class="space-y-4 lg:grid lg:grid-cols-12 lg:items-start lg:gap-5 lg:space-y-0">
-    <!-- 左欄：結帳幣別匯率設定 ＋ 各成員總支出與展開明細 -->
-    <div class="space-y-4 lg:col-span-7">
-    <!-- 結帳幣別與匯率設定卡片（可自行選擇要結帳的幣別，並於含外幣時切換各筆原匯率／即時匯率／自訂結算匯率；原匯率資料永久保留） -->
+  <div class="space-y-4">
+    <!-- 頂部極簡總覽與操作列：總支出 ＋ 單一分享選單 ＋ 結帳幣別／按需展開匯率設定 -->
     <section
-      class="space-y-2.5 rounded-2xl border border-amber-300/90 bg-amber-50/70 p-3.5 shadow-sm dark:border-amber-800/70 dark:bg-amber-950/30"
+      class="space-y-3 rounded-2xl bg-white p-4 shadow-sm dark:bg-[#1C1C1E]"
     >
-      <div class="flex flex-wrap items-center justify-between gap-2">
-        <div class="flex items-center gap-2">
-          <div class="flex items-center gap-1.5 text-xs font-bold text-slate-800 dark:text-slate-100">
-            <ArrowLeftRight class="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
-            <span>{{ t('rates.settlementCurrencyLabel') }}</span>
+      <div class="flex items-center justify-between gap-3">
+        <div class="min-w-0">
+          <div class="text-[11px] font-medium text-slate-400 dark:text-slate-500">
+            {{ t('settle.projectTotalSpend') }}
           </div>
+          <div class="mt-0.5 flex flex-wrap items-baseline gap-2">
+            <span class="text-2xl font-bold tracking-tight tabular-nums text-slate-900 dark:text-white">
+              {{ fmt(settleUp.totalProjectExpense, settlementCurrency) }}
+            </span>
+            <span
+              v-if="isCrossCurrencySettlement && baseSettleUp"
+              class="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold tabular-nums text-slate-600 dark:bg-[#2C2C2E] dark:text-slate-300"
+            >
+              {{ t('rates.baseAmountTag', { amount: fmt(baseSettleUp.totalProjectExpense, project.baseCurrency) }) }}
+            </span>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          class="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-emerald-600 px-4 py-2 text-xs font-bold text-white shadow-sm transition hover:bg-emerald-700 active:scale-95 dark:bg-emerald-500 dark:text-slate-950 dark:hover:bg-emerald-400"
+          @click="shareSheetOpen = true"
+        >
+          <Share2 class="h-3.5 w-3.5" />
+          <span>{{ t('share.button') }}</span>
+        </button>
+      </div>
+
+      <!-- 精簡結帳幣別與按需展開匯率列 -->
+      <div class="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-3 dark:border-white/10">
+        <div class="flex items-center gap-2">
+          <ArrowLeftRight class="h-3.5 w-3.5 text-slate-400" />
+          <span class="text-xs font-medium text-slate-500 dark:text-slate-400">
+            {{ t('rates.settlementCurrencyLabel') }}
+          </span>
           <select
             :value="settlementCurrency"
             :aria-label="t('rates.settlementCurrencyLabel')"
-            class="rounded-lg border border-amber-300/80 bg-white px-2.5 py-1 text-xs font-extrabold text-slate-900 focus:border-emerald-500 focus:outline-none dark:border-amber-800 dark:bg-slate-900 dark:text-white"
+            class="rounded-lg bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/40 dark:bg-[#2C2C2E] dark:text-white"
             @change="handleChangeSettlementCurrency"
           >
             <option
@@ -797,7 +949,7 @@ async function handleExportLongImage() {
           </select>
           <span
             v-if="isCrossCurrencySettlement"
-            class="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800 dark:bg-amber-900/50 dark:text-amber-200"
+            class="text-[10px] font-medium text-slate-400 dark:text-slate-500"
           >
             {{ t('rates.settlementCurrencyNote', { base: project.baseCurrency }) }}
           </span>
@@ -806,112 +958,142 @@ async function handleExportLongImage() {
         <button
           v-if="foreignCurrenciesInProject.length > 0"
           type="button"
-          :disabled="store.isRefreshingLiveRates"
-          class="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700 hover:underline disabled:opacity-50 dark:text-amber-300"
-          @click="handleRefreshRatesInSettle"
+          class="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-200/80 dark:bg-[#2C2C2E] dark:text-slate-200 dark:hover:bg-white/15"
+          @click="rateSettingsExpanded = !rateSettingsExpanded"
         >
-          <RefreshCw
-            class="h-3 w-3"
-            :class="store.isRefreshingLiveRates ? 'animate-spin' : ''"
+          <span>{{ t('rates.settingsToggleShort') }} · {{ currentRateModeLabel }}</span>
+          <ChevronDown
+            class="h-3 w-3 transition-transform"
+            :class="rateSettingsExpanded ? 'rotate-180' : ''"
           />
-          <span>
-            {{
-              formattedLiveRatesFetchedAt
-                ? t('rates.updatedAtShort', { time: formattedLiveRatesFetchedAt })
-                : t('rates.refreshNow')
-            }}
-          </span>
         </button>
       </div>
 
-      <template v-if="foreignCurrenciesInProject.length > 0">
-        <div class="grid grid-cols-3 gap-1 rounded-xl bg-white/80 p-1 text-[11px] font-bold dark:bg-slate-900/80">
+      <!-- 按需展開之三模式結算匯率抽屜（原匯率永久保留，不佔平常畫面空間） -->
+      <div
+        v-if="rateSettingsExpanded && foreignCurrenciesInProject.length > 0"
+        class="space-y-2.5 border-t border-slate-100 pt-3 dark:border-white/10"
+      >
+        <div class="flex items-center justify-between gap-2">
+          <div class="grid flex-1 grid-cols-3 gap-1 rounded-xl bg-black/[0.06] p-1 text-[11px] font-semibold dark:bg-[#2C2C2E]">
+            <button
+              type="button"
+              class="rounded-lg py-1.5 transition"
+              :class="
+                currentRateMode === 'per_tx'
+                  ? 'bg-white text-slate-900 shadow-sm dark:bg-[#3A3A3C] dark:text-white'
+                  : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
+              "
+              @click="handleSelectSettleRateMode('per_tx')"
+            >
+              {{ t('rates.modePerTx') }}
+            </button>
+            <button
+              type="button"
+              class="rounded-lg py-1.5 transition"
+              :class="
+                currentRateMode === 'live'
+                  ? 'bg-white text-slate-900 shadow-sm dark:bg-[#3A3A3C] dark:text-white'
+                  : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
+              "
+              @click="handleSelectSettleRateMode('live')"
+            >
+              {{ t('rates.modeLive') }}
+            </button>
+            <button
+              type="button"
+              class="rounded-lg py-1.5 transition"
+              :class="
+                currentRateMode === 'custom'
+                  ? 'bg-white text-slate-900 shadow-sm dark:bg-[#3A3A3C] dark:text-white'
+                  : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
+              "
+              @click="handleSelectSettleRateMode('custom')"
+            >
+              {{ t('rates.modeCustom') }}
+            </button>
+          </div>
+
           <button
             type="button"
-            class="rounded-lg py-1.5 transition"
-            :class="
-              currentRateMode === 'per_tx'
-                ? 'bg-slate-900 text-white shadow-sm dark:bg-emerald-500 dark:text-slate-950'
-                : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
-            "
-            @click="handleSelectSettleRateMode('per_tx')"
+            :disabled="store.isRefreshingLiveRates"
+            class="inline-flex shrink-0 items-center gap-1 rounded-lg bg-slate-100 px-2.5 py-2 text-[10px] font-semibold text-slate-600 transition hover:bg-slate-200 disabled:opacity-50 dark:bg-[#2C2C2E] dark:text-slate-300"
+            @click="handleRefreshRatesInSettle"
           >
-            {{ t('rates.modePerTx') }}
-          </button>
-          <button
-            type="button"
-            class="rounded-lg py-1.5 transition"
-            :class="
-              currentRateMode === 'live'
-                ? 'bg-slate-900 text-white shadow-sm dark:bg-emerald-500 dark:text-slate-950'
-                : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
-            "
-            @click="handleSelectSettleRateMode('live')"
-          >
-            {{ t('rates.modeLive') }}
-          </button>
-          <button
-            type="button"
-            class="rounded-lg py-1.5 transition"
-            :class="
-              currentRateMode === 'custom'
-                ? 'bg-slate-900 text-white shadow-sm dark:bg-emerald-500 dark:text-slate-950'
-                : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
-            "
-            @click="handleSelectSettleRateMode('custom')"
-          >
-            {{ t('rates.modeCustom') }}
+            <RefreshCw
+              class="h-3 w-3"
+              :class="store.isRefreshingLiveRates ? 'animate-spin' : ''"
+            />
+            <span class="hidden sm:inline">
+              {{
+                formattedLiveRatesFetchedAt
+                  ? t('rates.updatedAtShort', { time: formattedLiveRatesFetchedAt })
+                  : t('rates.refreshNow')
+              }}
+            </span>
           </button>
         </div>
 
-        <!-- 各筆原匯率模式：顯示完整保留之各外幣原始記帳匯率 -->
+        <!-- 各筆原匯率模式 -->
         <div
           v-if="currentRateMode === 'per_tx'"
-          class="space-y-1.5 text-[11px] text-amber-900 dark:text-amber-200"
+          class="space-y-1.5 text-[11px] text-slate-600 dark:text-slate-300"
         >
           <div
-            v-if="originalRatesSummary.length > 0"
+            v-if="originalRatesSummary.length > 0 || isCrossCurrencySettlement"
             class="flex flex-wrap items-center gap-1.5"
           >
             <span
               v-for="item in originalRatesSummary"
               :key="item.currency"
-              class="inline-flex items-center rounded-lg border border-amber-200/90 bg-white/95 px-2.5 py-1 font-bold tabular-nums shadow-sm dark:border-amber-800/60 dark:bg-slate-900"
+              class="inline-flex items-center rounded-lg bg-slate-100 px-2.5 py-1 font-semibold tabular-nums text-slate-700 dark:bg-[#2C2C2E] dark:text-slate-200"
             >
               {{ item.text }}
             </span>
+            <span
+              v-if="isCrossCurrencySettlement"
+              class="inline-flex items-center rounded-lg bg-emerald-500/12 px-2.5 py-1 font-semibold tabular-nums text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300"
+            >
+              {{
+                t('rates.crossBaseBridgeRate', {
+                  base: project.baseCurrency,
+                  rate: baseToSettlementRate,
+                  target: settlementCurrency,
+                })
+              }}
+            </span>
           </div>
-          <p class="text-[10px] font-medium text-amber-800/80 dark:text-amber-300/80">
+          <p class="text-[10px] text-slate-400 dark:text-slate-500">
             {{ t('rates.perTxPreservedHint') }}
           </p>
         </div>
 
-        <!-- 即時匯率對照顯示 -->
+        <!-- 即時匯率對照 -->
         <div
           v-else-if="currentRateMode === 'live'"
-          class="flex flex-wrap items-center gap-2 text-[11px] text-amber-900 dark:text-amber-200"
+          class="flex flex-wrap items-center gap-1.5 text-[11px]"
         >
           <span
             v-for="cur in foreignCurrenciesInProject"
             :key="cur"
-            class="inline-flex items-center gap-1 rounded-lg bg-white/90 px-2.5 py-1 font-bold tabular-nums shadow-sm dark:bg-slate-900"
+            class="inline-flex items-center gap-1 rounded-lg bg-slate-100 px-2.5 py-1 font-semibold tabular-nums text-slate-700 dark:bg-[#2C2C2E] dark:text-slate-200"
           >
             <span>1 {{ cur }} =</span>
-            <span class="text-emerald-700 dark:text-emerald-400">
+            <span class="text-emerald-600 dark:text-emerald-400">
               {{ store.getEffectiveExchangeRate(cur, settlementCurrency) }}
             </span>
             <span>{{ settlementCurrency }}</span>
           </span>
         </div>
 
-        <!-- 自訂結算匯率輸入列 -->
-        <div v-else-if="currentRateMode === 'custom'" class="space-y-1.5">
+        <!-- 自訂結算匯率 -->
+        <div v-else-if="currentRateMode === 'custom'" class="space-y-2">
           <div
             v-for="cur in foreignCurrenciesInProject"
             :key="cur"
-            class="flex items-center gap-1.5 rounded-xl bg-white/90 px-2.5 py-1.5 text-xs dark:bg-slate-900"
+            class="flex items-center gap-2 rounded-xl bg-slate-100/80 px-3 py-2 text-xs dark:bg-[#2C2C2E]"
           >
-            <span class="shrink-0 font-bold text-slate-700 dark:text-slate-200">
+            <span class="shrink-0 font-semibold text-slate-600 dark:text-slate-300">
               1 {{ cur }} =
             </span>
             <input
@@ -920,15 +1102,15 @@ async function handleExportLongImage() {
               step="any"
               min="0"
               inputmode="decimal"
-              class="min-w-0 flex-1 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-bold tabular-nums text-slate-900 focus:border-emerald-500 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+              class="min-w-0 flex-1 rounded-lg bg-white px-2.5 py-1 text-xs font-bold tabular-nums text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/40 dark:bg-[#1C1C1E] dark:text-white"
               @keyup.enter="handleSaveCustomSettleRates"
             />
-            <span class="shrink-0 text-[11px] font-bold text-slate-500">
+            <span class="shrink-0 text-[11px] font-semibold text-slate-500">
               {{ settlementCurrency }}
             </span>
             <button
               type="button"
-              class="shrink-0 rounded-lg border border-slate-200 px-2 py-1 text-[10px] font-semibold text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300"
+              class="shrink-0 rounded-lg bg-white px-2 py-1 text-[10px] font-semibold text-slate-600 shadow-sm transition hover:text-emerald-600 dark:bg-[#1C1C1E] dark:text-slate-300"
               @click="handleFillLiveToCustomSettleRate(cur)"
             >
               {{ t('rates.useLiveShort') }}
@@ -936,103 +1118,379 @@ async function handleExportLongImage() {
           </div>
           <button
             type="button"
-            class="w-full rounded-xl bg-slate-900 py-1.5 text-[11px] font-bold text-white hover:bg-slate-800 dark:bg-emerald-500 dark:text-slate-950"
+            class="w-full rounded-xl bg-emerald-600 py-2 text-xs font-bold text-white transition hover:bg-emerald-700 dark:bg-emerald-500 dark:text-slate-950"
             @click="handleSaveCustomSettleRates"
           >
             {{ t('rates.applySettleCustomButton') }}
           </button>
         </div>
-      </template>
+      </div>
     </section>
 
-    <!-- 公費袋（公積金）專屬餘額卡（啟用公費袋時獨立呈現，不混亂真人成員對帳） -->
-    <section
-      v-if="poolBalances.length > 0"
-      class="space-y-2 rounded-2xl border border-teal-300/90 bg-teal-50/70 p-3.5 shadow-sm dark:border-teal-800/70 dark:bg-teal-950/30"
-    >
-      <div class="flex items-center justify-between gap-2">
-        <div class="flex items-center gap-1.5 text-xs font-bold text-teal-900 dark:text-teal-200">
-          <Wallet class="h-4 w-4 text-teal-600 dark:text-teal-400" />
-          <span>{{ t('pool.cardTitle') }}</span>
-        </div>
-        <button
-          type="button"
-          class="inline-flex items-center gap-1 rounded-lg bg-teal-600 px-2.5 py-1 text-[11px] font-bold text-white transition hover:bg-teal-700 dark:bg-teal-500 dark:text-slate-950"
-          @click="emit('openPoolCollect')"
+    <!-- 雙欄響應式主區：行動優先（待還款＋公費袋＋還款紀錄優先於手機頂部／桌機左欄） -->
+    <div class="space-y-4 lg:grid lg:grid-cols-12 lg:items-start lg:gap-5 lg:space-y-0">
+      <!-- 行動欄（手機置頂／桌機左欄 5 格）：待還款建議 ＋ 公費袋 ＋ 已記錄還款 -->
+      <div class="space-y-4 lg:col-span-5">
+        <!-- 1. 待還款結算（Action First） -->
+        <section
+          class="space-y-3 rounded-2xl bg-white p-4 shadow-sm dark:bg-[#1C1C1E]"
         >
-          <span>+ {{ t('pool.collectButtonShort') }}</span>
-        </button>
-      </div>
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div class="flex items-center gap-2 text-sm font-bold text-slate-900 dark:text-white">
+              <span class="inline-flex h-6 w-6 items-center justify-center rounded-lg bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
+                <Coins class="h-3.5 w-3.5" />
+              </span>
+              <span>{{ t('settle.suggestionsTitle') }}</span>
+            </div>
 
-      <div
-        v-for="pb in poolBalances"
-        :key="pb.memberId"
-        class="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-teal-200/80 bg-white/95 px-3 py-2.5 shadow-sm dark:border-teal-900/60 dark:bg-slate-900/90"
-      >
-        <div class="min-w-0">
-          <div class="text-xs font-bold text-slate-800 dark:text-slate-100">
-            {{ getMemberName(pb.memberId) }}
-          </div>
-          <div class="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
-            {{ t('pool.paidOutLabel') }} {{ fmt(pb.totalPaid, settlementCurrency) }}
-            <span
-              v-if="isCrossCurrencySettlement && getBaseBalance(pb.memberId)"
-              class="ml-1 text-[10px] font-medium text-amber-700 dark:text-amber-300"
+            <!-- 僅於尚未建立公費袋時在此顯示「收公費」入口，避免與公費袋卡片按鈕重複 -->
+            <button
+              v-if="poolBalances.length === 0"
+              type="button"
+              class="inline-flex items-center gap-1 rounded-full bg-teal-500/12 px-2.5 py-1 text-[11px] font-semibold text-teal-700 transition hover:bg-teal-500/20 dark:bg-teal-400/15 dark:text-teal-300"
+              @click="emit('openPoolCollect')"
             >
-              ({{ fmt(getBaseBalance(pb.memberId)!.totalPaid, project.baseCurrency) }})
-            </span>
+              <Wallet class="h-3 w-3" />
+              <span>{{ t('pool.collectButtonShort') }}</span>
+            </button>
           </div>
-        </div>
-        <div class="text-right">
-          <div
-            class="text-base font-extrabold tabular-nums"
-            :class="
-              pb.netAmount <= 0
-                ? 'text-teal-700 dark:text-teal-300'
-                : 'text-rose-600 dark:text-rose-400'
-            "
-          >
-            {{ fmt(Math.abs(pb.netAmount), settlementCurrency) }}
-          </div>
-          <div
-            v-if="isCrossCurrencySettlement && getBaseBalance(pb.memberId)"
-            class="text-[10px] font-semibold tabular-nums text-amber-700 dark:text-amber-300"
-          >
-            {{ fmt(Math.abs(getBaseBalance(pb.memberId)!.netAmount), project.baseCurrency) }}
-          </div>
-          <div class="text-[10px] font-semibold text-slate-400">
-            {{
-              pb.netAmount < 0
-                ? t('pool.remainingCashLabel')
-                : pb.netAmount > 0
-                  ? t('pool.overdrawnLabel')
-                  : t('settle.settled')
-            }}
-          </div>
-        </div>
-      </div>
-    </section>
 
-    <!-- 各成員總支出與結算總覽（含主幣別小標示、一鍵分享精簡／明細切換、排序與報表匯出） -->
-    <section
-      class="rounded-2xl border border-slate-200/90 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900"
-    >
-      <div class="mb-3 flex flex-wrap items-start justify-between gap-2">
-        <div>
-          <div class="flex flex-wrap items-center gap-2">
-            <h3 class="text-xs font-bold text-slate-700 dark:text-slate-200">
+          <!-- 結算模式切換列：最少轉帳 / 集中收付 ＋ 只看我濾鏡 -->
+          <div v-if="effectiveTransfers.length > 0" class="space-y-2">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <div class="inline-flex rounded-xl bg-black/[0.06] p-0.5 text-[11px] font-semibold dark:bg-[#2C2C2E]">
+                <button
+                  type="button"
+                  class="rounded-lg px-2.5 py-1 transition"
+                  :class="
+                    transferPlanMode === 'min_transfers'
+                      ? 'bg-white text-slate-900 shadow-sm dark:bg-[#3A3A3C] dark:text-white'
+                      : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
+                  "
+                  @click="transferPlanMode = 'min_transfers'"
+                >
+                  {{ t('settle.planModeMin') }}
+                </button>
+                <button
+                  type="button"
+                  class="rounded-lg px-2.5 py-1 transition"
+                  :class="
+                    transferPlanMode === 'hub'
+                      ? 'bg-white text-emerald-700 shadow-sm dark:bg-[#3A3A3C] dark:text-emerald-400'
+                      : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
+                  "
+                  @click="transferPlanMode = 'hub'"
+                >
+                  {{ t('settle.planModeHub') }}
+                </button>
+              </div>
+
+              <button
+                v-if="myMemberId"
+                type="button"
+                class="rounded-full px-2.5 py-1 text-[11px] font-semibold transition"
+                :class="
+                  onlyMyTransfers
+                    ? 'bg-emerald-600 text-white dark:bg-emerald-500 dark:text-slate-950'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-[#2C2C2E] dark:text-slate-300'
+                "
+                @click="onlyMyTransfers = !onlyMyTransfers"
+              >
+                {{ t('settle.onlyMyTransfersButton') }}
+              </button>
+            </div>
+
+            <!-- 集中收付模式窗口選擇 -->
+            <div
+              v-if="transferPlanMode === 'hub'"
+              class="flex items-center justify-between gap-2 rounded-xl bg-slate-100/80 px-3 py-1.5 text-[11px] dark:bg-[#2C2C2E]"
+            >
+              <span class="shrink-0 font-medium text-slate-500 dark:text-slate-400">
+                {{ t('settle.hubMemberLabel') }}
+              </span>
+              <select
+                :value="resolvedHubMemberId"
+                class="min-w-0 max-w-[180px] rounded-lg bg-white px-2 py-1 text-xs font-semibold text-slate-800 focus:outline-none dark:bg-[#1C1C1E] dark:text-white"
+                @change="hubMemberId = ($event.target as HTMLSelectElement).value"
+              >
+                <option v-for="m in project.members" :key="m.id" :value="m.id">
+                  {{ m.name }}
+                </option>
+              </select>
+            </div>
+          </div>
+
+          <p
+            v-if="effectiveTransfers.length === 0"
+            class="rounded-xl bg-emerald-500/10 px-3.5 py-3 text-xs font-semibold text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300"
+          >
+            {{ t('settle.allSettled') }}
+          </p>
+
+          <p
+            v-else-if="visibleTransfers.length === 0"
+            class="rounded-xl bg-slate-100/80 px-3.5 py-3 text-xs font-medium text-slate-500 dark:bg-[#2C2C2E] dark:text-slate-400"
+          >
+            {{ t('settle.noMyTransfers') }}
+          </p>
+
+          <ul v-else class="divide-y divide-slate-100 dark:divide-white/10">
+            <li
+              v-for="(transfer, idx) in visibleTransfers"
+              :key="idx"
+              class="flex items-center justify-between gap-2 py-3 first:pt-1 last:pb-0"
+            >
+              <div class="min-w-0">
+                <div class="flex flex-wrap items-center gap-1.5 text-xs font-semibold text-slate-900 dark:text-white">
+                  <span class="inline-flex items-center gap-1.5">
+                    <span
+                      class="h-2 w-2 rounded-full"
+                      :style="{ backgroundColor: getMemberColor(transfer.fromMemberId) }"
+                    />
+                    <span>{{ getMemberName(transfer.fromMemberId) }}</span>
+                  </span>
+                  <span class="text-slate-400">→</span>
+                  <span class="inline-flex items-center gap-1.5">
+                    <span
+                      class="h-2 w-2 rounded-full"
+                      :style="{ backgroundColor: getMemberColor(transfer.toMemberId) }"
+                    />
+                    <span>{{ getMemberName(transfer.toMemberId) }}</span>
+                  </span>
+                </div>
+                <div class="mt-0.5 flex flex-wrap items-baseline gap-1.5 tabular-nums">
+                  <span class="text-base font-bold text-emerald-700 dark:text-emerald-400">
+                    {{ fmt(transfer.amount, transfer.currency) }}
+                  </span>
+                  <span
+                    v-if="isCrossCurrencySettlement"
+                    class="text-[11px] font-medium text-slate-400 dark:text-slate-500"
+                  >
+                    ≈ {{ fmt(convertSettleAmountToBase(transfer.amount), project.baseCurrency) }}
+                  </span>
+                </div>
+                <button
+                  v-if="getMemberPaymentInfo(transfer.toMemberId)"
+                  type="button"
+                  class="mt-1 inline-flex max-w-full items-center gap-1 rounded-full bg-slate-100 px-2.5 py-0.5 text-[10px] font-medium text-slate-600 transition hover:text-emerald-600 dark:bg-[#2C2C2E] dark:text-slate-300"
+                  @click="copyPaymentInfo(transfer.toMemberId)"
+                >
+                  <Copy class="h-2.5 w-2.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                  <span class="truncate">{{ getMemberPaymentInfo(transfer.toMemberId) }}</span>
+                </button>
+              </div>
+              <button
+                type="button"
+                class="shrink-0 rounded-full bg-emerald-600 px-3.5 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-700 active:scale-95 dark:bg-emerald-500 dark:text-slate-950"
+                @click="
+                  emit('recordPayment', {
+                    fromMemberId: transfer.fromMemberId,
+                    toMemberId: transfer.toMemberId,
+                    amount: transfer.amount,
+                    currency: transfer.currency,
+                  })
+                "
+              >
+                {{ t('settle.recordButton') }}
+              </button>
+            </li>
+          </ul>
+        </section>
+
+        <!-- 2. 公費袋專屬卡片（純白卡片＋青色圖示徽章，取代大面積滿版底色） -->
+        <section
+          v-if="poolBalances.length > 0"
+          class="space-y-3 rounded-2xl bg-white p-4 shadow-sm dark:bg-[#1C1C1E]"
+        >
+          <div class="flex items-center justify-between gap-2">
+            <div class="flex items-center gap-2 text-sm font-bold text-slate-900 dark:text-white">
+              <span class="inline-flex h-6 w-6 items-center justify-center rounded-lg bg-teal-500/15 text-teal-600 dark:text-teal-400">
+                <Wallet class="h-3.5 w-3.5" />
+              </span>
+              <span>{{ t('pool.cardTitle') }}</span>
+            </div>
+            <div class="flex items-center gap-1.5">
+              <button
+                v-if="latestPoolCollectBatch"
+                type="button"
+                class="inline-flex items-center gap-1 rounded-full bg-rose-500/10 px-2.5 py-1 text-[10px] font-semibold text-rose-600 transition hover:bg-rose-500/20 dark:bg-rose-500/15 dark:text-rose-400"
+                @click="handleUndoLatestPoolBatch"
+              >
+                <Undo2 class="h-3 w-3" />
+                <span>{{
+                  t('pool.undoLatestBatchShort', { count: latestPoolCollectBatch.count })
+                }}</span>
+              </button>
+              <button
+                type="button"
+                class="inline-flex items-center gap-1 rounded-full bg-teal-600 px-2.5 py-1 text-[11px] font-semibold text-white transition hover:bg-teal-700 dark:bg-teal-500 dark:text-slate-950"
+                @click="emit('openPoolCollect')"
+              >
+                <span>+ {{ t('pool.collectButtonShort') }}</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="divide-y divide-slate-100 dark:divide-white/10">
+            <div
+              v-for="pb in poolBalances"
+              :key="pb.memberId"
+              class="flex flex-wrap items-center justify-between gap-2 py-2.5 first:pt-0 last:pb-0"
+            >
+              <div class="min-w-0">
+                <div class="text-sm font-semibold text-slate-900 dark:text-white">
+                  {{ getMemberName(pb.memberId) }}
+                </div>
+                <div class="mt-0.5 text-[11px] text-slate-400 dark:text-slate-500">
+                  {{ t('pool.paidOutLabel') }} {{ fmt(pb.totalPaid, settlementCurrency) }}
+                  <span
+                    v-if="isCrossCurrencySettlement && getBaseBalance(pb.memberId)"
+                    class="ml-1"
+                  >
+                    ({{ fmt(getBaseBalance(pb.memberId)!.totalPaid, project.baseCurrency) }})
+                  </span>
+                </div>
+              </div>
+              <div class="text-right">
+                <div
+                  class="text-base font-bold tabular-nums"
+                  :class="
+                    pb.netAmount <= 0
+                      ? 'text-teal-600 dark:text-teal-400'
+                      : 'text-rose-600 dark:text-rose-400'
+                  "
+                >
+                  {{ fmt(Math.abs(pb.netAmount), settlementCurrency) }}
+                </div>
+                <div
+                  v-if="isCrossCurrencySettlement && getBaseBalance(pb.memberId)"
+                  class="text-[10px] font-medium tabular-nums text-slate-400 dark:text-slate-500"
+                >
+                  {{ fmt(Math.abs(getBaseBalance(pb.memberId)!.netAmount), project.baseCurrency) }}
+                </div>
+                <div class="text-[10px] font-medium text-slate-400">
+                  {{
+                    pb.netAmount < 0
+                      ? t('pool.remainingCashLabel')
+                      : pb.netAmount > 0
+                        ? t('pool.overdrawnLabel')
+                        : t('settle.settled')
+                  }}
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 3. 已記錄之還款明細（Inset Grouped List，無斑馬紋） -->
+        <section
+          class="rounded-2xl bg-white p-4 shadow-sm dark:bg-[#1C1C1E]"
+        >
+          <h3 class="mb-2.5 text-sm font-bold text-slate-900 dark:text-white">
+            {{ t('settle.historyTitle') }}
+          </h3>
+
+          <p
+            v-if="settlements.length === 0"
+            class="py-4 text-center text-xs text-slate-400 dark:text-slate-500"
+          >
+            {{ t('settle.noHistory') }}
+          </p>
+
+          <ul v-else class="divide-y divide-slate-100 dark:divide-white/10">
+            <li
+              v-for="tx in settlements"
+              :key="tx.id"
+              class="flex items-center justify-between gap-2 py-2.5 first:pt-1 last:pb-0"
+            >
+              <div class="min-w-0">
+                <div class="flex flex-wrap items-center gap-1.5 text-xs font-semibold text-slate-800 dark:text-slate-100">
+                  <span class="inline-flex items-center gap-1.5">
+                    <span
+                      class="h-2 w-2 rounded-full"
+                      :style="{
+                        backgroundColor: getMemberColor(tx.splitConfig?.payerId ?? ''),
+                      }"
+                    />
+                    <span>{{ getMemberName(tx.splitConfig?.payerId ?? '') }}</span>
+                  </span>
+                  <span class="text-slate-400">→</span>
+                  <span class="inline-flex items-center gap-1.5">
+                    <span
+                      class="h-2 w-2 rounded-full"
+                      :style="{
+                        backgroundColor: getMemberColor(
+                          tx.splitConfig?.shares[0]?.memberId ?? '',
+                        ),
+                      }"
+                    />
+                    <span>{{
+                      getMemberName(tx.splitConfig?.shares[0]?.memberId ?? '')
+                    }}</span>
+                  </span>
+                </div>
+                <div class="mt-0.5 text-[11px] text-slate-400 dark:text-slate-500">
+                  {{ tx.date }}
+                  <span v-if="tx.note"> · {{ tx.note }}</span>
+                </div>
+              </div>
+              <div class="flex shrink-0 items-center gap-1">
+                <div class="mr-1 text-right tabular-nums">
+                  <div class="text-sm font-bold text-emerald-600 dark:text-emerald-400">
+                    {{ fmt(tx.amount, tx.currency) }}
+                  </div>
+                  <div
+                    v-if="
+                      tx.currency.trim().toUpperCase() !==
+                      project.baseCurrency.trim().toUpperCase()
+                    "
+                    class="text-[10px] font-medium text-slate-400 dark:text-slate-500"
+                  >
+                    ≈ {{ fmt(tx.amount * (tx.exchangeRateToBase > 0 ? tx.exchangeRateToBase : 1), project.baseCurrency) }}
+                    · {{ tx.exchangeRateToBase }}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  :aria-label="t('home.editTx')"
+                  class="rounded-full p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-emerald-600 dark:hover:bg-white/10"
+                  @click="emit('editSettlement', tx)"
+                >
+                  <Pencil class="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  :aria-label="t('home.deleteTx')"
+                  class="rounded-full p-1.5 text-slate-400 transition hover:bg-rose-500/10 hover:text-rose-500"
+                  @click="handleRequestDeleteSettlement(tx)"
+                >
+                  <Trash2 class="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </li>
+          </ul>
+        </section>
+      </div>
+
+      <!-- 總覽欄（手機接續於下／桌機右欄 7 格）：各成員總支出與展開明細 ＋ 消費結構圓餅圖 -->
+      <div class="space-y-4 lg:col-span-7">
+        <section
+          class="rounded-2xl bg-white p-4 shadow-sm dark:bg-[#1C1C1E]"
+        >
+          <div class="mb-3 flex items-center justify-between gap-2">
+            <h3 class="text-sm font-bold text-slate-900 dark:text-white">
               {{ t('settle.balancesTitle') }}
             </h3>
             <button
               v-if="displayedMemberBalances.length >= 5"
               type="button"
-              class="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500 transition hover:border-emerald-400 hover:text-emerald-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400"
+              class="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:text-emerald-600 dark:bg-[#2C2C2E] dark:text-slate-300"
               @click="
                 memberSortMode =
                   memberSortMode === 'project' ? 'net_desc' : 'project'
               "
             >
-              <ArrowUpDown class="h-2.5 w-2.5" />
+              <ArrowUpDown class="h-3 w-3" />
               <span>{{
                 memberSortMode === 'project'
                   ? t('settle.sortByMemberOrder')
@@ -1040,554 +1498,336 @@ async function handleExportLongImage() {
               }}</span>
             </button>
           </div>
-          <div class="mt-0.5 flex flex-wrap items-baseline gap-1.5 text-[11px] font-semibold tabular-nums text-slate-500 dark:text-slate-400">
-            <span>{{ t('settle.projectTotalSpend') }}:</span>
-            <strong class="text-slate-900 dark:text-white">{{
-              fmt(settleUp.totalProjectExpense, settlementCurrency)
-            }}</strong>
-            <span
-              v-if="isCrossCurrencySettlement && baseSettleUp"
-              class="rounded-md bg-amber-100/80 px-1.5 py-0.5 text-[10px] font-bold text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
-            >
-              {{ t('rates.baseAmountTag', { amount: fmt(baseSettleUp.totalProjectExpense, project.baseCurrency) }) }}
-            </span>
-          </div>
-        </div>
 
-        <div class="flex flex-col items-end gap-1.5">
-          <button
-            type="button"
-            class="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-3 py-1.5 text-xs font-bold text-white transition hover:bg-slate-800 active:scale-95 dark:bg-emerald-500 dark:text-slate-950 dark:hover:bg-emerald-400"
-            @click="handleShareSettlement"
-          >
-            <Share2 class="h-3.5 w-3.5" />
-            <span>{{ t('share.button') }}</span>
-          </button>
-
-          <label
-            v-if="expenses.length > 0"
-            class="inline-flex cursor-pointer select-none items-center gap-1.5 text-[11px] font-medium text-slate-500 dark:text-slate-400"
-          >
-            <input
-              v-model="includeDetailsInShare"
-              type="checkbox"
-              class="h-3.5 w-3.5 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 dark:border-slate-600 dark:bg-slate-800"
-            />
-            <span>{{ t('share.includeDetailsToggle') }}</span>
-          </label>
-        </div>
-      </div>
-
-      <div class="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-        <button
-          v-for="bal in displayedMemberBalances"
-          :key="bal.memberId"
-          type="button"
-          class="overflow-hidden rounded-xl border text-left transition hover:brightness-[0.98] active:scale-[0.99]"
-          :class="
-            selectedMemberDetailId === bal.memberId
-              ? 'border-emerald-500 bg-emerald-50 ring-2 ring-emerald-500/25 dark:border-emerald-400 dark:bg-emerald-950/50'
-              : bal.netAmount > 0
-                ? 'border-emerald-200/90 bg-emerald-50/55 dark:border-emerald-900/60 dark:bg-emerald-950/25'
-                : bal.netAmount < 0
-                  ? 'border-rose-200/90 bg-rose-50/55 dark:border-rose-900/60 dark:bg-rose-950/25'
-                  : 'border-slate-200 bg-slate-100/75 dark:border-slate-700/80 dark:bg-slate-800/70'
-          "
-          :style="{
-            borderLeftWidth: '4px',
-            borderLeftColor: getMemberColor(bal.memberId),
-          }"
-          @click="toggleMemberDetail(bal.memberId)"
-        >
-          <div class="p-3">
-            <div class="flex items-center justify-between gap-2">
-              <div class="flex min-w-0 items-center gap-2">
-                <MemberAvatar
-                  :name="getMemberName(bal.memberId)"
-                  :color="getMemberColor(bal.memberId)"
-                  :image="project.members.find((m) => m.id === bal.memberId)?.avatarImage"
-                  size="sm"
-                />
-                <span class="truncate text-sm font-bold text-slate-800 dark:text-slate-100">
-                  {{ getMemberName(bal.memberId) }}
-                </span>
-                <span
-                  v-if="myMemberId && bal.memberId === myMemberId"
-                  class="shrink-0 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[9px] font-bold text-emerald-700 dark:bg-emerald-900/60 dark:text-emerald-300"
-                >
-                  {{ t('settle.meBadge') }}
-                </span>
-              </div>
-
-              <div class="text-right">
-                <div
-                  class="text-sm font-extrabold tabular-nums"
-                  :class="
-                    bal.netAmount > 0
-                      ? 'text-emerald-700 dark:text-emerald-400'
-                      : bal.netAmount < 0
-                        ? 'text-rose-600 dark:text-rose-400'
-                        : 'text-slate-500'
-                  "
-                >
-                  {{ bal.netAmount > 0 ? '+' : '' }}{{ fmt(bal.netAmount, settlementCurrency) }}
-                </div>
-                <div
-                  v-if="isCrossCurrencySettlement && getBaseBalance(bal.memberId)"
-                  class="text-[10px] font-semibold tabular-nums text-amber-700/90 dark:text-amber-300/90"
-                >
-                  {{ getBaseBalance(bal.memberId)!.netAmount > 0 ? '+' : '' }}{{ fmt(getBaseBalance(bal.memberId)!.netAmount, project.baseCurrency) }}
-                </div>
-                <div class="text-[10px] font-medium text-slate-500 dark:text-slate-400">
-                  {{
-                    bal.netAmount > 0
-                      ? t('settle.shouldReceive')
-                      : bal.netAmount < 0
-                        ? t('settle.shouldPay')
-                        : t('settle.settled')
-                  }}
-                </div>
-              </div>
-            </div>
-
-            <div
-              class="mt-2.5 grid grid-cols-2 gap-2 border-t border-slate-200/80 pt-2 text-[11px] dark:border-slate-700/70"
-            >
-              <div>
-                <span class="text-slate-500 dark:text-slate-400">{{ t('settle.memberTotalExpense') }}</span>
-                <div class="font-bold tabular-nums text-slate-900 dark:text-slate-100">
-                  {{ fmt(bal.totalExpense, settlementCurrency) }}
-                </div>
-                <div
-                  v-if="isCrossCurrencySettlement && getBaseBalance(bal.memberId)"
-                  class="text-[10px] font-medium tabular-nums text-slate-500 dark:text-slate-400"
-                >
-                  {{ fmt(getBaseBalance(bal.memberId)!.totalExpense, project.baseCurrency) }}
-                </div>
-              </div>
-              <div class="text-right">
-                <span class="text-slate-500 dark:text-slate-400">{{ t('settle.memberTotalPaid') }}</span>
-                <div class="font-semibold tabular-nums text-slate-700 dark:text-slate-200">
-                  {{ fmt(bal.totalPaid, settlementCurrency) }}
-                </div>
-                <div
-                  v-if="isCrossCurrencySettlement && getBaseBalance(bal.memberId)"
-                  class="text-[10px] font-medium tabular-nums text-slate-500 dark:text-slate-400"
-                >
-                  {{ fmt(getBaseBalance(bal.memberId)!.totalPaid, project.baseCurrency) }}
-                </div>
-              </div>
-            </div>
-
-            <div class="mt-1.5 flex items-center justify-end gap-0.5 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400">
-              <span>{{
+          <div class="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+            <button
+              v-for="bal in displayedMemberBalances"
+              :key="bal.memberId"
+              type="button"
+              class="overflow-hidden rounded-2xl p-3 text-left transition active:scale-[0.99]"
+              :class="
                 selectedMemberDetailId === bal.memberId
-                  ? t('settle.hideMemberDetails')
-                  : t('settle.viewMemberDetails')
-              }}</span>
-              <ChevronRight
-                class="h-3 w-3 transition-transform"
-                :class="selectedMemberDetailId === bal.memberId ? 'rotate-90' : ''"
-              />
-            </div>
-          </div>
-        </button>
-      </div>
-
-      <!-- 點擊成員卡片展開之個人分攤與墊付明細（一鍵核對帳目） -->
-      <div
-        v-if="selectedMemberDetailId"
-        class="mt-3 space-y-2 rounded-2xl border border-emerald-200/80 bg-emerald-50/40 p-3 dark:border-emerald-900/60 dark:bg-emerald-950/20"
-      >
-        <div class="flex flex-wrap items-center justify-between gap-2">
-          <div class="flex min-w-0 items-center gap-2 text-xs font-bold text-slate-800 dark:text-slate-100">
-            <MemberAvatar
-              :name="getMemberName(selectedMemberDetailId)"
-              :color="getMemberColor(selectedMemberDetailId)"
-              :image="project.members.find((m) => m.id === selectedMemberDetailId)?.avatarImage"
-              size="xs"
-            />
-            <span class="truncate">
-              {{
-                t('settle.memberStatementTitle', {
-                  name: getMemberName(selectedMemberDetailId),
-                })
-              }}
-              ({{ selectedMemberStatement.length }})
-            </span>
-          </div>
-          <div class="flex shrink-0 items-center gap-1.5">
-            <button
-              type="button"
-              class="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-2 py-1 text-[10px] font-bold text-white transition hover:bg-emerald-700 dark:bg-emerald-500 dark:text-slate-950"
-              @click="handleShareMemberStatement(selectedMemberDetailId)"
-            >
-              <Copy class="h-3 w-3" />
-              <span>{{ t('settle.copyMemberStatementButton') }}</span>
-            </button>
-            <button
-              type="button"
-              class="text-[11px] font-bold text-emerald-700 hover:underline dark:text-emerald-400"
-              @click="emit('inspectMember', selectedMemberDetailId)"
-            >
-              {{ t('settle.openInEntriesButton') }}
-            </button>
-            <button
-              type="button"
-              :aria-label="t('settings.close')"
-              class="rounded-full p-1 text-slate-400 hover:bg-white dark:hover:bg-slate-800"
-              @click="selectedMemberDetailId = null"
-            >
-              <X class="h-3.5 w-3.5" />
-            </button>
-          </div>
-        </div>
-
-        <p
-          v-if="selectedMemberStatement.length === 0"
-          class="py-3 text-center text-xs text-slate-400"
-        >
-          {{ t('settle.memberStatementEmpty') }}
-        </p>
-
-        <ul
-          v-else
-          class="max-h-64 divide-y divide-slate-200/80 overflow-y-auto rounded-xl border border-slate-200/80 bg-white dark:divide-slate-800 dark:border-slate-800 dark:bg-slate-900"
-        >
-          <li
-            v-for="item in selectedMemberStatement"
-            :key="item.tx.id"
-            class="flex items-center justify-between gap-2 px-2.5 py-2 text-xs odd:bg-white even:bg-slate-50/85 dark:odd:bg-slate-900 dark:even:bg-slate-800/45"
-          >
-            <button
-              type="button"
-              class="min-w-0 flex-1 text-left transition hover:opacity-80"
-              @click="emit('editExpense', item.tx)"
-            >
-              <div class="flex items-center gap-1.5">
-                <span
-                  v-if="item.isRefund"
-                  class="rounded bg-teal-50 px-1 py-0.5 text-[9px] font-bold text-teal-700 dark:bg-teal-950/70 dark:text-teal-300"
-                >
-                  {{ t('project.refundBadge') }}
-                </span>
-                <span class="truncate font-semibold text-slate-800 dark:text-slate-100">
-                  {{ item.title }}
-                </span>
-              </div>
-              <div class="mt-0.5 text-[10px] text-slate-500 dark:text-slate-400">
-                {{ item.tx.date }} · {{ fmt(item.tx.amount, item.tx.currency) }}
-              </div>
-            </button>
-            <div class="shrink-0 text-right tabular-nums">
-              <div
-                v-if="item.shareInSettle !== 0"
-                class="text-[11px] font-bold text-slate-800 dark:text-slate-100"
-              >
-                {{ t('settle.memberTotalExpense') }}
-                {{ fmt(item.shareInSettle, settlementCurrency) }}
-                <span
-                  v-if="isCrossCurrencySettlement"
-                  class="block text-[9px] font-medium text-amber-700/90 dark:text-amber-300/90"
-                >
-                  {{ fmt(item.shareInBase, project.baseCurrency) }}
-                </span>
-              </div>
-              <div
-                v-if="item.paidInSettle !== 0"
-                class="text-[10px] font-semibold text-emerald-600 dark:text-emerald-400"
-              >
-                {{ t('settle.memberTotalPaid') }}
-                {{ fmt(item.paidInSettle, settlementCurrency) }}
-                <span
-                  v-if="isCrossCurrencySettlement"
-                  class="ml-1 text-[9px] font-medium text-amber-700/80 dark:text-amber-300/80"
-                >
-                  ({{ fmt(item.paidInBase, project.baseCurrency) }})
-                </span>
-              </div>
-            </div>
-          </li>
-        </ul>
-      </div>
-
-      <!-- 匯出報表列：標準 Excel (.xlsx) 與高解析長截圖報表 (PNG) -->
-      <div
-        class="mt-3 grid grid-cols-2 gap-2 border-t border-slate-100 pt-3 dark:border-slate-800"
-      >
-        <button
-          type="button"
-          class="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2 text-[11px] font-bold text-slate-700 transition hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800/80 dark:text-slate-200 dark:hover:bg-slate-800"
-          @click="handleExportExcel"
-        >
-          <FileSpreadsheet class="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
-          <span class="truncate">{{ t('export.excelButton') }}</span>
-        </button>
-        <button
-          type="button"
-          :disabled="isGeneratingImage"
-          class="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2 text-[11px] font-bold text-slate-700 transition hover:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800/80 dark:text-slate-200 dark:hover:bg-slate-800"
-          @click="handleExportLongImage"
-        >
-          <Loader2 v-if="isGeneratingImage" class="h-3.5 w-3.5 animate-spin text-sky-600" />
-          <ImageDown v-else class="h-3.5 w-3.5 text-sky-600 dark:text-sky-400" />
-          <span class="truncate">{{ t('export.longImageButton') }}</span>
-        </button>
-      </div>
-    </section>
-    </div>
-
-    <!-- 右欄：消費結構圓餅圖 ＋ 待還款結算 ＋ 已記錄還款明細 -->
-    <div class="space-y-4 lg:col-span-5">
-    <!-- 消費結構圓餅圖統計（跨幣別結帳時同步小標示主幣別金額） -->
-    <CategoryPieChart
-      :transactions="expenses"
-      :raw-transactions="sourceRawExpenses"
-      :base-currency="settlementCurrency"
-      :project-base-currency="project.baseCurrency"
-    />
-
-    <!-- 待還款結算（支援「最少轉帳」vs「財務長集中收付」、只看我濾鏡與一鍵收公費） -->
-    <section
-      class="space-y-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900"
-    >
-      <div class="flex flex-wrap items-center justify-between gap-2">
-        <div class="flex items-center gap-1.5 text-xs font-bold text-slate-700 dark:text-slate-200">
-          <Coins class="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
-          <span>{{ t('settle.suggestionsTitle') }}</span>
-        </div>
-
-        <button
-          type="button"
-          class="inline-flex items-center gap-1 rounded-lg border border-teal-200 bg-teal-50/70 px-2 py-1 text-[11px] font-bold text-teal-800 transition hover:bg-teal-100 dark:border-teal-800/70 dark:bg-teal-950/40 dark:text-teal-300"
-          @click="emit('openPoolCollect')"
-        >
-          <Wallet class="h-3 w-3" />
-          <span>{{ t('pool.collectButtonShort') }}</span>
-        </button>
-      </div>
-
-      <!-- 大團結算模式切換列：最少轉帳 / 集中收付 ＋ 只看我濾鏡 -->
-      <div
-        v-if="effectiveTransfers.length > 0"
-        class="space-y-2"
-      >
-        <div class="flex flex-wrap items-center justify-between gap-1.5">
-          <div class="inline-flex rounded-xl bg-slate-100 p-0.5 text-[11px] font-bold dark:bg-slate-800">
-            <button
-              type="button"
-              class="rounded-lg px-2.5 py-1 transition"
-              :class="
-                transferPlanMode === 'min_transfers'
-                  ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-950 dark:text-white'
-                  : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
+                  ? 'bg-emerald-500/10 ring-2 ring-emerald-500/60 dark:bg-emerald-500/15'
+                  : 'bg-[#F2F2F7]/75 hover:bg-[#F2F2F7] dark:bg-[#2C2C2E]/70 dark:hover:bg-[#2C2C2E]'
               "
-              @click="transferPlanMode = 'min_transfers'"
+              @click="toggleMemberDetail(bal.memberId)"
             >
-              {{ t('settle.planModeMin') }}
-            </button>
-            <button
-              type="button"
-              class="rounded-lg px-2.5 py-1 transition"
-              :class="
-                transferPlanMode === 'hub'
-                  ? 'bg-white text-emerald-700 shadow-sm dark:bg-slate-950 dark:text-emerald-400'
-                  : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
-              "
-              @click="transferPlanMode = 'hub'"
-            >
-              {{ t('settle.planModeHub') }}
-            </button>
-          </div>
+              <div class="flex items-center justify-between gap-2">
+                <div class="flex min-w-0 items-center gap-2">
+                  <MemberAvatar
+                    :name="getMemberName(bal.memberId)"
+                    :color="getMemberColor(bal.memberId)"
+                    :image="project.members.find((m) => m.id === bal.memberId)?.avatarImage"
+                    size="sm"
+                  />
+                  <span class="truncate text-sm font-bold text-slate-900 dark:text-white">
+                    {{ getMemberName(bal.memberId) }}
+                  </span>
+                  <span
+                    v-if="myMemberId && bal.memberId === myMemberId"
+                    class="shrink-0 rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[9px] font-bold text-emerald-700 dark:text-emerald-300"
+                  >
+                    {{ t('settle.meBadge') }}
+                  </span>
+                </div>
 
-          <button
-            v-if="myMemberId"
-            type="button"
-            class="rounded-full border px-2.5 py-1 text-[11px] font-semibold transition"
-            :class="
-              onlyMyTransfers
-                ? 'border-emerald-500 bg-emerald-600 text-white dark:bg-emerald-500 dark:text-slate-950'
-                : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300'
-            "
-            @click="onlyMyTransfers = !onlyMyTransfers"
-          >
-            {{ t('settle.onlyMyTransfersButton') }}
-          </button>
-        </div>
+                <div class="text-right">
+                  <div
+                    class="text-sm font-bold tabular-nums"
+                    :class="
+                      bal.netAmount > 0
+                        ? 'text-emerald-700 dark:text-emerald-400'
+                        : bal.netAmount < 0
+                          ? 'text-rose-600 dark:text-rose-400'
+                          : 'text-slate-400'
+                    "
+                  >
+                    {{ bal.netAmount > 0 ? '+' : '' }}{{ fmt(bal.netAmount, settlementCurrency) }}
+                  </div>
+                  <div
+                    v-if="isCrossCurrencySettlement && getBaseBalance(bal.memberId)"
+                    class="text-[10px] font-medium tabular-nums text-slate-400 dark:text-slate-500"
+                  >
+                    {{ getBaseBalance(bal.memberId)!.netAmount > 0 ? '+' : '' }}{{ fmt(getBaseBalance(bal.memberId)!.netAmount, project.baseCurrency) }}
+                  </div>
+                  <div class="text-[10px] font-medium text-slate-400 dark:text-slate-500">
+                    {{
+                      bal.netAmount > 0
+                        ? t('settle.shouldReceive')
+                        : bal.netAmount < 0
+                          ? t('settle.shouldPay')
+                          : t('settle.settled')
+                    }}
+                  </div>
+                </div>
+              </div>
 
-        <!-- 集中收付模式時可自選收付窗口（財務長 / 公費袋） -->
-        <div
-          v-if="transferPlanMode === 'hub'"
-          class="flex items-center justify-between gap-2 rounded-xl bg-slate-50 px-3 py-1.5 text-[11px] dark:bg-slate-800/70"
-        >
-          <span class="shrink-0 font-semibold text-slate-500 dark:text-slate-400">
-            {{ t('settle.hubMemberLabel') }}
-          </span>
-          <select
-            :value="resolvedHubMemberId"
-            class="min-w-0 max-w-[180px] rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-bold text-slate-800 focus:border-emerald-500 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-white"
-            @change="hubMemberId = ($event.target as HTMLSelectElement).value"
-          >
-            <option v-for="m in project.members" :key="m.id" :value="m.id">
-              {{ m.name }}
-            </option>
-          </select>
-        </div>
-      </div>
+              <div class="mt-2.5 grid grid-cols-2 gap-2 border-t border-black/[0.06] pt-2 text-[11px] dark:border-white/10">
+                <div>
+                  <span class="text-slate-400 dark:text-slate-500">{{ t('settle.memberTotalExpense') }}</span>
+                  <div class="font-semibold tabular-nums text-slate-900 dark:text-slate-100">
+                    {{ fmt(bal.totalExpense, settlementCurrency) }}
+                  </div>
+                  <div
+                    v-if="isCrossCurrencySettlement && getBaseBalance(bal.memberId)"
+                    class="text-[10px] tabular-nums text-slate-400"
+                  >
+                    {{ fmt(getBaseBalance(bal.memberId)!.totalExpense, project.baseCurrency) }}
+                  </div>
+                </div>
+                <div class="text-right">
+                  <span class="text-slate-400 dark:text-slate-500">{{ t('settle.memberTotalPaid') }}</span>
+                  <div class="font-semibold tabular-nums text-slate-700 dark:text-slate-200">
+                    {{ fmt(bal.totalPaid, settlementCurrency) }}
+                  </div>
+                  <div
+                    v-if="isCrossCurrencySettlement && getBaseBalance(bal.memberId)"
+                    class="text-[10px] tabular-nums text-slate-400"
+                  >
+                    {{ fmt(getBaseBalance(bal.memberId)!.totalPaid, project.baseCurrency) }}
+                  </div>
+                </div>
+              </div>
 
-      <p
-        v-if="effectiveTransfers.length === 0"
-        class="rounded-xl bg-emerald-50 px-3.5 py-3 text-xs font-semibold text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300"
-      >
-        {{ t('settle.allSettled') }}
-      </p>
-
-      <p
-        v-else-if="visibleTransfers.length === 0"
-        class="rounded-xl bg-slate-50 px-3.5 py-3 text-xs font-medium text-slate-500 dark:bg-slate-800/70 dark:text-slate-400"
-      >
-        {{ t('settle.noMyTransfers') }}
-      </p>
-
-      <ul v-else class="space-y-2">
-        <li
-          v-for="(transfer, idx) in visibleTransfers"
-          :key="idx"
-          class="flex items-center justify-between gap-2 rounded-xl border border-sky-200/90 bg-sky-50/50 px-3.5 py-2.5 dark:border-sky-900/60 dark:bg-sky-950/25"
-        >
-          <div class="min-w-0">
-            <div class="flex flex-wrap items-center gap-1.5 text-xs font-semibold text-slate-800 dark:text-slate-100">
-              <span class="inline-flex items-center gap-1">
-                <span
-                  class="h-2.5 w-2.5 rounded-full"
-                  :style="{ backgroundColor: getMemberColor(transfer.fromMemberId) }"
-                />
-                <span>{{ getMemberName(transfer.fromMemberId) }}</span>
-              </span>
-              <span class="text-slate-400">→</span>
-              <span class="inline-flex items-center gap-1">
-                <span
-                  class="h-2.5 w-2.5 rounded-full"
-                  :style="{ backgroundColor: getMemberColor(transfer.toMemberId) }"
-                />
-                <span>{{ getMemberName(transfer.toMemberId) }}</span>
-              </span>
-            </div>
-            <div class="mt-0.5 flex flex-wrap items-baseline gap-1.5 tabular-nums">
-              <span class="text-sm font-extrabold text-emerald-700 dark:text-emerald-400">
-                {{ fmt(transfer.amount, transfer.currency) }}
-              </span>
-              <span
-                v-if="isCrossCurrencySettlement"
-                class="rounded bg-amber-100/80 px-1.5 py-0.5 text-[10px] font-bold text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
-              >
-                ≈ {{ fmt(convertSettleAmountToBase(transfer.amount), project.baseCurrency) }}
-              </span>
-            </div>
-            <button
-              v-if="getMemberPaymentInfo(transfer.toMemberId)"
-              type="button"
-              class="mt-1 inline-flex max-w-full items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-600 transition hover:border-emerald-400 hover:text-emerald-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
-              @click="copyPaymentInfo(transfer.toMemberId)"
-            >
-              <Copy class="h-2.5 w-2.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
-              <span class="truncate">{{ getMemberPaymentInfo(transfer.toMemberId) }}</span>
-            </button>
-          </div>
-          <button
-            type="button"
-            class="shrink-0 rounded-xl bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white transition hover:bg-emerald-700 dark:bg-emerald-500 dark:text-slate-950"
-            @click="
-              emit('recordPayment', {
-                fromMemberId: transfer.fromMemberId,
-                toMemberId: transfer.toMemberId,
-                amount: transfer.amount,
-                currency: transfer.currency,
-              })
-            "
-          >
-            {{ t('settle.recordButton') }}
-          </button>
-        </li>
-      </ul>
-    </section>
-
-    <!-- 已記錄之還款明細 -->
-    <section
-      class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900"
-    >
-      <h3 class="mb-3 text-xs font-bold text-slate-700 dark:text-slate-200">
-        {{ t('settle.historyTitle') }}
-      </h3>
-
-      <p
-        v-if="settlements.length === 0"
-        class="py-4 text-center text-xs text-slate-400 dark:text-slate-500"
-      >
-        {{ t('settle.noHistory') }}
-      </p>
-
-      <ul v-else class="divide-y divide-slate-200/80 overflow-hidden rounded-xl border border-slate-200/80 dark:divide-slate-800 dark:border-slate-800">
-        <li
-          v-for="tx in settlements"
-          :key="tx.id"
-          class="flex items-center justify-between gap-2 px-3 py-2.5 odd:bg-white even:bg-slate-50/85 dark:odd:bg-slate-900 dark:even:bg-slate-800/45"
-        >
-          <div class="min-w-0">
-            <div class="flex flex-wrap items-center gap-1.5 text-xs font-semibold text-slate-800 dark:text-slate-100">
-              <span class="inline-flex items-center gap-1">
-                <span
-                  class="h-2 w-2 rounded-full"
-                  :style="{
-                    backgroundColor: getMemberColor(tx.splitConfig?.payerId ?? ''),
-                  }"
-                />
-                <span>{{ getMemberName(tx.splitConfig?.payerId ?? '') }}</span>
-              </span>
-              <span class="text-slate-400">→</span>
-              <span class="inline-flex items-center gap-1">
-                <span
-                  class="h-2 w-2 rounded-full"
-                  :style="{
-                    backgroundColor: getMemberColor(
-                      tx.splitConfig?.shares[0]?.memberId ?? '',
-                    ),
-                  }"
-                />
+              <div class="mt-1.5 flex items-center justify-end gap-0.5 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400">
                 <span>{{
-                  getMemberName(tx.splitConfig?.shares[0]?.memberId ?? '')
+                  selectedMemberDetailId === bal.memberId
+                    ? t('settle.hideMemberDetails')
+                    : t('settle.viewMemberDetails')
                 }}</span>
-              </span>
-            </div>
-            <div class="mt-0.5 text-[11px] text-slate-400">
-              {{ tx.date }}
-              <span v-if="tx.note"> · {{ tx.note }}</span>
-            </div>
-          </div>
-          <div class="flex shrink-0 items-center gap-1">
-            <span class="mr-1 text-sm font-bold tabular-nums text-emerald-600 dark:text-emerald-400">
-              {{ fmt(tx.amount, tx.currency) }}
-            </span>
-            <button
-              type="button"
-              :aria-label="t('home.editTx')"
-              class="rounded-lg p-1.5 text-slate-400 hover:bg-emerald-50 hover:text-emerald-600 dark:hover:bg-emerald-950/60"
-              @click="emit('editSettlement', tx)"
-            >
-              <Pencil class="h-3.5 w-3.5" />
-            </button>
-            <button
-              type="button"
-              :aria-label="t('home.deleteTx')"
-              class="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600 dark:hover:bg-rose-950/60"
-              @click="emit('deleteSettlement', tx.id)"
-            >
-              <Trash2 class="h-3.5 w-3.5" />
+                <ChevronRight
+                  class="h-3 w-3 transition-transform"
+                  :class="selectedMemberDetailId === bal.memberId ? 'rotate-90' : ''"
+                />
+              </div>
             </button>
           </div>
-        </li>
-      </ul>
-    </section>
+
+          <!-- 點擊成員展開之個人對帳明細（自動捲動至視口，純淨分隔線無斑馬紋） -->
+          <div
+            v-if="selectedMemberDetailId"
+            ref="memberDetailSectionRef"
+            class="mt-3 space-y-2.5 rounded-2xl bg-[#F2F2F7]/80 p-3 dark:bg-[#2C2C2E]/70"
+          >
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <div class="flex min-w-0 items-center gap-2 text-xs font-bold text-slate-900 dark:text-white">
+                <MemberAvatar
+                  :name="getMemberName(selectedMemberDetailId)"
+                  :color="getMemberColor(selectedMemberDetailId)"
+                  :image="project.members.find((m) => m.id === selectedMemberDetailId)?.avatarImage"
+                  size="xs"
+                />
+                <span class="truncate">
+                  {{
+                    t('settle.memberStatementTitle', {
+                      name: getMemberName(selectedMemberDetailId),
+                    })
+                  }}
+                  ({{ selectedMemberStatement.length }})
+                </span>
+              </div>
+              <div class="flex shrink-0 items-center gap-2">
+                <button
+                  type="button"
+                  class="inline-flex items-center gap-1 rounded-full bg-emerald-600 px-2.5 py-1 text-[10px] font-semibold text-white transition hover:bg-emerald-700 dark:bg-emerald-500 dark:text-slate-950"
+                  @click="handleShareMemberStatement(selectedMemberDetailId)"
+                >
+                  <Copy class="h-3 w-3" />
+                  <span>{{ t('settle.copyMemberStatementButton') }}</span>
+                </button>
+                <button
+                  type="button"
+                  class="text-[11px] font-semibold text-emerald-600 hover:underline dark:text-emerald-400"
+                  @click="emit('inspectMember', selectedMemberDetailId)"
+                >
+                  {{ t('settle.openInEntriesButton') }}
+                </button>
+                <button
+                  type="button"
+                  :aria-label="t('settings.close')"
+                  class="rounded-full p-1 text-slate-400 hover:bg-white dark:hover:bg-white/10"
+                  @click="selectedMemberDetailId = null"
+                >
+                  <X class="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </div>
+
+            <p
+              v-if="selectedMemberStatement.length === 0"
+              class="py-3 text-center text-xs text-slate-400"
+            >
+              {{ t('settle.memberStatementEmpty') }}
+            </p>
+
+            <ul
+              v-else
+              class="max-h-64 divide-y divide-slate-100 overflow-y-auto rounded-xl bg-white dark:divide-white/10 dark:bg-[#1C1C1E]"
+            >
+              <li
+                v-for="item in selectedMemberStatement"
+                :key="item.tx.id"
+                class="flex items-center justify-between gap-2 px-3 py-2.5 text-xs"
+              >
+                <button
+                  type="button"
+                  class="min-w-0 flex-1 text-left transition hover:opacity-80"
+                  @click="emit('editExpense', item.tx)"
+                >
+                  <div class="flex items-center gap-1.5">
+                    <span
+                      v-if="item.isRefund"
+                      class="rounded bg-teal-500/15 px-1.5 py-0.5 text-[9px] font-bold text-teal-700 dark:text-teal-300"
+                    >
+                      {{ t('project.refundBadge') }}
+                    </span>
+                    <span class="truncate font-semibold text-slate-900 dark:text-white">
+                      {{ item.title }}
+                    </span>
+                  </div>
+                  <div class="mt-0.5 text-[10px] text-slate-400 dark:text-slate-500">
+                    {{ item.tx.date }} · {{ fmt(item.tx.amount, item.tx.currency) }}
+                  </div>
+                </button>
+                <div class="shrink-0 text-right tabular-nums">
+                  <div
+                    v-if="item.shareInSettle !== 0"
+                    class="text-[11px] font-semibold text-slate-900 dark:text-white"
+                  >
+                    {{ t('settle.memberTotalExpense') }}
+                    {{ fmt(item.shareInSettle, settlementCurrency) }}
+                    <span
+                      v-if="isCrossCurrencySettlement"
+                      class="block text-[9px] font-normal text-slate-400"
+                    >
+                      {{ fmt(item.shareInBase, project.baseCurrency) }}
+                    </span>
+                  </div>
+                  <div
+                    v-if="item.paidInSettle !== 0"
+                    class="text-[10px] font-semibold text-emerald-600 dark:text-emerald-400"
+                  >
+                    {{ t('settle.memberTotalPaid') }}
+                    {{ fmt(item.paidInSettle, settlementCurrency) }}
+                    <span
+                      v-if="isCrossCurrencySettlement"
+                      class="ml-1 text-[9px] font-normal text-slate-400"
+                    >
+                      ({{ fmt(item.paidInBase, project.baseCurrency) }})
+                    </span>
+                  </div>
+                </div>
+              </li>
+            </ul>
+          </div>
+        </section>
+
+        <!-- 消費結構圓餅圖 -->
+        <CategoryPieChart
+          :transactions="expenses"
+          :raw-transactions="sourceRawExpenses"
+          :base-currency="settlementCurrency"
+          :project-base-currency="project.baseCurrency"
+        />
+      </div>
     </div>
+
+    <!-- Apple Action Sheet：統一整合文字分享、PNG 長截圖、Excel 匯出與明細開關 -->
+    <Teleport to="body">
+      <div
+        v-if="shareSheetOpen"
+        class="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/45 p-3 backdrop-blur-[2px] sm:items-center"
+        @click.self="shareSheetOpen = false"
+      >
+        <div
+          ref="shareSheetRef"
+          role="dialog"
+          aria-modal="true"
+          :aria-label="t('share.sheetTitle')"
+          tabindex="-1"
+          class="w-full max-w-sm space-y-2 pb-[env(safe-area-inset-bottom)] focus:outline-none"
+        >
+          <div class="overflow-hidden rounded-2xl bg-white/95 shadow-2xl backdrop-blur-xl dark:bg-[#1C1C1E]">
+            <div class="border-b border-slate-100 px-4 py-3 text-center dark:border-white/10">
+              <div class="text-xs font-semibold text-slate-500 dark:text-slate-400">
+                {{ t('share.sheetTitle') }}
+              </div>
+            </div>
+
+            <!-- iOS Switch 開關：是否附帶完整消費明細 -->
+            <div
+              v-if="expenses.length > 0"
+              class="flex items-center justify-between border-b border-slate-100 px-4 py-3 dark:border-white/10"
+            >
+              <span class="text-xs font-medium text-slate-700 dark:text-slate-200">
+                {{ t('share.includeDetailsToggle') }}
+              </span>
+              <button
+                type="button"
+                role="switch"
+                :aria-checked="includeDetailsInShare"
+                class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors"
+                :class="
+                  includeDetailsInShare
+                    ? 'bg-emerald-500'
+                    : 'bg-slate-200 dark:bg-slate-700'
+                "
+                @click="includeDetailsInShare = !includeDetailsInShare"
+              >
+                <span
+                  class="inline-block h-5 w-5 rounded-full bg-white shadow transition-transform"
+                  :class="includeDetailsInShare ? 'translate-x-5.5' : 'translate-x-0.5'"
+                />
+              </button>
+            </div>
+
+            <div class="divide-y divide-slate-100 dark:divide-white/10">
+              <button
+                type="button"
+                class="flex w-full items-center gap-3 px-4 py-3.5 text-left text-sm font-semibold text-slate-900 transition hover:bg-slate-50 active:bg-slate-100 dark:text-white dark:hover:bg-white/5"
+                @click="handleShareSettlement"
+              >
+                <span class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
+                  <Share2 class="h-4 w-4" />
+                </span>
+                <span>{{ t('share.textSummaryAction') }}</span>
+              </button>
+
+              <button
+                type="button"
+                :disabled="isGeneratingImage"
+                class="flex w-full items-center gap-3 px-4 py-3.5 text-left text-sm font-semibold text-slate-900 transition hover:bg-slate-50 active:bg-slate-100 disabled:opacity-50 dark:text-white dark:hover:bg-white/5"
+                @click="handleExportLongImage"
+              >
+                <span class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-sky-500/15 text-sky-600 dark:text-sky-400">
+                  <Loader2 v-if="isGeneratingImage" class="h-4 w-4 animate-spin" />
+                  <ImageDown v-else class="h-4 w-4" />
+                </span>
+                <span>{{ t('export.longImageButton') }}</span>
+              </button>
+
+              <button
+                type="button"
+                class="flex w-full items-center gap-3 px-4 py-3.5 text-left text-sm font-semibold text-slate-900 transition hover:bg-slate-50 active:bg-slate-100 dark:text-white dark:hover:bg-white/5"
+                @click="handleExportExcel"
+              >
+                <span class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-teal-500/15 text-teal-600 dark:text-teal-400">
+                  <FileSpreadsheet class="h-4 w-4" />
+                </span>
+                <span>{{ t('export.excelButton') }}</span>
+              </button>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            class="w-full rounded-2xl bg-white py-3.5 text-center text-sm font-bold text-slate-900 shadow-lg transition hover:bg-slate-50 active:scale-[0.99] dark:bg-[#1C1C1E] dark:text-white dark:hover:bg-[#2C2C2E]"
+            @click="shareSheetOpen = false"
+          >
+            {{ t('confirm.cancelButton') }}
+          </button>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>

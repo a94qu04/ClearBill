@@ -214,6 +214,13 @@ interface QuickExchangeRatePresets {
   card?: number
 }
 
+export interface LocalSettlementViewPrefs {
+  settlementCurrency?: string
+  settlementRateMode?: 'per_tx' | 'live' | 'custom'
+  settlementCustomRates?: Record<string, number>
+  settlementCustomRatesByCurrency?: Record<string, Record<string, number>>
+}
+
 interface PersistedUserPrefsV2 {
   defaultCurrency: string
   enabledCurrencies: string[]
@@ -223,6 +230,7 @@ interface PersistedUserPrefsV2 {
   exchangeRates?: Record<string, number>
   quickExchangeRates?: Record<string, QuickExchangeRatePresets>
   lastCurrencyByProject?: Record<string, string>
+  settlementViewByProject?: Record<string, LocalSettlementViewPrefs>
   userProfile?: UserProfile
 }
 
@@ -352,6 +360,73 @@ function loadUserPrefs(): PersistedUserPrefsV2 {
         }
       }
 
+      const settlementViewByProject: Record<string, LocalSettlementViewPrefs> = {}
+      if (
+        parsed.settlementViewByProject &&
+        typeof parsed.settlementViewByProject === 'object'
+      ) {
+        for (const [projId, rawView] of Object.entries(parsed.settlementViewByProject)) {
+          if (!projId.trim() || !rawView || typeof rawView !== 'object') continue
+          const cleanView: LocalSettlementViewPrefs = {}
+          if (
+            typeof rawView.settlementCurrency === 'string' &&
+            /^[A-Z]{3}$/.test(rawView.settlementCurrency.trim().toUpperCase())
+          ) {
+            cleanView.settlementCurrency = rawView.settlementCurrency.trim().toUpperCase()
+          }
+          if (
+            rawView.settlementRateMode === 'per_tx' ||
+            rawView.settlementRateMode === 'live' ||
+            rawView.settlementRateMode === 'custom'
+          ) {
+            cleanView.settlementRateMode = rawView.settlementRateMode
+          }
+          if (
+            rawView.settlementCustomRates &&
+            typeof rawView.settlementCustomRates === 'object'
+          ) {
+            const cleanFlat: Record<string, number> = {}
+            for (const [k, v] of Object.entries(rawView.settlementCustomRates)) {
+              const code = k.trim().toUpperCase()
+              if (/^[A-Z]{3}$/.test(code) && typeof v === 'number' && Number.isFinite(v) && v > 0) {
+                cleanFlat[code] = v
+              }
+            }
+            if (Object.keys(cleanFlat).length > 0) {
+              cleanView.settlementCustomRates = cleanFlat
+            }
+          }
+          if (
+            rawView.settlementCustomRatesByCurrency &&
+            typeof rawView.settlementCustomRatesByCurrency === 'object'
+          ) {
+            const cleanByCur: Record<string, Record<string, number>> = {}
+            for (const [targetCur, bucket] of Object.entries(
+              rawView.settlementCustomRatesByCurrency,
+            )) {
+              const tCode = targetCur.trim().toUpperCase()
+              if (!/^[A-Z]{3}$/.test(tCode) || !bucket || typeof bucket !== 'object') continue
+              const cleanBucket: Record<string, number> = {}
+              for (const [k, v] of Object.entries(bucket)) {
+                const code = k.trim().toUpperCase()
+                if (/^[A-Z]{3}$/.test(code) && typeof v === 'number' && Number.isFinite(v) && v > 0) {
+                  cleanBucket[code] = v
+                }
+              }
+              if (Object.keys(cleanBucket).length > 0) {
+                cleanByCur[tCode] = cleanBucket
+              }
+            }
+            if (Object.keys(cleanByCur).length > 0) {
+              cleanView.settlementCustomRatesByCurrency = cleanByCur
+            }
+          }
+          if (Object.keys(cleanView).length > 0) {
+            settlementViewByProject[projId] = cleanView
+          }
+        }
+      }
+
       const rawProfile = parsed.userProfile
       const userProfile: UserProfile =
         rawProfile && typeof rawProfile === 'object'
@@ -393,6 +468,7 @@ function loadUserPrefs(): PersistedUserPrefsV2 {
         exchangeRates,
         quickExchangeRates,
         lastCurrencyByProject,
+        settlementViewByProject,
         userProfile,
       }
     }
@@ -499,6 +575,9 @@ export const useLedgerStore = defineStore('ledger', () => {
   const lastCurrencyByProject = ref<Record<string, string>>(
     initialPrefs.lastCurrencyByProject ?? {},
   )
+  const settlementViewByProject = ref<Record<string, LocalSettlementViewPrefs>>(
+    initialPrefs.settlementViewByProject ?? {},
+  )
   const userProfile = ref<UserProfile>(
     initialPrefs.userProfile ?? createDefaultUserProfile(),
   )
@@ -549,6 +628,7 @@ export const useLedgerStore = defineStore('ledger', () => {
         exchangeRates: rememberedExchangeRates.value,
         quickExchangeRates: quickExchangeRates.value,
         lastCurrencyByProject: lastCurrencyByProject.value,
+        settlementViewByProject: settlementViewByProject.value,
         userProfile: userProfile.value,
       }
       window.localStorage.setItem(PREFS_STORAGE_KEY, JSON.stringify(data))
@@ -699,11 +779,27 @@ export const useLedgerStore = defineStore('ledger', () => {
     saveUserPrefs()
   }
 
-  /** 取得專案目前於結算頁使用的結帳幣別（未設定時預設等同記帳主幣別） */
+  /** 取得專案目前於此裝置結算頁使用的結帳幣別（優先讀取本機視角偏好，未設定時回退專案設定／記帳主幣別） */
   function getProjectSettlementCurrency(
-    project: Pick<Project, 'baseCurrency' | 'settlementCurrency'>,
+    project: Pick<Project, 'baseCurrency' | 'settlementCurrency'> & { id?: string },
   ): string {
-    return (project.settlementCurrency || project.baseCurrency).trim().toUpperCase()
+    const localCur = project.id
+      ? settlementViewByProject.value[project.id]?.settlementCurrency
+      : undefined
+    return (localCur || project.settlementCurrency || project.baseCurrency)
+      .trim()
+      .toUpperCase()
+  }
+
+  /** 取得專案目前於此裝置結算頁使用的匯率模式（本機偏好獨立保存，不與旅伴透過 Firestore 互蓋） */
+  function getProjectSettlementRateMode(
+    project: Pick<Project, 'id' | 'settlementRateMode'>,
+  ): 'per_tx' | 'live' | 'custom' {
+    return (
+      settlementViewByProject.value[project.id]?.settlementRateMode ??
+      project.settlementRateMode ??
+      'per_tx'
+    )
   }
 
   /** 取得任意兩幣別的最佳參考匯率（即時快取 > 記憶自訂 > 離線估算） */
@@ -723,11 +819,23 @@ export const useLedgerStore = defineStore('ledger', () => {
     targetCurrency: string,
   ): Record<string, number> | undefined {
     const target = targetCurrency.trim().toUpperCase()
+    const localView = settlementViewByProject.value[project.id]
+    const localBucket = localView?.settlementCustomRatesByCurrency?.[target]
+    if (localBucket && Object.keys(localBucket).length > 0) {
+      return localBucket
+    }
+    const currentSettle = getProjectSettlementCurrency(project)
+    if (
+      target === currentSettle &&
+      localView?.settlementCustomRates &&
+      Object.keys(localView.settlementCustomRates).length > 0
+    ) {
+      return localView.settlementCustomRates
+    }
     const bucket = project.settlementCustomRatesByCurrency?.[target]
     if (bucket && Object.keys(bucket).length > 0) {
       return bucket
     }
-    const currentSettle = getProjectSettlementCurrency(project)
     if (
       target === currentSettle &&
       project.settlementCustomRates &&
@@ -745,7 +853,7 @@ export const useLedgerStore = defineStore('ledger', () => {
     project: Project,
     projectTxs?: Transaction[],
   ): Record<string, number> | undefined {
-    const mode = project.settlementRateMode ?? 'per_tx'
+    const mode = getProjectSettlementRateMode(project)
     if (mode === 'per_tx') return undefined
 
     const settleCurrency = getProjectSettlementCurrency(project)
@@ -810,6 +918,9 @@ export const useLedgerStore = defineStore('ledger', () => {
     }
   }
 
+  /**
+   * 切換此裝置上的結帳幣別（純本機視角偏好，不推送 Firestore 避免多人結帳時互相覆寫打架）
+   */
   async function updateProjectSettlementCurrency(
     projectId: string,
     currency: string,
@@ -818,56 +929,55 @@ export const useLedgerStore = defineStore('ledger', () => {
     if (!existing) return null
 
     const normalized = CurrencyCodeSchema.parse(currency)
+    const prevLocal = settlementViewByProject.value[projectId]
     const prevSettleCurrency = getProjectSettlementCurrency(existing)
-    if (normalized === prevSettleCurrency && existing.settlementCurrency === normalized) {
+    if (normalized === prevSettleCurrency && prevLocal?.settlementCurrency === normalized) {
       return existing
     }
 
     // 依目標結帳幣別分桶完整保留各幣別曾設定的自訂結算匯率，切換後再切回絕不洗掉
     const nextByCurrency: Record<string, Record<string, number>> = {}
-    if (existing.settlementCustomRatesByCurrency) {
-      for (const [targetCur, map] of Object.entries(
-        existing.settlementCustomRatesByCurrency,
-      )) {
+    const sourceByCur =
+      prevLocal?.settlementCustomRatesByCurrency ??
+      existing.settlementCustomRatesByCurrency
+    if (sourceByCur) {
+      for (const [targetCur, map] of Object.entries(sourceByCur)) {
         nextByCurrency[targetCur] = { ...map }
       }
     }
-    if (
-      existing.settlementCustomRates &&
-      Object.keys(existing.settlementCustomRates).length > 0
-    ) {
+    const prevFlat =
+      prevLocal?.settlementCustomRates ?? existing.settlementCustomRates
+    if (prevFlat && Object.keys(prevFlat).length > 0) {
       nextByCurrency[prevSettleCurrency] = {
         ...(nextByCurrency[prevSettleCurrency] ?? {}),
-        ...existing.settlementCustomRates,
+        ...prevFlat,
       }
     }
 
+    const prevMode = getProjectSettlementRateMode(existing)
     const restoredCustomForNewTarget = nextByCurrency[normalized]
     const nextMode =
-      existing.settlementRateMode === 'custom' && !restoredCustomForNewTarget
-        ? 'live'
-        : existing.settlementRateMode
+      prevMode === 'custom' && !restoredCustomForNewTarget ? 'live' : prevMode
 
-    const updated: Project = {
-      ...existing,
-      settlementCurrency: normalized,
-      settlementRateMode: nextMode,
-      settlementCustomRates: restoredCustomForNewTarget
-        ? { ...restoredCustomForNewTarget }
-        : undefined,
-      settlementCustomRatesByCurrency:
-        Object.keys(nextByCurrency).length > 0 ? nextByCurrency : undefined,
-      members: existing.members.map((m) => ({ ...m })),
-      updatedAt: Date.now(),
+    settlementViewByProject.value = {
+      ...settlementViewByProject.value,
+      [projectId]: {
+        settlementCurrency: normalized,
+        settlementRateMode: nextMode,
+        settlementCustomRates: restoredCustomForNewTarget
+          ? { ...restoredCustomForNewTarget }
+          : undefined,
+        settlementCustomRatesByCurrency:
+          Object.keys(nextByCurrency).length > 0 ? nextByCurrency : undefined,
+      },
     }
-
-    const saved = await saveProjectToNormalVault(updated)
-    projects.value = projects.value.map((p) => (p.id === projectId ? saved : p))
-    await enqueueAndFlushProjectChange(projectId, 'project', saved.id, saved.updatedAt)
-    markGoogleDriveDirty()
-    return saved
+    saveUserPrefs()
+    return existing
   }
 
+  /**
+   * 切換此裝置上的結算匯率模式／自訂結算匯率（純本機視角偏好，不推送 Firestore）
+   */
   async function updateProjectSettlementRateConfig(
     projectId: string,
     mode: 'per_tx' | 'live' | 'custom',
@@ -876,6 +986,7 @@ export const useLedgerStore = defineStore('ledger', () => {
     const existing = projects.value.find((p) => p.id === projectId && !p.isDeleted)
     if (!existing) return null
 
+    const prevLocal = settlementViewByProject.value[projectId]
     const settleCurrency = getProjectSettlementCurrency(existing)
     const cleanCustom: Record<string, number> = {}
     if (customRates) {
@@ -893,10 +1004,11 @@ export const useLedgerStore = defineStore('ledger', () => {
         : getProjectCustomRatesForTarget(existing, settleCurrency)
 
     const nextByCurrency: Record<string, Record<string, number>> = {}
-    if (existing.settlementCustomRatesByCurrency) {
-      for (const [targetCur, map] of Object.entries(
-        existing.settlementCustomRatesByCurrency,
-      )) {
+    const sourceByCur =
+      prevLocal?.settlementCustomRatesByCurrency ??
+      existing.settlementCustomRatesByCurrency
+    if (sourceByCur) {
+      for (const [targetCur, map] of Object.entries(sourceByCur)) {
         nextByCurrency[targetCur] = { ...map }
       }
     }
@@ -904,23 +1016,20 @@ export const useLedgerStore = defineStore('ledger', () => {
       nextByCurrency[settleCurrency] = { ...mergedCurrentCustom }
     }
 
-    const updated: Project = {
-      ...existing,
-      settlementRateMode: mode,
-      settlementCustomRates: mergedCurrentCustom
-        ? { ...mergedCurrentCustom }
-        : existing.settlementCustomRates,
-      settlementCustomRatesByCurrency:
-        Object.keys(nextByCurrency).length > 0 ? nextByCurrency : undefined,
-      members: existing.members.map((m) => ({ ...m })),
-      updatedAt: Date.now(),
+    settlementViewByProject.value = {
+      ...settlementViewByProject.value,
+      [projectId]: {
+        settlementCurrency: settleCurrency,
+        settlementRateMode: mode,
+        settlementCustomRates: mergedCurrentCustom
+          ? { ...mergedCurrentCustom }
+          : prevLocal?.settlementCustomRates,
+        settlementCustomRatesByCurrency:
+          Object.keys(nextByCurrency).length > 0 ? nextByCurrency : undefined,
+      },
     }
-
-    const saved = await saveProjectToNormalVault(updated)
-    projects.value = projects.value.map((p) => (p.id === projectId ? saved : p))
-    await enqueueAndFlushProjectChange(projectId, 'project', saved.id, saved.updatedAt)
-    markGoogleDriveDirty()
-    return saved
+    saveUserPrefs()
+    return existing
   }
 
   const availableCurrencies = computed(() => {
@@ -1011,6 +1120,13 @@ export const useLedgerStore = defineStore('ledger', () => {
   const visibleTransactions = computed(() =>
     transactions.value
       .filter((tx) => !tx.isDeleted)
+      .sort((a, b) => b.updatedAt - a.updatedAt),
+  )
+
+  /** 最近刪除（回收桶）之專案清單，提供一鍵整批復原 */
+  const deletedProjects = computed(() =>
+    projects.value
+      .filter((p) => Boolean(p.isDeleted))
       .sort((a, b) => b.updatedAt - a.updatedAt),
   )
 
@@ -2097,26 +2213,91 @@ export const useLedgerStore = defineStore('ledger', () => {
           ? patch.cardCoverImage
           : existing.cardCoverImage
 
+    const oldBase = existing.baseCurrency.trim().toUpperCase()
+    const nextBase =
+      patch.baseCurrency !== undefined
+        ? patch.baseCurrency.trim().toUpperCase()
+        : oldBase
+    const baseCurrencyChanged = nextBase !== oldBase
+    const now = Date.now()
+
     const updated: Project = {
       ...existing,
       name: patch.name !== undefined ? patch.name.trim() : existing.name,
-      baseCurrency:
-        patch.baseCurrency !== undefined
-          ? patch.baseCurrency.trim().toUpperCase()
-          : existing.baseCurrency,
+      baseCurrency: nextBase,
       defaultSplitMode: patch.defaultSplitMode ?? existing.defaultSplitMode,
       defaultPayerId: patch.defaultPayerId ?? existing.defaultPayerId,
       cardColor: nextCardColor,
       cardCoverImage: nextCardCoverImage,
       members: existing.members.map((m) => ({ ...m })),
-      updatedAt: Date.now(),
+      updatedAt: now,
     }
 
     const saved = await saveProjectToNormalVault(updated)
     projects.value = projects.value.map((p) => (p.id === projectId ? saved : p))
+
+    // 變更專案記帳主幣別時，自動依舊主幣別➔新主幣別匯率重算既有交易之 exchangeRateToBase（保留原幣金額不毀帳）
+    if (baseCurrencyChanged) {
+      const oldToNewRate = getEffectiveExchangeRate(oldBase, nextBase)
+      if (Number.isFinite(oldToNewRate) && oldToNewRate > 0) {
+        const affected = transactions.value.filter(
+          (tx) => tx.projectId === projectId && !tx.isDeleted,
+        )
+        const updatedMap = new Map<string, Transaction>()
+        for (const tx of affected) {
+          const txCur = tx.currency.trim().toUpperCase()
+          let nextRate: number
+          if (txCur === nextBase) {
+            nextRate = 1
+          } else if (txCur === oldBase) {
+            nextRate = Number(oldToNewRate.toFixed(6))
+          } else {
+            const origToOld = tx.exchangeRateToBase > 0 ? tx.exchangeRateToBase : 1
+            nextRate = Number((origToOld * oldToNewRate).toFixed(6))
+          }
+          if (!Number.isFinite(nextRate) || nextRate <= 0) {
+            nextRate = 1
+          }
+          const updatedTx: Transaction = {
+            ...tx,
+            exchangeRateToBase: nextRate,
+            updatedAt: now,
+          }
+          const savedTx = await saveTransactionToNormalVault(updatedTx)
+          updatedMap.set(savedTx.id, savedTx)
+          await enqueueAndFlushProjectChange(
+            projectId,
+            'transaction',
+            savedTx.id,
+            savedTx.updatedAt,
+          )
+        }
+        if (updatedMap.size > 0) {
+          transactions.value = transactions.value.map(
+            (tx) => updatedMap.get(tx.id) ?? tx,
+          )
+        }
+      }
+    }
+
     await enqueueAndFlushProjectChange(projectId, 'project', saved.id, saved.updatedAt)
     markGoogleDriveDirty()
     return saved
+  }
+
+  function hasDuplicateMemberName(
+    projectId: string,
+    candidateName: string,
+    excludeMemberId?: string,
+  ): boolean {
+    const normalized = candidateName.trim().toLowerCase()
+    if (!normalized) return false
+    const existing = projects.value.find((p) => p.id === projectId && !p.isDeleted)
+    if (!existing) return false
+    return existing.members.some(
+      (m) =>
+        m.id !== excludeMemberId && m.name.trim().toLowerCase() === normalized,
+    )
   }
 
   async function addProjectMember(
@@ -2128,6 +2309,7 @@ export const useLedgerStore = defineStore('ledger', () => {
     const existing = projects.value.find((p) => p.id === projectId && !p.isDeleted)
     const trimmed = memberName.trim()
     if (!existing || !trimmed) return null
+    if (hasDuplicateMemberName(projectId, trimmed)) return null
 
     const now = Date.now()
     const newMember: ProjectMember = {
@@ -2164,6 +2346,13 @@ export const useLedgerStore = defineStore('ledger', () => {
   ): Promise<Project | null> {
     const existing = projects.value.find((p) => p.id === projectId && !p.isDeleted)
     if (!existing) return null
+    if (
+      patch.name !== undefined &&
+      patch.name.trim() &&
+      hasDuplicateMemberName(projectId, patch.name, memberId)
+    ) {
+      return null
+    }
 
     const nextMembers = existing.members.map((m) => {
       if (m.id !== memberId) return { ...m }
@@ -2597,7 +2786,7 @@ export const useLedgerStore = defineStore('ledger', () => {
 
     const poolMember: ProjectMember = {
       id: `pool_${Date.now().toString(36)}`,
-      name: poolName.trim().slice(0, 50) || '公費袋',
+      name: poolName.trim().slice(0, 50) || 'Pool',
       avatarColor: '#0f766e',
       isPool: true,
     }
@@ -2762,6 +2951,38 @@ export const useLedgerStore = defineStore('ledger', () => {
     markGoogleDriveDirty()
   }
 
+  async function softDeleteTransactionsBatch(ids: string[]): Promise<string[]> {
+    const uniqueIds = Array.from(new Set(ids.filter(Boolean)))
+    if (uniqueIds.length === 0) return []
+    const now = Date.now()
+    const deletedMap = new Map<string, Transaction>()
+    for (const id of uniqueIds) {
+      const target = transactions.value.find((tx) => tx.id === id && !tx.isDeleted)
+      if (!target) continue
+      const updated: Transaction = {
+        ...target,
+        isDeleted: true,
+        updatedAt: now,
+      }
+      await saveTransactionToNormalVault(updated)
+      deletedMap.set(id, updated)
+    }
+    if (deletedMap.size === 0) return []
+    transactions.value = transactions.value.map(
+      (tx) => deletedMap.get(tx.id) ?? tx,
+    )
+    for (const updated of deletedMap.values()) {
+      await enqueueAndFlushProjectChange(
+        updated.projectId,
+        'transaction',
+        updated.id,
+        updated.updatedAt,
+      )
+    }
+    markGoogleDriveDirty()
+    return Array.from(deletedMap.keys())
+  }
+
   async function restoreTransaction(
     id: string,
   ): Promise<{ ok: boolean; projectId?: string }> {
@@ -2814,18 +3035,94 @@ export const useLedgerStore = defineStore('ledger', () => {
     return { ok: true, projectId: saved.projectId }
   }
 
+  async function restoreProject(
+    projectId: string,
+  ): Promise<{ ok: boolean; restoredTxCount: number; projectName?: string }> {
+    const target = projects.value.find((p) => p.id === projectId && p.isDeleted)
+    if (!target) return { ok: false, restoredTxCount: 0 }
+
+    const now = Date.now()
+    const restoredProject: Project = {
+      ...target,
+      isDeleted: false,
+      isActive: true,
+      isArchived: false,
+      members: target.members.map((m) => ({ ...m })),
+      updatedAt: now,
+    }
+    const savedProj = await saveProjectToNormalVault(restoredProject)
+    projects.value = projects.value.map((p) =>
+      p.id === projectId ? savedProj : p,
+    )
+
+    // 一併復原隨該專案軟刪除之關聯交易
+    const relatedDeleted = transactions.value.filter(
+      (tx) => tx.projectId === projectId && tx.isDeleted,
+    )
+    const restoredMap = new Map<string, Transaction>()
+    for (const tx of relatedDeleted) {
+      const savedTx = await saveTransactionToNormalVault({
+        ...tx,
+        isDeleted: false,
+        updatedAt: now,
+      })
+      restoredMap.set(savedTx.id, savedTx)
+    }
+    if (restoredMap.size > 0) {
+      transactions.value = transactions.value.map(
+        (tx) => restoredMap.get(tx.id) ?? tx,
+      )
+    }
+
+    activeProjectId.value = savedProj.id
+    persistActiveProjectId(savedProj.id)
+    markGoogleDriveDirty()
+    return {
+      ok: true,
+      restoredTxCount: restoredMap.size,
+      projectName: savedProj.name,
+    }
+  }
+
+  async function permanentlyDeleteProject(projectId: string): Promise<void> {
+    const relatedIds = transactions.value
+      .filter((tx) => tx.projectId === projectId)
+      .map((tx) => tx.id)
+    if (relatedIds.length > 0) {
+      await normalVaultDb.transactions.bulkDelete(relatedIds)
+      const idSet = new Set(relatedIds)
+      transactions.value = transactions.value.filter((tx) => !idSet.has(tx.id))
+    }
+    await normalVaultDb.projects.delete(projectId)
+    projects.value = projects.value.filter((p) => p.id !== projectId)
+    projectOrder.value = projectOrder.value.filter((id) => id !== projectId)
+    saveUserPrefs()
+  }
+
   async function permanentlyDeleteTransaction(id: string): Promise<void> {
     await normalVaultDb.transactions.delete(id)
     transactions.value = transactions.value.filter((tx) => tx.id !== id)
   }
 
   async function emptyTrash(): Promise<number> {
-    const ids = deletedTransactions.value.map((tx) => tx.id)
-    if (ids.length === 0) return 0
-    await normalVaultDb.transactions.bulkDelete(ids)
-    const deletedSet = new Set(ids)
-    transactions.value = transactions.value.filter((tx) => !deletedSet.has(tx.id))
-    return ids.length
+    const txIds = deletedTransactions.value.map((tx) => tx.id)
+    const projIds = deletedProjects.value.map((p) => p.id)
+    const total = txIds.length + projIds.length
+    if (total === 0) return 0
+
+    if (txIds.length > 0) {
+      await normalVaultDb.transactions.bulkDelete(txIds)
+      const deletedSet = new Set(txIds)
+      transactions.value = transactions.value.filter((tx) => !deletedSet.has(tx.id))
+    }
+    if (projIds.length > 0) {
+      await normalVaultDb.projects.bulkDelete(projIds)
+      const projSet = new Set(projIds)
+      projects.value = projects.value.filter((p) => !projSet.has(p.id))
+      projectOrder.value = projectOrder.value.filter((id) => !projSet.has(id))
+      saveUserPrefs()
+    }
+    return total
   }
 
   /** 將含 Vue Reactive Proxy 的資料深拷貝為純淨 Plain Object，徹底避免 IndexedDB structuredClone DataCloneError */
@@ -3000,6 +3297,7 @@ export const useLedgerStore = defineStore('ledger', () => {
     allNonDeletedProjects,
     activeProjects,
     archivedProjects,
+    deletedProjects,
     activeProject,
     visibleTransactions,
     deletedTransactions,
@@ -3019,7 +3317,9 @@ export const useLedgerStore = defineStore('ledger', () => {
     getLiveExchangeRate,
     getEffectiveExchangeRate,
     getProjectSettlementCurrency,
+    getProjectSettlementRateMode,
     getProjectSettlementOptions,
+    settlementViewByProject,
     getProjectTotalExpense,
     getProjectTransactionCount,
     getRememberedExchangeRate,
@@ -3054,17 +3354,21 @@ export const useLedgerStore = defineStore('ledger', () => {
     addProjectMember,
     updateProjectMember,
     removeProjectMember,
+    hasDuplicateMemberName,
     saveProjectSplitGroup,
     removeProjectSplitGroup,
     ensureProjectPoolMember,
     batchCollectPoolFund,
     isMemberUsedInProjectTransactions,
     softDeleteProject,
+    restoreProject,
+    permanentlyDeleteProject,
     selectProject,
     addTransaction,
     recordSettlementPayment,
     updateTransaction,
     softDeleteTransaction,
+    softDeleteTransactionsBatch,
     restoreTransaction,
     permanentlyDeleteTransaction,
     emptyTrash,

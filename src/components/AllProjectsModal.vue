@@ -12,6 +12,7 @@ import {
   X,
 } from 'lucide-vue-next'
 import { useLedgerStore } from '@/stores/ledgerStore'
+import { useModalLayer } from '@/composables/useModalLayer'
 import { formatCurrencyAmount } from '@/core/currency'
 import MemberAvatar from '@/components/MemberAvatar.vue'
 
@@ -20,7 +21,7 @@ interface Props {
   isTouchDevice?: boolean
 }
 
-defineProps<Props>()
+const props = defineProps<Props>()
 
 const emit = defineEmits<{
   (e: 'close'): void
@@ -31,6 +32,19 @@ const emit = defineEmits<{
 
 const { t, locale } = useI18n()
 const store = useLedgerStore()
+
+const dialogRef = ref<HTMLElement | null>(null)
+
+useModalLayer(
+  () => props.open,
+  () => emit('close'),
+  dialogRef,
+)
+
+function getHumanMembers(proj: { members: Array<{ id: string; name: string; avatarColor?: string; avatarImage?: string; isPool?: boolean }> }) {
+  const humans = proj.members.filter((m) => !m.isPool)
+  return humans.length > 0 ? humans : proj.members
+}
 
 const showArchived = ref(false)
 
@@ -88,6 +102,10 @@ function onDragEnd() {
   <Teleport to="body">
     <div
       v-if="open"
+      ref="dialogRef"
+      role="dialog"
+      aria-modal="true"
+      :aria-label="t('home.allProjectsModalTitle')"
       class="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/50 backdrop-blur-sm sm:items-center sm:p-4"
       @click.self="emit('close')"
     >
@@ -160,11 +178,11 @@ function onDragEnd() {
                 </div>
                 <div
                   class="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400"
-                  :title="proj.members.map((m) => m.name).join('、')"
+                  :title="getHumanMembers(proj).map((m) => m.name).join('、')"
                 >
                   <span class="inline-flex items-center -space-x-1">
                     <MemberAvatar
-                      v-for="m in proj.members.slice(0, 4)"
+                      v-for="m in getHumanMembers(proj).slice(0, 4)"
                       :key="m.id"
                       :name="m.name"
                       :color="m.avatarColor"
@@ -173,13 +191,13 @@ function onDragEnd() {
                       ring
                     />
                     <span
-                      v-if="proj.members.length > 4"
+                      v-if="getHumanMembers(proj).length > 4"
                       class="inline-flex h-3.5 min-w-[14px] items-center justify-center rounded-full bg-slate-200 px-1 text-[8px] font-bold text-slate-700 ring-1 ring-white dark:bg-slate-700 dark:text-slate-200 dark:ring-slate-900"
                     >
-                      +{{ proj.members.length - 4 }}
+                      +{{ getHumanMembers(proj).length - 4 }}
                     </span>
                   </span>
-                  <span>{{ t('project.memberCount', { count: proj.members.length }) }}</span>
+                  <span>{{ t('project.memberCount', { count: getHumanMembers(proj).length }) }}</span>
                   <span>·</span>
                   <span class="font-bold tabular-nums text-emerald-700 dark:text-emerald-400">
                     {{ fmtProjectTotal(proj.id, proj.baseCurrency) }}
@@ -259,11 +277,11 @@ function onDragEnd() {
                 </div>
                 <div
                   class="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-slate-400"
-                  :title="proj.members.map((m) => m.name).join('、')"
+                  :title="getHumanMembers(proj).map((m) => m.name).join('、')"
                 >
                   <span class="inline-flex items-center -space-x-1">
                     <MemberAvatar
-                      v-for="m in proj.members.slice(0, 4)"
+                      v-for="m in getHumanMembers(proj).slice(0, 4)"
                       :key="m.id"
                       :name="m.name"
                       :color="m.avatarColor"
@@ -272,13 +290,13 @@ function onDragEnd() {
                       ring
                     />
                     <span
-                      v-if="proj.members.length > 4"
+                      v-if="getHumanMembers(proj).length > 4"
                       class="inline-flex h-3.5 min-w-[14px] items-center justify-center rounded-full bg-slate-200 px-1 text-[8px] font-bold text-slate-700 ring-1 ring-white dark:bg-slate-700 dark:text-slate-200 dark:ring-slate-900"
                     >
-                      +{{ proj.members.length - 4 }}
+                      +{{ getHumanMembers(proj).length - 4 }}
                     </span>
                   </span>
-                  <span>{{ t('project.memberCount', { count: proj.members.length }) }}</span>
+                  <span>{{ t('project.memberCount', { count: getHumanMembers(proj).length }) }}</span>
                   <span>·</span>
                   <span class="font-bold tabular-nums text-slate-600 dark:text-slate-300">
                     {{ fmtProjectTotal(proj.id, proj.baseCurrency) }}

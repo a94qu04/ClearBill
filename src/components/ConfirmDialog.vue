@@ -1,27 +1,19 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted } from 'vue'
+import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { AlertTriangle, HelpCircle } from 'lucide-vue-next'
 import { useConfirmDialogState } from '@/composables/useConfirm'
+import { useModalLayer } from '@/composables/useModalLayer'
 
 const { t } = useI18n()
 const { state, resolveConfirm } = useConfirmDialogState()
+const dialogRef = ref<HTMLElement | null>(null)
 
-function handleKeydown(event: KeyboardEvent) {
-  if (!state.open) return
-  if (event.key === 'Escape') {
-    event.preventDefault()
-    resolveConfirm(false)
-  }
-}
-
-onMounted(() => {
-  window.addEventListener('keydown', handleKeydown)
-})
-
-onBeforeUnmount(() => {
-  window.removeEventListener('keydown', handleKeydown)
-})
+useModalLayer(
+  () => state.open,
+  () => resolveConfirm(false),
+  dialogRef,
+)
 </script>
 
 <template>
@@ -36,6 +28,7 @@ onBeforeUnmount(() => {
     >
       <div
         v-if="state.open"
+        ref="dialogRef"
         role="alertdialog"
         aria-modal="true"
         class="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm"

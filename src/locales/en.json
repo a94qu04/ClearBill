@@ -44,6 +44,10 @@
     "emptiedToast": "Emptied trash ({count} removed)",
     "deletedUndoToast": "Entry deleted",
     "restoredToast": "Entry restored!",
+    "restoredMultiToast": "Restored {count} entries!",
+    "deletedProjectsLabel": "Deleted Projects",
+    "projectRestoredToast": "Restored \"{name}\" ({count} entries)!",
+    "permanentDeleteProjectConfirm": "Permanently delete \"{name}\" and all of its entries? This cannot be undone.",
     "permanentlyDeletedToast": "Permanently deleted"
   },
   "backup": {
@@ -125,6 +129,8 @@
   },
   "share": {
     "button": "Share",
+    "sheetTitle": "Share & Export",
+    "textSummaryAction": "Share / Copy Text Summary",
     "headerPrefix": "[ClearBill Settle Up]",
     "totalSpendLabel": "Project Total",
     "memberSummaryTitle": "▎Member Spending & Balances",
@@ -143,16 +149,21 @@
     "failedToast": "Failed to share. Please try again."
   },
   "swipe": {
-    "hintTapExpand": "Tap for details · Swipe left to edit / right to delete",
+    "hintTapExpand": "Tap for details · Swipe right to edit / left to delete",
     "releaseEdit": "Release to Edit",
     "releaseDelete": "Release to Delete"
   },
   "search": {
     "placeholder": "Search notes, categories, members, amount, or date...",
+    "filterToggleShort": "Filter",
+    "clearFiltersButton": "Clear",
     "allCategories": "All",
     "allProjects": "All Projects",
     "allMembers": "All Members",
     "memberShareTotal": "Share subtotal {amount}",
+    "memberPaidTotal": "Paid subtotal {amount}",
+    "filterRefundsOnly": "Refunds",
+    "filterWithPhotosOnly": "With Photos",
     "addCategoryInline": "New Category",
     "newCategoryPlaceholder": "Category name...",
     "noMatches": "No entries match your search or filter.",
@@ -168,8 +179,8 @@
     "zoomIn": "Zoom in",
     "zoomOut": "Reset zoom",
     "download": "Download image",
-    "tapToZoomHint": "Tap image to zoom · Swipe left/right · Tap outside to close",
-    "zoomedHint": "Drag to pan · Tap image to reset",
+    "tapToZoomHint": "Tap or pinch to zoom · Swipe left/right · Tap outside to close",
+    "zoomedHint": "Pinch to zoom or drag to pan · Tap image to reset",
     "uploadError": "Could not load image. Please try again."
   },
   "home": {
@@ -181,6 +192,7 @@
     "moveProjectDown": "Move project down",
     "createFirstProject": "Create Your First Split Project",
     "viewAllProjects": "All ({count})",
+    "moreProjectsHint": "{count} more active projects — tap to view all",
     "allProjectsModalTitle": "All Split Projects",
     "addProjectShort": "New",
     "recentTransactions": "Recent Entries",
@@ -197,6 +209,7 @@
   },
   "daily": {
     "typeIncome": "Income",
+    "typeCardRepayment": "Card Repayment",
     "amountLabel": "Amount",
     "notePlaceholder": "e.g. Lunch, Coffee (optional)",
     "useNowTime": "Now",
@@ -236,6 +249,7 @@
     "feePanelToggle": "Service / Card Fee (%)",
     "feeAppliedTapToCancel": "Base {base} · Applied {summary}",
     "feeCancelShort": "Tap to undo",
+    "feeAutoClearedHint": "Amount edited manually — service/card fee addon was cleared.",
     "lastEditedByLabel": "Last edited by {name}",
     "expressionIncomplete": "Incomplete expression",
     "daySubtotal": "Day total {amount}",
@@ -249,7 +263,7 @@
     "unarchivedToast": "Restored \"{name}\" to active projects",
     "copyMembersFromProject": "Copy members from an existing project:",
     "membersCopiedToast": "Copied {count} members from \"{name}\"!",
-    "changeCurrencyConfirm": "This project already has {count} entries. Changing logging currency ({from} ➔ {to}) will not automatically recalculate past exchange rates. Continue?",
+    "changeCurrencyConfirm": "This project already has {count} entries. Changing logging currency ({from} ➔ {to}) will automatically convert existing entry exchange rates using 1 {from} = {rate} {to} while keeping original amounts intact. Continue?",
     "convertedPreview": "≈ {amount}",
     "saveExpenseButton": "Save Expense",
     "saveRefundButton": "Save Refund",
@@ -257,6 +271,8 @@
     "savedAndContinueToast": "Saved! Ready for the next entry.",
     "discardChangesTitle": "Discard unsaved changes?",
     "discardChangesMessage": "Your current entry hasn't been saved yet. Discard and close?",
+    "discardCreateTitle": "Discard new project?",
+    "discardCreateMessage": "Your project name, members, or cover changes haven't been created yet. Return home?",
     "discardButton": "Discard",
     "updateExpenseButton": "Save Changes",
     "noProjectTransactions": "No expenses yet. Tap '+' to add the first one!",
@@ -292,7 +308,9 @@
     "quickAddCurrencyPlaceholder": "3-letter code (e.g. THB, SGD, VND)",
     "duplicateWarnTitle": "Possible Duplicate Entry",
     "duplicateWarnMessage": "An entry with the same amount already exists today: \"{note}\" ({amount}). Save anyway?",
-    "duplicateWarnConfirm": "Save Anyway"
+    "duplicateWarnConfirm": "Save Anyway",
+    "adjustShort": "Adjust",
+    "todayShort": "Today"
   },
   "profile": {
     "sectionTitle": "My Member Profile & Avatar",
@@ -325,10 +343,13 @@
     "toLabel": "To",
     "paidAmountLabel": "Amount Paid",
     "remainingHint": "Remaining due: {amount}. Enter partial or full amount.",
+    "applyConvertedAmountButton": "Use Converted",
     "savePayment": "Confirm Payment",
     "updatePayment": "Save Changes",
     "paymentRecordedToast": "Payment recorded!",
     "historyTitle": "Recorded Payments",
+    "deletePaymentTitle": "Delete Repayment Record",
+    "deletePaymentConfirm": "Delete repayment \"{from} ➔ {to} ({amount})\"? You can restore it from Trash later.",
     "noHistory": "No repayments recorded yet.",
     "viewMemberDetails": "View breakdown",
     "hideMemberDetails": "Hide breakdown",
@@ -533,10 +554,12 @@
     "appliedLiveToast": "Switched {code} back to live rate",
     "inlineLiveRef": "Live ref {rate} ({time}) · Type to override",
     "settlementCurrencyLabel": "Settlement Currency",
+    "settingsToggleShort": "Rates",
     "settlementCurrencyNote": "Logging: {base}",
     "settlementCurrencyChangedToast": "Switched settlement currency to {currency}",
     "updatedAtShort": "Updated {time}",
     "modePerTx": "Per Entry",
+    "crossBaseBridgeRate": "Cross-currency base 1 {base} = {rate} {target}",
     "perTxPreservedHint": "Original per-entry exchange rates are safely preserved and never overwritten when switching settlement rates.",
     "baseAmountTag": "Base {amount}",
     "modeLive": "Live Rate",
@@ -566,9 +589,11 @@
     "exchangeRateRequired": "Enter an exchange rate greater than 0",
     "projectNameRequired": "Enter a project name",
     "membersRequired": "Enter at least 2 members",
+    "duplicateMemberName": "Member \"{name}\" already exists. Please use a unique name.",
     "sameMemberSettlement": "Payer and recipient cannot be the same member"
   },
   "pool": {
+    "badgeLabel": "Pool",
     "cardTitle": "Group Fund (Pool) Balance",
     "collectButtonShort": "Collect Pool",
     "paidOutLabel": "Spent from pool",
@@ -587,6 +612,11 @@
     "totalPreviewLabel": "{count} members · Total collected",
     "confirmButton": "Record Pool Collection",
     "errNoContributors": "Select at least one contributing member",
-    "collectedToast": "Recorded pool deposits for {count} members!"
+    "collectedToast": "Recorded pool deposits for {count} members!",
+    "undoLatestBatchShort": "Undo Last ({count})",
+    "undoBatchTitle": "Undo Latest Pool Collection",
+    "undoBatchConfirm": "Remove all {count} deposits from the latest pool batch ({amount} each, total {total})? You can restore them anytime from the toast or Trash.",
+    "undoBatchConfirmButton": "Undo Batch",
+    "batchUndoneToast": "Removed {count} pool deposit records"
   }
 }

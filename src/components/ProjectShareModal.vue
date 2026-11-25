@@ -20,6 +20,7 @@ import {
 import type { Project } from '@/schemas/ledgerSchema'
 import { useLedgerStore } from '@/stores/ledgerStore'
 import { askConfirm } from '@/composables/useConfirm'
+import { useModalLayer } from '@/composables/useModalLayer'
 import MemberAvatar from '@/components/MemberAvatar.vue'
 import { buildShareInviteUrl } from '@/core/realtimeSyncEngine'
 import {
@@ -45,6 +46,20 @@ const emit = defineEmits<{
 
 const { t, locale } = useI18n()
 const store = useLedgerStore()
+
+const dialogRef = ref<HTMLElement | null>(null)
+
+useModalLayer(
+  () => Boolean(props.open && props.project),
+  () => emit('close'),
+  dialogRef,
+)
+
+const humanMembers = computed(() => {
+  if (!props.project) return []
+  const humans = props.project.members.filter((m) => !m.isPool)
+  return humans.length > 0 ? humans : props.project.members
+})
 
 const isBusy = ref(false)
 const selectedMyMemberId = ref('')
@@ -128,10 +143,12 @@ watch(
   () => [props.open, props.project?.id] as const,
   ([isOpen]) => {
     if (!isOpen || !props.project) return
+    const humanIds = new Set(humanMembers.value.map((m) => m.id))
+    const candidateMyId =
+      props.project.syncMeta?.myMemberId || props.project.defaultPayerId
     selectedMyMemberId.value =
-      props.project.syncMeta?.myMemberId ||
-      props.project.defaultPayerId ||
-      props.project.members[0]?.id ||
+      (candidateMyId && humanIds.has(candidateMyId) ? candidateMyId : '') ||
+      humanMembers.value[0]?.id ||
       ''
     syncReceiptImages.value = props.project.syncMeta?.syncReceiptImages !== false
     const custom = getCustomFirebaseConfig()
@@ -295,6 +312,10 @@ async function handleStopSync() {
   <Teleport to="body">
     <div
       v-if="open && project"
+      ref="dialogRef"
+      role="dialog"
+      aria-modal="true"
+      :aria-label="t('realtime.modalTitle')"
       class="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/50 backdrop-blur-sm sm:items-center sm:p-4"
       @click.self="emit('close')"
     >
@@ -385,7 +406,7 @@ async function handleStopSync() {
             </div>
             <div class="flex flex-wrap gap-1.5">
               <button
-                v-for="m in project.members"
+                v-for="m in humanMembers"
                 :key="m.id"
                 type="button"
                 class="inline-flex items-center gap-1.5 rounded-full py-1 pl-1.5 pr-3 text-xs font-semibold transition"
@@ -559,7 +580,7 @@ async function handleStopSync() {
             </div>
             <div class="flex flex-wrap gap-1.5">
               <button
-                v-for="m in project.members"
+                v-for="m in humanMembers"
                 :key="m.id"
                 type="button"
                 class="inline-flex items-center gap-1.5 rounded-full py-1 pl-1.5 pr-3 text-xs font-semibold transition"

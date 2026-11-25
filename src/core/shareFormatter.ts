@@ -11,6 +11,10 @@ export interface ShareSummaryLabels {
   pendingTitle: string
   allSettledText: string
   historyTitle: string
+  poolSectionTitle?: string
+  poolPaidLabel?: string
+  poolRemainingLabel?: string
+  poolOverdrawnLabel?: string
   detailsTitle?: string
   refundTag?: string
   transferLine: (from: string, to: string, amountText: string) => string
@@ -67,9 +71,33 @@ export function buildProjectSettlementShareText(
   )
   lines.push('')
 
+  const poolIds = new Set(
+    project.members.filter((m) => m.isPool).map((m) => m.id),
+  )
+  const poolBalances = settleUp.balances.filter((b) => poolIds.has(b.memberId))
+  const humanBalances = settleUp.balances.filter((b) => !poolIds.has(b.memberId))
+
+  // 公費袋獨立摘要（若有啟用公費袋，不與真人成員支出混列）
+  if (poolBalances.length > 0) {
+    lines.push(labels.poolSectionTitle ?? '▎Pool Fund')
+    for (const pb of poolBalances) {
+      const statusText =
+        pb.netAmount < 0
+          ? (labels.poolRemainingLabel ?? 'Remaining')
+          : pb.netAmount > 0
+            ? (labels.poolOverdrawnLabel ?? 'Overdrawn')
+            : labels.allSettledText
+      const paidLbl = labels.poolPaidLabel ?? labels.paidLabel
+      lines.push(
+        `• ${nameOf(pb.memberId)}｜${paidLbl} ${fmt(pb.totalPaid)}｜${statusText} ${fmt(Math.abs(pb.netAmount))}`,
+      )
+    }
+    lines.push('')
+  }
+
   // 各成員總支出與已墊付匯總
   lines.push(labels.memberSummaryTitle)
-  for (const bal of settleUp.balances) {
+  for (const bal of humanBalances) {
     const sign = bal.netAmount > 0 ? '+' : ''
     lines.push(
       `• ${nameOf(bal.memberId)}｜${labels.spentLabel} ${fmt(bal.totalExpense)}｜${labels.paidLabel} ${fmt(bal.totalPaid)}（${sign}${fmt(bal.netAmount)}）`,

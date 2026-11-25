@@ -53,6 +53,7 @@ const props = withDefaults(defineProps<Props>(), {
 const emit = defineEmits<{
   (e: 'update:splitConfig', value: SplitConfig | null): void
   (e: 'validityChange', isValid: boolean): void
+  (e: 'errorChange', message: string | null): void
   (e: 'saveSplitGroup', payload: { name: string; memberIds: string[] }): void
   (e: 'removeSplitGroup', groupId: string): void
 }>()
@@ -700,12 +701,17 @@ const dynamicHint = computed<{
 })
 
 watch(
-  [evaluation, payerId, isMultiPayer, multiPayerCheck, mode, normalizedTotal],
+  [evaluation, payerId, isMultiPayer, multiPayerCheck, mode, normalizedTotal, dynamicHint],
   () => {
     const res = evaluation.value.result
     const payerReady = isMultiPayer.value
       ? multiPayerCheck.value.isValid
       : Boolean(payerId.value)
+
+    emit(
+      'errorChange',
+      dynamicHint.value.tone === 'error' ? dynamicHint.value.text : null,
+    )
 
     if (!res || !payerReady || normalizedTotal.value <= 0) {
       emit('update:splitConfig', null)
@@ -1097,7 +1103,7 @@ watch(
             enable-expression
             size="sm"
             :placeholder="t('split.customAmountPlaceholder')"
-            class="w-24 sm:w-28"
+            class="w-28 sm:w-32"
           />
 
           <!-- 份數比例模式（可按 - / + 步進 0.5 或直接輸入份數） -->
@@ -1118,7 +1124,7 @@ watch(
               min="0"
               step="0.5"
               inputmode="decimal"
-              class="w-12 bg-white py-1 text-center text-xs font-bold tabular-nums text-slate-900 focus:outline-none dark:bg-slate-900 dark:text-white"
+              class="w-16 bg-white py-1 text-center text-xs font-bold tabular-nums text-slate-900 focus:outline-none dark:bg-slate-900 dark:text-white sm:w-12"
             />
             <button
               type="button"
@@ -1141,7 +1147,7 @@ watch(
               max="100"
               step="any"
               inputmode="decimal"
-              class="w-16 bg-transparent px-2 py-1 text-right text-xs font-bold tabular-nums text-slate-900 focus:outline-none dark:text-white"
+              class="w-20 bg-transparent px-2 py-1 text-right text-xs font-bold tabular-nums text-slate-900 focus:outline-none dark:bg-slate-900 dark:text-white sm:w-16"
             />
             <span class="pr-2 text-[11px] font-bold text-slate-400">%</span>
           </div>

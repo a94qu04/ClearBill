@@ -3,7 +3,12 @@ import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { RefreshCw, X } from 'lucide-vue-next'
 import { useLedgerStore } from '@/stores/ledgerStore'
-import { formatCurrencyAmount } from '@/core/currency'
+import { useModalLayer } from '@/composables/useModalLayer'
+import {
+  formatCurrencyAmount,
+  fromMinorUnits,
+  toMinorUnits,
+} from '@/core/currency'
 import { getTodayIso } from '@/core/ledgerHelpers'
 import type { Project, Transaction } from '@/schemas/ledgerSchema'
 import CurrencyAmountInput from '@/components/CurrencyAmountInput.vue'
@@ -33,7 +38,16 @@ const emit = defineEmits<{
 const { t, locale } = useI18n()
 const store = useLedgerStore()
 
+const dialogRef = ref<HTMLElement | null>(null)
+
+useModalLayer(
+  () => Boolean(props.open && props.project),
+  () => emit('close'),
+  dialogRef,
+)
+
 let isHydrating = false
+let lastAutoFilledAmount: number | null = null
 const fromId = ref('')
 const toId = ref('')
 const amount = ref<number | null>(null)
@@ -73,6 +87,21 @@ const convertedBasePreview = computed(() => {
   return amt * rate
 })
 
+function computeConvertedSuggestedForCurrency(targetCurrency: string): number | null {
+  if (props.editingTx || props.suggestedAmount === null || props.suggestedAmount <= 0) {
+    return null
+  }
+  const origCur = suggestedCurrency.value
+  const targetCur = targetCurrency.trim().toUpperCase()
+  if (origCur === targetCur) {
+    return props.suggestedAmount
+  }
+  const rate = store.getEffectiveExchangeRate(origCur, targetCur)
+  if (!Number.isFinite(rate) || rate <= 0) return null
+  const units = toMinorUnits(props.suggestedAmount * rate, targetCur)
+  return fromMinorUnits(units, targetCur)
+}
+
 const equivalentSuggestedInSelectedCurrency = computed<number | null>(() => {
   if (props.editingTx || props.suggestedAmount === null || props.suggestedAmount <= 0) {
     return null
@@ -80,10 +109,15 @@ const equivalentSuggestedInSelectedCurrency = computed<number | null>(() => {
   const origCur = suggestedCurrency.value
   const targetCur = payCurrency.value.trim().toUpperCase()
   if (origCur === targetCur) return null
-  const rate = store.getEffectiveExchangeRate(origCur, targetCur)
-  if (rate <= 0) return null
-  return props.suggestedAmount * rate
+  return computeConvertedSuggestedForCurrency(targetCur)
 })
+
+function applyEquivalentSuggestedAmount() {
+  const converted = equivalentSuggestedInSelectedCurrency.value
+  if (converted === null || converted <= 0) return
+  amount.value = converted
+  lastAutoFilledAmount = converted
+}
 
 watch(
   () =>
@@ -116,6 +150,7 @@ watch(
               )
       date.value = props.editingTx.date
       note.value = props.editingTx.note ?? ''
+      lastAutoFilledAmount = null
       isHydrating = false
       return
     }
@@ -131,6 +166,7 @@ watch(
             props.project.baseCurrency,
           )
     amount.value = props.suggestedAmount ?? null
+    lastAutoFilledAmount = props.suggestedAmount ?? null
     date.value = getTodayIso()
     note.value = ''
     isHydrating = false
@@ -144,6 +180,21 @@ watch(payCurrency, (nextCur) => {
   const cur = nextCur.trim().toUpperCase()
   exchangeRate.value =
     cur === base ? 1 : store.getEffectiveExchangeRate(cur, base)
+
+  // 新增還款切換幣別時，若使用者尚未手動修改金額則自動依匯率折算金額，避免誤把台幣數字當日幣送出
+  if (!props.editingTx) {
+    const shouldAutoUpdate =
+      amount.value === null ||
+      (lastAutoFilledAmount !== null &&
+        Math.abs(amount.value - lastAutoFilledAmount) < 0.0001)
+    if (shouldAutoUpdate) {
+      const converted = computeConvertedSuggestedForCurrency(cur)
+      if (converted !== null && converted > 0) {
+        amount.value = converted
+        lastAutoFilledAmount = converted
+      }
+    }
+  }
 })
 
 async function handleRefreshRate() {
@@ -248,6 +299,10 @@ async function handleSubmit() {
   <Teleport to="body">
     <div
       v-if="open && project"
+      ref="dialogRef"
+      role="dialog"
+      aria-modal="true"
+      :aria-label="editingTx ? t('settle.editModalTitle') : t('settle.recordModalTitle')"
       class="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/50 backdrop-blur-sm sm:items-center sm:p-4"
       @click.self="emit('close')"
     >
@@ -325,22 +380,37 @@ async function handleSubmit() {
             />
             <p
               v-if="!editingTx && suggestedAmount !== null"
-              class="text-[11px] text-slate-500 dark:text-slate-400"
+              class="flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400"
             >
-              {{
-                t('settle.remainingHint', {
-                  amount: fmt(suggestedAmount, suggestedCurrency),
-                })
-              }}
+              <span>
+                {{
+                  t('settle.remainingHint', {
+                    amount: fmt(suggestedAmount, suggestedCurrency),
+                  })
+                }}
+              </span>
               <span
                 v-if="equivalentSuggestedInSelectedCurrency !== null"
-                class="ml-1 font-bold text-amber-700 dark:text-amber-300"
+                class="inline-flex items-center gap-1 font-bold text-amber-700 dark:text-amber-300"
               >
-                ({{
-                  t('project.convertedPreview', {
-                    amount: fmt(equivalentSuggestedInSelectedCurrency, payCurrency),
-                  })
-                }})
+                <span>
+                  ({{
+                    t('project.convertedPreview', {
+                      amount: fmt(equivalentSuggestedInSelectedCurrency, payCurrency),
+                    })
+                  }})
+                </span>
+                <button
+                  v-if="
+                    amount === null ||
+                    Math.abs(amount - equivalentSuggestedInSelectedCurrency) >= 0.005
+                  "
+                  type="button"
+                  class="rounded-md bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-900 transition hover:bg-amber-200 dark:bg-amber-900/60 dark:text-amber-200"
+                  @click="applyEquivalentSuggestedAmount"
+                >
+                  {{ t('settle.applyConvertedAmountButton') }}
+                </button>
               </span>
             </p>
 

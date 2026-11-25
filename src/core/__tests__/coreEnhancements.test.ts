@@ -304,4 +304,113 @@ describe('excelExporter & exchangeRateService - 標準 .xlsx 匯出與即時匯�
     expect(computeCrossRateFromUsdTable(table, 'USD', 'JPY')).toBe(150)
     expect(computeCrossRateFromUsdTable(table, 'XXX', 'TWD')).toBeNull()
   })
+
+  it('啟用公費袋時，分享文字與 Excel 皆應將公費袋獨立分區呈現而不混入真人成員列', () => {
+    const poolProject: Project = {
+      ...sampleProject,
+      members: [
+        ...sampleProject.members,
+        { id: 'pool_1', name: '旅遊公費袋', avatarColor: '#0f766e', isPool: true },
+      ],
+    }
+    const poolTxs: Transaction[] = [
+      ...sampleTxs,
+      {
+        id: '55555555-5555-4555-8555-555555555555',
+        schemaVersion: 1,
+        projectId: poolProject.id,
+        vaultLevel: 'normal',
+        type: 'transfer',
+        amount: 3000,
+        currency: 'TWD',
+        exchangeRateToBase: 1,
+        categoryKey: 'cat_settlement',
+        date: '2026-11-22',
+        time: '00:00',
+        updatedAt: 1700000006000,
+        note: '預繳公費',
+        splitConfig: {
+          payerId: 'me',
+          mode: 'custom_plus_equal',
+          shares: [{ memberId: 'pool_1', finalAmount: 3000 }],
+        },
+      },
+    ]
+    const settleUp = calculateSettleUp(
+      poolTxs,
+      'TWD',
+      poolProject.members.map((m) => m.id),
+    )
+
+    const shareText = buildProjectSettlementShareText(
+      poolProject,
+      settleUp,
+      poolTxs.filter((tx) => tx.type === 'transfer'),
+      {
+        headerPrefix: '【ClearBill】',
+        totalSpendLabel: '專案總支出',
+        memberSummaryTitle: '▎成員結算',
+        poolSectionTitle: '▎公費袋餘額',
+        poolPaidLabel: '公費已支出',
+        poolRemainingLabel: '公費剩餘現金',
+        poolOverdrawnLabel: '公費超支',
+        spentLabel: '總支出',
+        paidLabel: '已墊付',
+        pendingTitle: '▎待還款',
+        allSettledText: '已結清',
+        historyTitle: '▎還款紀錄',
+        transferLine: (from, to, amt) => `${from} ➔ ${to}：${amt}`,
+        paidHistoryLine: (from, to, amt, date) => `${date} ${from} -> ${to} ${amt}`,
+        footerTagline: '— ClearBill',
+      },
+      'zh-TW',
+    )
+
+    expect(shareText).toContain('▎公費袋餘額')
+    expect(shareText).toContain('旅遊公費袋｜公費已支出')
+    expect(shareText).toContain('公費剩餘現金')
+
+    const excelBytes = buildProjectExcelBytes(poolProject, poolTxs, settleUp, {
+      sheets: { entries: '明細', summary: '結算' },
+      headers: {
+        date: '日期',
+        time: '時間',
+        type: '類型',
+        category: '分類',
+        note: '備註',
+        originalAmount: '原金額',
+        currency: '幣別',
+        exchangeRate: '匯率',
+        baseAmount: '主幣別金額',
+        baseCurrency: '主幣別',
+        payers: '墊付人',
+        shares: '分攤',
+      },
+      summaryHeaders: {
+        member: '成員',
+        totalExpense: '總支出',
+        totalPaid: '已墊付',
+        netAmount: '淨收支',
+        transferFrom: '付款人',
+        transferTo: '收款人',
+        transferAmount: '金額',
+        projectTotal: '專案總支出',
+        transfersTitle: '待還款',
+        poolSectionTitle: '公費袋餘額',
+        poolPaidLabel: '公費已支出',
+        poolRemainingLabel: '公費剩餘現金',
+      },
+      typeNames: {
+        expense: '消費',
+        refund: '退款',
+        transfer: '還款',
+        income: '收入',
+        card_repayment: '卡費還款',
+      },
+      resolveCategoryLabel: (k) => k,
+    })
+    const decoded = new TextDecoder().decode(excelBytes)
+    expect(decoded).toContain('公費袋餘額')
+    expect(decoded).toContain('旅遊公費袋')
+  })
 })

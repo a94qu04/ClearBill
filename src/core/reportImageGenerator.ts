@@ -9,6 +9,10 @@ export interface LongReportLabels {
   memberCountLabel: string
   categorySectionTitle: string
   memberSectionTitle: string
+  poolSectionTitle?: string
+  poolPaidLabel?: string
+  poolRemainingLabel?: string
+  poolOverdrawnLabel?: string
   spentLabel: string
   paidLabel: string
   shouldReceive: string
@@ -107,15 +111,21 @@ export async function generateProjectReportPngBlob(
         })
     : []
 
+  // 將公費袋虛擬成員與真人成員分區呈現，避免長截圖把公費混進團員餘額
+  const poolIdSet = new Set(project.members.filter((m) => m.isPool).map((m) => m.id))
+  const poolBalances = settleUp.balances.filter((b) => poolIdSet.has(b.memberId))
+  const humanBalances = settleUp.balances.filter((b) => !poolIdSet.has(b.memberId))
+
   // 6 位以上成員自動改為雙欄網格，高度減半且在 LINE 預覽字體更清楚
-  const useTwoColMembers = settleUp.balances.length >= 6
+  const useTwoColMembers = humanBalances.length >= 6
   const memberRowCount = useTwoColMembers
-    ? Math.ceil(settleUp.balances.length / 2)
-    : settleUp.balances.length
+    ? Math.ceil(humanBalances.length / 2)
+    : humanBalances.length
 
   const headerH = 152
   const pieCardH =
     catStats.items.length > 0 ? Math.max(230, 88 + catStats.items.length * 36) : 0
+  const poolCardH = poolBalances.length > 0 ? 74 + poolBalances.length * 72 : 0
   const memberCardH = 74 + memberRowCount * (useTwoColMembers ? 84 : 76)
   const transferCardH =
     settleUp.transfers.length > 0
@@ -129,6 +139,7 @@ export async function generateProjectReportPngBlob(
     headerH +
     gap +
     (pieCardH > 0 ? pieCardH + gap : 0) +
+    (poolCardH > 0 ? poolCardH + gap : 0) +
     memberCardH +
     gap +
     transferCardH +
@@ -300,6 +311,59 @@ export async function generateProjectReportPngBlob(
     y += pieCardH + gap
   }
 
+  // 2.5 公費袋獨立餘額卡片（若有啟用公費袋）
+  if (poolCardH > 0) {
+    drawRoundedRect(ctx, PAD, y, CARD_W, poolCardH, 22)
+    ctx.fillStyle = '#f0fdfa'
+    ctx.fill()
+    ctx.strokeStyle = '#99f6e4'
+    ctx.lineWidth = 1.5
+    ctx.stroke()
+
+    ctx.fillStyle = '#115e59'
+    ctx.font = `700 18px ${fontStack}`
+    ctx.fillText(labels.poolSectionTitle ?? 'Pool Fund', PAD + 24, y + 36)
+
+    let py = y + 58
+    for (const pb of poolBalances) {
+      drawRoundedRect(ctx, PAD + 20, py, CARD_W - 40, 60, 14)
+      ctx.fillStyle = '#ffffff'
+      ctx.fill()
+
+      ctx.fillStyle = '#0f172a'
+      ctx.font = `700 17px ${fontStack}`
+      ctx.fillText(truncateText(ctx, nameOf(pb.memberId), 260), PAD + 36, py + 25)
+
+      ctx.fillStyle = '#64748b'
+      ctx.font = `500 13px ${fontStack}`
+      ctx.fillText(
+        `${labels.poolPaidLabel ?? labels.paidLabel} ${fmt(pb.totalPaid)}`,
+        PAD + 36,
+        py + 47,
+      )
+
+      ctx.textAlign = 'right'
+      ctx.fillStyle = pb.netAmount <= 0 ? '#0f766e' : '#e11d48'
+      ctx.font = `800 19px ${fontStack}`
+      ctx.fillText(fmt(Math.abs(pb.netAmount)), PAD + CARD_W - 34, py + 27)
+
+      ctx.fillStyle = '#64748b'
+      ctx.font = `600 12px ${fontStack}`
+      const poolStatus =
+        pb.netAmount < 0
+          ? (labels.poolRemainingLabel ?? labels.shouldPay)
+          : pb.netAmount > 0
+            ? (labels.poolOverdrawnLabel ?? labels.shouldReceive)
+            : labels.settled
+      ctx.fillText(poolStatus, PAD + CARD_W - 34, py + 47)
+      ctx.textAlign = 'left'
+
+      py += 72
+    }
+
+    y += poolCardH + gap
+  }
+
   // 3. 各成員總支出與淨收支卡片（6 人以上自動雙欄緊湊排版）
   drawRoundedRect(ctx, PAD, y, CARD_W, memberCardH, 22)
   ctx.fillStyle = '#ffffff'
@@ -315,7 +379,7 @@ export async function generateProjectReportPngBlob(
   if (useTwoColMembers) {
     const colGap = 12
     const cellW = (CARD_W - 40 - colGap) / 2
-    settleUp.balances.forEach((bal, idx) => {
+    humanBalances.forEach((bal, idx) => {
       const col = idx % 2
       const row = Math.floor(idx / 2)
       const cx = PAD + 20 + col * (cellW + colGap)
@@ -355,7 +419,7 @@ export async function generateProjectReportPngBlob(
     })
   } else {
     let my = y + 58
-    for (const bal of settleUp.balances) {
+    for (const bal of humanBalances) {
       drawRoundedRect(ctx, PAD + 20, my, CARD_W - 40, 64, 14)
       ctx.fillStyle = '#f8fafc'
       ctx.fill()

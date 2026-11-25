@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Check, ChevronDown, Percent, RotateCcw } from 'lucide-vue-next'
 import {
@@ -105,6 +105,8 @@ const feeBase = ref<number | null>(null)
 const serviceFeeEnabled = ref(false)
 const fxFeeEnabled = ref(false)
 const feePanelExpanded = ref(false)
+const feeAutoClearedNotice = ref(false)
+let feeNoticeTimer: ReturnType<typeof setTimeout> | null = null
 const serviceFeePercentInput = ref<string>(String(savedRates.service))
 const fxFeePercentInput = ref<string>(String(savedRates.fx))
 
@@ -184,11 +186,37 @@ const appliedFeeSummary = computed(() => {
   return parts.join('、')
 })
 
-function resetFeeState() {
+function clearFeeNotice() {
+  feeAutoClearedNotice.value = false
+  if (feeNoticeTimer) {
+    clearTimeout(feeNoticeTimer)
+    feeNoticeTimer = null
+  }
+}
+
+function showFeeAutoClearedNotice() {
+  clearFeeNotice()
+  feeAutoClearedNotice.value = true
+  feeNoticeTimer = setTimeout(() => {
+    feeAutoClearedNotice.value = false
+    feeNoticeTimer = null
+  }, 3200)
+}
+
+function resetFeeState(notifyIfCleared = false) {
+  const hadAppliedFee =
+    feeBase.value !== null && (serviceFeeEnabled.value || fxFeeEnabled.value)
   feeBase.value = null
   serviceFeeEnabled.value = false
   fxFeeEnabled.value = false
+  if (notifyIfCleared && hadAppliedFee) {
+    showFeeAutoClearedNotice()
+  }
 }
+
+onBeforeUnmount(() => {
+  clearFeeNotice()
+})
 
 function recalculateWithCurrentFees() {
   if (feeBase.value === null) return
@@ -239,8 +267,8 @@ watch(
 function handleInput(event: Event) {
   const target = event.target as HTMLInputElement
   const raw = target.value
-  // 手動修改主金額時自動解除加成鎖定，避免原價基準與當前數字脫鉤
-  resetFeeState()
+  // 手動修改主金額時自動解除加成鎖定，若先前已勾選費用則明確提示使用者避免漏算
+  resetFeeState(true)
 
   if (props.enableExpression && hasMathExpression(raw)) {
     const sanitized = raw.replace(/[^\d.,+\-*/()%×÷＋－（）％xX\s]/g, '')
@@ -316,6 +344,7 @@ function ensureFeeBase(): boolean {
 }
 
 function toggleServiceFee() {
+  clearFeeNotice()
   if (serviceFeeEnabled.value) {
     serviceFeeEnabled.value = false
     recalculateWithCurrentFees()
@@ -332,6 +361,7 @@ function toggleServiceFee() {
 }
 
 function toggleFxFee() {
+  clearFeeNotice()
   if (fxFeeEnabled.value) {
     fxFeeEnabled.value = false
     recalculateWithCurrentFees()
@@ -393,20 +423,20 @@ const sizeClasses = computed(() => {
   if (props.size === 'lg') {
     return {
       wrapper: 'rounded-2xl',
-      select: 'w-[72px] py-3 pl-2.5 pr-1 text-xs font-bold',
+      select: 'w-[86px] py-3 pl-2.5 pr-1 text-xs font-bold',
       input: 'px-3.5 py-3 text-xl font-bold',
     }
   }
   if (props.size === 'sm') {
     return {
       wrapper: 'rounded-lg',
-      select: 'w-[62px] py-1.5 pl-2 pr-1 text-[11px] font-bold',
+      select: 'w-[76px] py-1.5 pl-2 pr-1 text-[11px] font-bold',
       input: 'px-2.5 py-1.5 text-sm font-medium',
     }
   }
   return {
     wrapper: 'rounded-xl',
-    select: 'w-[68px] py-2.5 pl-2 pr-1 text-xs font-bold',
+    select: 'w-[82px] py-2.5 pl-2 pr-1 text-xs font-bold',
     input: 'px-3 py-2.5 text-base font-bold',
   }
 })
@@ -569,7 +599,7 @@ const sizeClasses = computed(() => {
               step="any"
               inputmode="decimal"
               :aria-label="t('project.serviceFeeShort')"
-              class="w-9 bg-transparent text-right text-[11px] font-bold tabular-nums text-slate-900 focus:outline-none dark:text-white"
+              class="w-14 bg-transparent text-right text-[11px] font-bold tabular-nums text-slate-900 focus:outline-none dark:text-white sm:w-11"
               @input="handleServiceFeeRateChange"
               @keyup.enter.prevent="!serviceFeeEnabled && toggleServiceFee()"
             />
@@ -619,7 +649,7 @@ const sizeClasses = computed(() => {
               step="any"
               inputmode="decimal"
               :aria-label="t('project.fxFeeShort')"
-              class="w-9 bg-transparent text-right text-[11px] font-bold tabular-nums text-slate-900 focus:outline-none dark:text-white"
+              class="w-14 bg-transparent text-right text-[11px] font-bold tabular-nums text-slate-900 focus:outline-none dark:text-white sm:w-11"
               @input="handleFxFeeRateChange"
               @keyup.enter.prevent="!fxFeeEnabled && toggleFxFee()"
             />
@@ -649,6 +679,13 @@ const sizeClasses = computed(() => {
           <span>{{ t('project.feeCancelShort') }}</span>
         </span>
       </button>
+      <!-- 手動改動主金額自動解除服務費／刷卡費時的輕量提醒 -->
+      <p
+        v-else-if="feeAutoClearedNotice"
+        class="rounded-xl border border-amber-200 bg-amber-50/80 px-3 py-1.5 text-[11px] font-medium text-amber-800 dark:border-amber-800/60 dark:bg-amber-950/40 dark:text-amber-200"
+      >
+        {{ t('project.feeAutoClearedHint') }}
+      </p>
     </div>
   </div>
 </template>

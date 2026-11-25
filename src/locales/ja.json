@@ -44,6 +44,10 @@
     "emptiedToast": "ゴミ箱を空にしました（{count} 件削除）",
     "deletedUndoToast": "記録を削除しました",
     "restoredToast": "記録を復元しました！",
+    "restoredMultiToast": "{count} 件の記録を復元しました！",
+    "deletedProjectsLabel": "削除済みプロジェクト",
+    "projectRestoredToast": "「{name}」（記録 {count} 件）を復元しました！",
+    "permanentDeleteProjectConfirm": "「{name}」とすべての記録を完全に削除しますか？この操作は取り消せません。",
     "permanentlyDeletedToast": "完全に削除しました"
   },
   "backup": {
@@ -125,6 +129,8 @@
   },
   "share": {
     "button": "シェア",
+    "sheetTitle": "共有・書き出し",
+    "textSummaryAction": "テキスト精算を共有・コピー",
     "headerPrefix": "【ClearBill 精算まとめ】",
     "totalSpendLabel": "プロジェクト合計",
     "memberSummaryTitle": "▎メンバー別支出・収支",
@@ -143,16 +149,21 @@
     "failedToast": "シェアに失敗しました。"
   },
   "swipe": {
-    "hintTapExpand": "タップで詳細表示 · 左スワイプ編集／右スワイプ削除",
+    "hintTapExpand": "タップで詳細表示 · 右スワイプ編集／左スワイプ削除",
     "releaseEdit": "離して編集",
     "releaseDelete": "離して削除"
   },
   "search": {
     "placeholder": "メモ・カテゴリ・メンバー・金額・日付を検索...",
+    "filterToggleShort": "絞り込み",
+    "clearFiltersButton": "クリア",
     "allCategories": "すべて",
     "allProjects": "全プロジェクト",
     "allMembers": "全メンバー",
     "memberShareTotal": "負担小計 {amount}",
+    "memberPaidTotal": "立替小計 {amount}",
+    "filterRefundsOnly": "返金のみ",
+    "filterWithPhotosOnly": "写真あり",
     "addCategoryInline": "カテゴリ追加",
     "newCategoryPlaceholder": "新しいカテゴリ名...",
     "noMatches": "条件に一致する記録がありません。",
@@ -168,8 +179,8 @@
     "zoomIn": "拡大表示",
     "zoomOut": "等倍に戻す",
     "download": "画像を保存",
-    "tapToZoomHint": "画像タップで拡大 · 左右スワイプで切替 · 外側タップで閉じる",
-    "zoomedHint": "ドラッグで移動 · 画像タップで等倍に戻る",
+    "tapToZoomHint": "タップ・ピンチで拡大 · 左右スワイプで切替 · 外側タップで閉じる",
+    "zoomedHint": "ピンチ拡大・ドラッグ移動可 · 画像タップで等倍に戻る",
     "uploadError": "画像の読み込みに失敗しました。"
   },
   "home": {
@@ -181,6 +192,7 @@
     "moveProjectDown": "下へ移動",
     "createFirstProject": "最初のプロジェクトを作成",
     "viewAllProjects": "一覧 ({count})",
+    "moreProjectsHint": "他に進行中のプロジェクトが {count} 件あります（すべて表示）",
     "allProjectsModalTitle": "すべてのプロジェクト",
     "addProjectShort": "新規",
     "recentTransactions": "最近の記録",
@@ -197,6 +209,7 @@
   },
   "daily": {
     "typeIncome": "収入",
+    "typeCardRepayment": "カード返済",
     "amountLabel": "金額",
     "notePlaceholder": "例：ランチ、カフェ（任意）",
     "useNowTime": "現在",
@@ -236,6 +249,7 @@
     "feePanelToggle": "サービス料・カード費 (%)",
     "feeAppliedTapToCancel": "元額 {base} · {summary} 適用中",
     "feeCancelShort": "タップで取消",
+    "feeAutoClearedHint": "金額を手動変更したため、サービス料・カード費の加算は解除されました。",
     "lastEditedByLabel": "最終編集：{name}",
     "expressionIncomplete": "計算式が未完了です",
     "daySubtotal": "日計 {amount}",
@@ -249,7 +263,7 @@
     "unarchivedToast": "「{name}」を進行中へ戻しました",
     "copyMembersFromProject": "既存プロジェクトからメンバーをコピー：",
     "membersCopiedToast": "「{name}」から {count} 名のメンバーを反映しました！",
-    "changeCurrencyConfirm": "このプロジェクトには既に {count} 件の記録があります。記帳メイン通貨（{from} ➔ {to}）を変更しても過去記録のレートは自動換算されません。変更しますか？",
+    "changeCurrencyConfirm": "このプロジェクトには既に {count} 件の記録があります。記帳メイン通貨（{from} ➔ {to}）を変更すると、参考レート（1 {from} = {rate} {to}）で過去記録の換算レートを自動再計算します（元金額はそのまま保持）。変更しますか？",
     "convertedPreview": "約 {amount}",
     "saveExpenseButton": "支出を保存",
     "saveRefundButton": "返金・免税を保存",
@@ -257,6 +271,8 @@
     "savedAndContinueToast": "保存しました！続けて次を入力できます",
     "discardChangesTitle": "未保存の変更を破棄しますか？",
     "discardChangesMessage": "入力中の内容が保存されていません。このまま閉じますか？",
+    "discardCreateTitle": "プロジェクト作成を中止しますか？",
+    "discardCreateMessage": "入力中のプロジェクト名・メンバー・背景設定は保存されません。ホームに戻りますか？",
     "discardButton": "破棄して閉じる",
     "updateExpenseButton": "変更を保存",
     "noProjectTransactions": "まだ支出がありません。右下の「+」から追加しましょう！",
@@ -292,7 +308,9 @@
     "quickAddCurrencyPlaceholder": "3文字コード（例：THB、SGD、VND）",
     "duplicateWarnTitle": "重複記録の確認",
     "duplicateWarnMessage": "同じ日付・同額の記録「{note}」（{amount}）が既にあります。このまま保存しますか？",
-    "duplicateWarnConfirm": "そのまま保存"
+    "duplicateWarnConfirm": "そのまま保存",
+    "adjustShort": "調整",
+    "todayShort": "今日"
   },
   "profile": {
     "sectionTitle": "マイプロフィール・アイコン",
@@ -325,10 +343,13 @@
     "toLabel": "受取人",
     "paidAmountLabel": "支払済金額",
     "remainingHint": "未精算額：{amount}（一部または全額を入力）",
+    "applyConvertedAmountButton": "換算額を適用",
     "savePayment": "返済を記録",
     "updatePayment": "変更を保存",
     "paymentRecordedToast": "返済を記録しました！",
     "historyTitle": "返済履歴",
+    "deletePaymentTitle": "返済記録を削除",
+    "deletePaymentConfirm": "「{from} ➔ {to}（{amount}）」の返済記録を削除しますか？削除後もゴミ箱から復元できます。",
     "noHistory": "まだ返済記録がありません。",
     "viewMemberDetails": "内訳を見る",
     "hideMemberDetails": "内訳を閉じる",
@@ -533,10 +554,12 @@
     "appliedLiveToast": "{code} をリアルタイムレートに戻しました",
     "inlineLiveRef": "参考レート {rate}（{time} 取得）・手動入力可",
     "settlementCurrencyLabel": "精算通貨",
+    "settingsToggleShort": "レート設定",
     "settlementCurrencyNote": "記帳通貨：{base}",
     "settlementCurrencyChangedToast": "精算通貨を {currency} に切り替えました",
     "updatedAtShort": "{time} 更新",
     "modePerTx": "記録時レート",
+    "crossBaseBridgeRate": "通貨間基準 1 {base} = {rate} {target}",
     "perTxPreservedHint": "各記録の登録時レートはそのまま保持されます。精算レートを切り替えても元のレートは上書きされません。",
     "baseAmountTag": "メイン通貨 {amount}",
     "modeLive": "最新レート",
@@ -566,9 +589,11 @@
     "exchangeRateRequired": "0より大きいレートを入力してください",
     "projectNameRequired": "プロジェクト名を入力してください",
     "membersRequired": "メンバーを2名以上入力してください",
+    "duplicateMemberName": "メンバー「{name}」は既に登録されています。別の名前を入力してください",
     "sameMemberSettlement": "支払人と受取人は別のメンバーを指定してください"
   },
   "pool": {
+    "badgeLabel": "共通財布",
     "cardTitle": "共通財布（プール金）残高",
     "collectButtonShort": "集金",
     "paidOutLabel": "共通財布から支出",
@@ -587,6 +612,11 @@
     "totalPreviewLabel": "{count} 名分・集金合計",
     "confirmButton": "一括で集金を記録",
     "errNoContributors": "集金対象のメンバーを1名以上選択してください",
-    "collectedToast": "{count} 名分の共通費集金を記録しました！"
+    "collectedToast": "{count} 名分の共通費集金を記録しました！",
+    "undoLatestBatchShort": "直近を取消 ({count})",
+    "undoBatchTitle": "直近の一括集金を取り消す",
+    "undoBatchConfirm": "直近の一括集金 {count} 件（1人 {amount}、合計 {total}）をまとめて取り消しますか？削除後もトーストやゴミ箱から復元できます。",
+    "undoBatchConfirmButton": "まとめて取消",
+    "batchUndoneToast": "一括集金 {count} 件を取り消しました"
   }
 }

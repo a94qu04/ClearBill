@@ -31,6 +31,9 @@ export interface ExcelExportLabels {
     transferAmount: string
     projectTotal: string
     transfersTitle: string
+    poolSectionTitle?: string
+    poolPaidLabel?: string
+    poolRemainingLabel?: string
   }
   typeNames: {
     expense: string
@@ -314,7 +317,11 @@ export function buildProjectExcelBytes(
     })
   }
 
-  // Sheet 2：成員結算與轉帳建議
+  // Sheet 2：成員結算與轉帳建議（公費袋獨立分區，不混入真人成員表）
+  const poolIdSet = new Set(project.members.filter((m) => m.isPool).map((m) => m.id))
+  const poolBalances = settleUp.balances.filter((b) => poolIdSet.has(b.memberId))
+  const humanBalances = settleUp.balances.filter((b) => !poolIdSet.has(b.memberId))
+
   const summaryRows: Array<{ cells: CellValue[]; isHeader?: boolean }> = [
     {
       isHeader: true,
@@ -326,6 +333,28 @@ export function buildProjectExcelBytes(
       ],
     },
     { cells: [] },
+    ...(poolBalances.length > 0
+      ? [
+          {
+            isHeader: true,
+            cells: [
+              labels.summaryHeaders.poolSectionTitle ?? 'Pool Fund',
+              labels.summaryHeaders.poolPaidLabel ?? labels.summaryHeaders.totalPaid,
+              labels.summaryHeaders.poolRemainingLabel ?? labels.summaryHeaders.netAmount,
+              targetCurrency,
+            ],
+          },
+          ...poolBalances.map((pb) => ({
+            cells: [
+              nameOf(pb.memberId),
+              pb.totalPaid,
+              -pb.netAmount,
+              targetCurrency,
+            ],
+          })),
+          { cells: [] },
+        ]
+      : []),
     {
       isHeader: true,
       cells: [
@@ -335,7 +364,7 @@ export function buildProjectExcelBytes(
         labels.summaryHeaders.netAmount,
       ],
     },
-    ...settleUp.balances.map((bal) => ({
+    ...humanBalances.map((bal) => ({
       cells: [
         nameOf(bal.memberId),
         bal.totalExpense,

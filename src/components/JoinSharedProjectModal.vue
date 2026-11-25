@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { Check, Loader2, UserPlus, Users, X } from 'lucide-vue-next'
 import type { Project, ShareInviteParams, Transaction } from '@/schemas/ledgerSchema'
 import { useLedgerStore } from '@/stores/ledgerStore'
+import { useModalLayer } from '@/composables/useModalLayer'
 import MemberAvatar from '@/components/MemberAvatar.vue'
 import {
   FirestoreSyncError,
@@ -26,6 +27,14 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const store = useLedgerStore()
 
+const dialogRef = ref<HTMLElement | null>(null)
+
+useModalLayer(
+  () => Boolean(props.invite),
+  () => emit('close'),
+  dialogRef,
+)
+
 const isLoading = ref(false)
 const isSubmitting = ref(false)
 const errorText = ref('')
@@ -41,6 +50,12 @@ const applyMyProfileOnJoin = ref(false)
 const hasCustomUserProfile = computed(() =>
   Boolean(store.userProfile.displayName || store.userProfile.avatarImage),
 )
+
+const remoteHumanMembers = computed(() => {
+  if (!remoteProject.value) return []
+  const humans = remoteProject.value.members.filter((m) => !m.isPool)
+  return humans.length > 0 ? humans : remoteProject.value.members
+})
 
 function resolveSyncError(err: unknown): string {
   if (err instanceof FirestoreSyncError) {
@@ -74,11 +89,13 @@ async function loadInvitePreview() {
     )
     remoteProject.value = res.project
     remoteTransactions.value = res.transactions
+    const humans = res.project.members.filter((m) => !m.isPool)
+    const claimable = humans.length > 0 ? humans : res.project.members
     const myName = store.userProfile.displayName.trim().toLowerCase()
     const matched = myName
-      ? res.project.members.find((m) => m.name.trim().toLowerCase() === myName)
+      ? claimable.find((m) => m.name.trim().toLowerCase() === myName)
       : undefined
-    selectedMemberId.value = matched?.id ?? res.project.members[0]?.id ?? ''
+    selectedMemberId.value = matched?.id ?? claimable[0]?.id ?? ''
     // 僅在預選成員與使用者個人名稱一致時才預設勾選套用頭像，避免不小心覆寫別人名字
     applyMyProfileOnJoin.value = Boolean(matched && hasCustomUserProfile.value)
   } catch (err) {
@@ -115,6 +132,18 @@ async function handleConfirmJoin() {
     errorText.value = t('realtime.joinSelectMemberError')
     return
   }
+  if (useNewMember) {
+    const newKey = customNewMemberName.value.trim().toLowerCase()
+    const duplicated = remoteProject.value.members.some(
+      (m) => m.name.trim().toLowerCase() === newKey,
+    )
+    if (duplicated) {
+      errorText.value = t('validation.duplicateMemberName', {
+        name: customNewMemberName.value.trim(),
+      })
+      return
+    }
+  }
 
   isSubmitting.value = true
   errorText.value = ''
@@ -142,6 +171,10 @@ async function handleConfirmJoin() {
   <Teleport to="body">
     <div
       v-if="invite"
+      ref="dialogRef"
+      role="dialog"
+      aria-modal="true"
+      :aria-label="t('realtime.joinModalTitle')"
       class="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/60 backdrop-blur-sm sm:items-center sm:p-4"
       @click.self="emit('close')"
     >
@@ -221,7 +254,7 @@ async function handleConfirmJoin() {
         <div v-else-if="remoteProject" class="space-y-4">
           <div class="rounded-2xl bg-slate-900 px-4 py-3.5 text-white dark:border dark:border-slate-800">
             <div class="text-xs font-semibold text-emerald-400">
-              {{ t('project.memberCount', { count: remoteProject.members.length }) }}
+              {{ t('project.memberCount', { count: remoteHumanMembers.length }) }}
               · {{ remoteProject.baseCurrency }}
               · {{ t('stats.entryCount', { count: remoteTransactions.filter((tx) => !tx.isDeleted).length }) }}
             </div>
@@ -237,7 +270,7 @@ async function handleConfirmJoin() {
             </p>
             <div class="flex flex-wrap gap-2">
               <button
-                v-for="m in remoteProject.members"
+                v-for="m in remoteHumanMembers"
                 :key="m.id"
                 type="button"
                 class="inline-flex items-center gap-1.5 rounded-full py-1 pl-1.5 pr-3 text-xs font-bold transition"

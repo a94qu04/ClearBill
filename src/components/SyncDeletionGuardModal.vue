@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { AlertTriangle, ShieldAlert } from 'lucide-vue-next'
 import { useLedgerStore } from '@/stores/ledgerStore'
+import { useModalLayer } from '@/composables/useModalLayer'
 import { formatCurrencyAmount } from '@/core/currency'
 
 const emit = defineEmits<{
@@ -14,6 +15,9 @@ const store = useLedgerStore()
 
 const isHandling = ref(false)
 const guard = computed(() => store.pendingDeletionGuard)
+const dialogRef = ref<HTMLElement | null>(null)
+
+useModalLayer(() => Boolean(guard.value), undefined, dialogRef)
 
 const ratioPercent = computed(() => {
   if (!guard.value) return 0
@@ -51,6 +55,10 @@ async function handleApproveDeletes() {
   <Teleport to="body">
     <div
       v-if="guard"
+      ref="dialogRef"
+      role="alertdialog"
+      aria-modal="true"
+      :aria-label="t('realtime.guardTitle')"
       class="fixed inset-0 z-[70] flex items-end justify-center bg-slate-950/70 backdrop-blur-sm sm:items-center sm:p-4"
     >
       <div

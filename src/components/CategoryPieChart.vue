@@ -128,7 +128,7 @@ function fmt(amount: number, currency = props.baseCurrency): string {
 
 <template>
   <section
-    class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900"
+    class="rounded-2xl bg-white p-4 shadow-sm dark:bg-[#1C1C1E]"
   >
     <div class="mb-3 flex items-center justify-between gap-2">
       <div class="flex items-center gap-1.5 text-xs font-bold text-slate-700 dark:text-slate-200">
@@ -229,20 +229,19 @@ function fmt(amount: number, currency = props.baseCurrency): string {
         </div>
       </div>
 
-      <!-- 右側分類佔比明細清單（高對比斑馬紋與明確色條） -->
-      <ul class="w-full min-w-0 flex-1 divide-y divide-slate-100 overflow-hidden rounded-xl border border-slate-200/80 dark:divide-slate-800 dark:border-slate-800">
+      <!-- 右側分類佔比明細清單（Apple 純白分組清單，無斑馬紋） -->
+      <ul class="w-full min-w-0 flex-1 divide-y divide-slate-100 dark:divide-white/10">
         <li
           v-for="slice in slices"
           :key="slice.categoryKey"
-          class="odd:bg-white even:bg-slate-50/80 dark:odd:bg-slate-900 dark:even:bg-slate-800/45"
         >
           <button
             type="button"
-            class="w-full px-2.5 py-2 text-left transition"
+            class="w-full rounded-xl px-2 py-2 text-left transition"
             :class="
               activeKey === slice.categoryKey
-                ? 'bg-indigo-50/80 ring-1 ring-inset ring-indigo-200 dark:bg-indigo-950/40 dark:ring-indigo-800'
-                : 'hover:bg-slate-100/70 dark:hover:bg-slate-800/70'
+                ? 'bg-emerald-500/10'
+                : 'hover:bg-slate-50 dark:hover:bg-[#2C2C2E]'
             "
             @click="toggleFocus(slice.categoryKey)"
             @mouseenter="activeKey = slice.categoryKey"

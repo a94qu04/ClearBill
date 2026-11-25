@@ -10,6 +10,7 @@ import {
   Pencil,
   Trash2,
   UserPlus,
+  Wallet,
   X,
 } from 'lucide-vue-next'
 import MemberAvatar from '@/components/MemberAvatar.vue'
@@ -62,16 +63,50 @@ const editingMemberColor = ref<string>(AVATAR_PALETTE[0])
 const editingMemberAvatarImage = ref<string | undefined>(undefined)
 const editingMemberPaymentInfo = ref('')
 
+function captureSettingsDraft(): string {
+  return JSON.stringify({
+    name: editProjectName.value,
+    baseCurrency: editProjectCurrency.value,
+    defaultSplitMode: editProjectDefaultSplitMode.value,
+    defaultPayerId: editProjectDefaultPayerId.value,
+    cardColor: editProjectCardColor.value ?? null,
+    cardCoverImage: editProjectCardCoverImage.value ?? null,
+  })
+}
+
+let syncedProjectId = props.project.id
+let lastSyncedDraftSnapshot = captureSettingsDraft()
+
+function hydrateSettingsFromProject(proj: Project) {
+  editProjectName.value = proj.name
+  editProjectCurrency.value = proj.baseCurrency
+  editProjectDefaultSplitMode.value = proj.defaultSplitMode
+  editProjectDefaultPayerId.value =
+    proj.defaultPayerId || proj.members[0]?.id || ''
+  editProjectCardColor.value = proj.cardColor
+  editProjectCardCoverImage.value = proj.cardCoverImage
+  syncedProjectId = proj.id
+  lastSyncedDraftSnapshot = captureSettingsDraft()
+}
+
+// 多人協作推送遠端更新時，僅於切換專案或本機表單尚未修改（非 dirty）時才同步覆寫，避免輸入到一半被洗白
 watch(
   () => props.project,
   (proj) => {
-    editProjectName.value = proj.name
-    editProjectCurrency.value = proj.baseCurrency
-    editProjectDefaultSplitMode.value = proj.defaultSplitMode
-    editProjectDefaultPayerId.value =
-      proj.defaultPayerId || proj.members[0]?.id || ''
-    editProjectCardColor.value = proj.cardColor
-    editProjectCardCoverImage.value = proj.cardCoverImage
+    const switchedProject = proj.id !== syncedProjectId
+    const isFormClean = captureSettingsDraft() === lastSyncedDraftSnapshot
+    if (switchedProject || isFormClean) {
+      hydrateSettingsFromProject(proj)
+      return
+    }
+    // 使用者正在編輯設定時保留草稿，僅在預設墊付人已被遠端刪除時安全回退
+    if (
+      editProjectDefaultPayerId.value &&
+      !proj.members.some((m) => m.id === editProjectDefaultPayerId.value)
+    ) {
+      editProjectDefaultPayerId.value =
+        proj.defaultPayerId || proj.members[0]?.id || ''
+    }
   },
   { deep: true },
 )
@@ -116,12 +151,17 @@ async function handleSaveProjectSettings() {
   const existingTxCount = store.getProjectTransactionCount(props.project.id)
 
   if (currencyChanged && existingTxCount > 0) {
+    const rate = store.getEffectiveExchangeRate(
+      props.project.baseCurrency,
+      editProjectCurrency.value,
+    )
     const confirmed = await askConfirm({
       title: t('project.currencyLabel'),
       message: t('project.changeCurrencyConfirm', {
         from: props.project.baseCurrency,
         to: editProjectCurrency.value,
         count: existingTxCount,
+        rate,
       }),
       tone: 'primary',
     })
@@ -132,7 +172,7 @@ async function handleSaveProjectSettings() {
   }
 
   try {
-    await store.updateProject(props.project.id, {
+    const saved = await store.updateProject(props.project.id, {
       name: editProjectName.value,
       baseCurrency: editProjectCurrency.value,
       defaultSplitMode: editProjectDefaultSplitMode.value,
@@ -140,6 +180,9 @@ async function handleSaveProjectSettings() {
       cardColor: editProjectCardColor.value ?? null,
       cardCoverImage: editProjectCardCoverImage.value ?? null,
     })
+    if (saved) {
+      hydrateSettingsFromProject(saved)
+    }
     emit('toast', t('project.projectUpdatedToast'))
   } catch {
     emit('toast', t('home.saveFailed'))
@@ -149,6 +192,10 @@ async function handleSaveProjectSettings() {
 async function handleAddMember() {
   const name = newMemberName.value.trim()
   if (!name) return
+  if (store.hasDuplicateMemberName(props.project.id, name)) {
+    emit('toast', t('validation.duplicateMemberName', { name }))
+    return
+  }
   try {
     const updated = await store.addProjectMember(props.project.id, name)
     if (updated) {
@@ -201,12 +248,20 @@ async function handleSaveMemberEdit() {
   if (!editingMemberId.value) return
   const trimmed = editingMemberName.value.trim()
   if (!trimmed) return
-  await store.updateProjectMember(props.project.id, editingMemberId.value, {
+  if (store.hasDuplicateMemberName(props.project.id, trimmed, editingMemberId.value)) {
+    emit('toast', t('validation.duplicateMemberName', { name: trimmed }))
+    return
+  }
+  const updated = await store.updateProjectMember(props.project.id, editingMemberId.value, {
     name: trimmed,
     avatarColor: editingMemberColor.value,
     avatarImage: editingMemberAvatarImage.value ?? null,
     paymentInfo: editingMemberPaymentInfo.value.trim() || null,
   })
+  if (!updated) {
+    emit('toast', t('home.saveFailed'))
+    return
+  }
   editingMemberId.value = null
   emit('toast', t('project.memberUpdatedToast'))
 }
@@ -267,13 +322,13 @@ function handleExportProjectJson() {
   <div class="space-y-4 lg:grid lg:grid-cols-12 lg:items-start lg:gap-5 lg:space-y-0">
     <!-- 成員管理（桌機左欄） -->
     <section
-      class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900 lg:col-span-5"
+      class="rounded-2xl bg-white p-4 shadow-sm dark:bg-[#1C1C1E] lg:col-span-5"
     >
       <h3 class="mb-3 text-xs font-bold text-slate-700 dark:text-slate-200">
         {{ t('project.membersManageTitle') }}
       </h3>
 
-      <ul class="divide-y divide-slate-100 dark:divide-slate-800">
+      <ul class="divide-y divide-slate-100 dark:divide-white/10">
         <li
           v-for="member in project.members"
           :key="member.id"
@@ -376,15 +431,30 @@ function handleExportProjectJson() {
 
           <div v-else class="flex items-center justify-between gap-2">
             <div class="flex min-w-0 items-center gap-2.5">
+              <span
+                v-if="member.isPool"
+                class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-teal-700 text-white"
+              >
+                <Wallet class="h-4 w-4" />
+              </span>
               <MemberAvatar
+                v-else
                 :name="member.name"
                 :color="member.avatarColor"
                 :image="member.avatarImage"
                 size="md"
               />
               <div class="min-w-0">
-                <div class="truncate text-sm font-medium text-slate-800 dark:text-slate-100">
-                  {{ member.name }}
+                <div class="flex items-center gap-1.5">
+                  <span class="truncate text-sm font-medium text-slate-800 dark:text-slate-100">
+                    {{ member.name }}
+                  </span>
+                  <span
+                    v-if="member.isPool"
+                    class="shrink-0 rounded-full bg-teal-100 px-1.5 py-0.5 text-[9px] font-bold text-teal-800 dark:bg-teal-950/70 dark:text-teal-300"
+                  >
+                    {{ t('pool.badgeLabel') }}
+                  </span>
                 </div>
                 <div
                   v-if="member.paymentInfo"
@@ -440,7 +510,7 @@ function handleExportProjectJson() {
     <div class="space-y-4 lg:col-span-7">
     <!-- 專案基本設定 -->
     <section
-      class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900"
+      class="rounded-2xl bg-white p-4 shadow-sm dark:bg-[#1C1C1E]"
     >
       <h3 class="mb-3 text-xs font-bold text-slate-700 dark:text-slate-200">
         {{ t('project.projectSettingsTitle') }}
@@ -617,7 +687,7 @@ function handleExportProjectJson() {
 
     <!-- 單一專案本地 JSON 備份（報表 Excel 與長截圖統一收斂於「結算」分頁） -->
     <section
-      class="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900"
+      class="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-white p-4 shadow-sm dark:bg-[#1C1C1E]"
     >
       <div class="min-w-0 flex-1">
         <h3 class="text-xs font-bold text-slate-700 dark:text-slate-200">

@@ -44,6 +44,10 @@
     "emptiedToast": "已清空回收桶（共清除 {count} 筆）",
     "deletedUndoToast": "已刪除帳目",
     "restoredToast": "已復原該筆帳目！",
+    "restoredMultiToast": "已復原 {count} 筆帳目！",
+    "deletedProjectsLabel": "已刪除專案",
+    "projectRestoredToast": "已復原「{name}」（含 {count} 筆帳目）！",
+    "permanentDeleteProjectConfirm": "確定要永久刪除「{name}」及其所有紀錄嗎？此操作無法復原。",
     "permanentlyDeletedToast": "已永久刪除"
   },
   "backup": {
@@ -125,6 +129,8 @@
   },
   "share": {
     "button": "一鍵分享",
+    "sheetTitle": "分享與匯出報表",
+    "textSummaryAction": "分享／複製文字結算",
     "headerPrefix": "【ClearBill 清帳結算】",
     "totalSpendLabel": "專案總支出",
     "memberSummaryTitle": "▎各成員總支出與淨收支",
@@ -143,16 +149,21 @@
     "failedToast": "分享失敗，請重試。"
   },
   "swipe": {
-    "hintTapExpand": "點帳目展開詳情 · 左滑修改／右滑刪除",
+    "hintTapExpand": "點帳目展開詳情 · 右滑修改／左滑刪除",
     "releaseEdit": "放開立即修改",
     "releaseDelete": "放開立即刪除"
   },
   "search": {
     "placeholder": "搜尋備註、分類、成員、金額或日期...",
+    "filterToggleShort": "篩選",
+    "clearFiltersButton": "清除",
     "allCategories": "全部類別",
     "allProjects": "全部專案",
     "allMembers": "全部成員",
     "memberShareTotal": "分攤小計 {amount}",
+    "memberPaidTotal": "墊付小計 {amount}",
+    "filterRefundsOnly": "僅退款",
+    "filterWithPhotosOnly": "有收據照",
     "addCategoryInline": "新增類別",
     "newCategoryPlaceholder": "新類別名稱...",
     "noMatches": "找不到符合篩選條件的帳目。",
@@ -168,8 +179,8 @@
     "zoomIn": "放大檢視",
     "zoomOut": "還原大小",
     "download": "下載原圖",
-    "tapToZoomHint": "點擊圖片放大 · 左右滑切換 · 點圖片外關閉",
-    "zoomedHint": "可拖曳移動檢視 · 點擊圖片還原",
+    "tapToZoomHint": "點擊或雙指縮放 · 左右滑切換 · 點圖片外關閉",
+    "zoomedHint": "可雙指縮放或拖曳移動 · 點擊圖片還原",
     "uploadError": "圖片讀取失敗，請重試。"
   },
   "home": {
@@ -181,6 +192,7 @@
     "moveProjectDown": "下移專案",
     "createFirstProject": "建立第一個分帳專案",
     "viewAllProjects": "全部 ({count})",
+    "moreProjectsHint": "還有 {count} 個進行中專案，點此查看全部",
     "allProjectsModalTitle": "所有分帳專案",
     "addProjectShort": "新專案",
     "recentTransactions": "近期帳目",
@@ -197,6 +209,7 @@
   },
   "daily": {
     "typeIncome": "收入",
+    "typeCardRepayment": "卡費還款",
     "amountLabel": "金額",
     "notePlaceholder": "例如：午餐、星巴克（選填）",
     "useNowTime": "現在",
@@ -236,6 +249,7 @@
     "feePanelToggle": "服務費 / 刷卡費 (%)",
     "feeAppliedTapToCancel": "原價 {base} · 已套用 {summary}",
     "feeCancelShort": "點此取消",
+    "feeAutoClearedHint": "已手動修改金額，原先勾選的服務費／刷卡費加成已取消。",
     "lastEditedByLabel": "最後編輯：{name}",
     "expressionIncomplete": "算式尚未完成",
     "daySubtotal": "當日小計 {amount}",
@@ -249,7 +263,7 @@
     "unarchivedToast": "已還原「{name}」至進行中清單",
     "copyMembersFromProject": "從既有專案快速帶入成員：",
     "membersCopiedToast": "已從「{name}」帶入 {count} 位成員！",
-    "changeCurrencyConfirm": "此專案已有 {count} 筆紀錄。變更記帳主幣別（{from} ➔ {to}）不會自動重新換算舊紀錄的匯率，確定仍要變更嗎？",
+    "changeCurrencyConfirm": "此專案已有 {count} 筆紀錄。變更記帳主幣別（{from} ➔ {to}）將依參考匯率（1 {from} = {rate} {to}）自動重新換算既有紀錄的折算匯率，並完整保留原幣金額。確定要變更嗎？",
     "convertedPreview": "約 {amount}",
     "saveExpenseButton": "儲存消費",
     "saveRefundButton": "儲存退款／退稅",
@@ -257,6 +271,8 @@
     "savedAndContinueToast": "已儲存！請繼續記下一筆",
     "discardChangesTitle": "放棄未儲存的內容？",
     "discardChangesMessage": "你剛輸入的帳目內容尚未儲存，確定要直接關閉嗎？",
+    "discardCreateTitle": "放棄建立新專案？",
+    "discardCreateMessage": "你剛填寫的專案名稱、成員或封面尚未建立，確定要返回首頁嗎？",
     "discardButton": "放棄關閉",
     "updateExpenseButton": "儲存修改",
     "noProjectTransactions": "尚無消費紀錄，點擊右下角「+」記下第一筆！",
@@ -292,7 +308,9 @@
     "quickAddCurrencyPlaceholder": "輸入 3 碼幣別（如 THB、SGD、VND）",
     "duplicateWarnTitle": "偵測到疑似重複帳目",
     "duplicateWarnMessage": "今天已有金額相同的紀錄「{note}」（{amount}），確定要再新增一筆嗎？",
-    "duplicateWarnConfirm": "仍要儲存"
+    "duplicateWarnConfirm": "仍要儲存",
+    "adjustShort": "調整",
+    "todayShort": "今天"
   },
   "profile": {
     "sectionTitle": "我的成員名稱與大頭貼",
@@ -325,10 +343,13 @@
     "toLabel": "收款人",
     "paidAmountLabel": "已付金額",
     "remainingHint": "目前待付金額：{amount}，可輸入部分或全額。",
+    "applyConvertedAmountButton": "套用折算額",
     "savePayment": "確認記錄還款",
     "updatePayment": "儲存還款修改",
     "paymentRecordedToast": "已記錄還款！",
     "historyTitle": "已記錄之還款明細",
+    "deletePaymentTitle": "刪除還款紀錄",
+    "deletePaymentConfirm": "確定要刪除「{from} ➔ {to}（{amount}）」這筆還款紀錄嗎？刪除後可於回收桶復原。",
     "noHistory": "尚無還款紀錄。",
     "viewMemberDetails": "查看對帳明細",
     "hideMemberDetails": "收合明細",
@@ -533,10 +554,12 @@
     "appliedLiveToast": "已切回套用 {code} 即時匯率",
     "inlineLiveRef": "即時參考 {rate}（{time} 更新）· 可直接自行輸入覆寫",
     "settlementCurrencyLabel": "結帳幣別",
+    "settingsToggleShort": "匯率設定",
     "settlementCurrencyNote": "記帳主幣別：{base}",
     "settlementCurrencyChangedToast": "已切換結帳幣別為 {currency}",
     "updatedAtShort": "{time} 更新",
     "modePerTx": "各筆原匯率",
+    "crossBaseBridgeRate": "跨幣別基準 1 {base} = {rate} {target}",
     "perTxPreservedHint": "每筆交易記帳時的原始匯率皆完整保留；切換即時或自訂結算匯率不會覆寫原資料。",
     "baseAmountTag": "主幣別 {amount}",
     "modeLive": "即時匯率",
@@ -566,9 +589,11 @@
     "exchangeRateRequired": "請輸入大於 0 的有效匯率",
     "projectNameRequired": "請輸入專案名稱",
     "membersRequired": "請至少輸入 2 位成員",
+    "duplicateMemberName": "成員名稱「{name}」已存在，請使用不重複的名稱",
     "sameMemberSettlement": "付款人與收款人不可為同一人"
   },
   "pool": {
+    "badgeLabel": "公費袋",
     "cardTitle": "公費袋（公積金）餘額",
     "collectButtonShort": "收公費",
     "paidOutLabel": "公費已支出",
@@ -587,6 +612,11 @@
     "totalPreviewLabel": "本次共收 {count} 人，預計入袋",
     "confirmButton": "確認批次記錄公費",
     "errNoContributors": "請至少選擇一位繳交公費的成員",
-    "collectedToast": "已完成 {count} 位成員的公費收款紀錄！"
+    "collectedToast": "已完成 {count} 位成員的公費收款紀錄！",
+    "undoLatestBatchShort": "撤銷最近 ({count})",
+    "undoBatchTitle": "撤銷最近一次批次收公費",
+    "undoBatchConfirm": "確定要一次撤銷最近一批共 {count} 筆公費收款（每人 {amount}，合計 {total}）嗎？刪除後仍可從提示或回收桶一鍵復原。",
+    "undoBatchConfirmButton": "整批撤銷",
+    "batchUndoneToast": "已撤銷該批 {count} 筆公費收款紀錄"
   }
 }

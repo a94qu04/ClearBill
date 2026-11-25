@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { Check, Wallet, X } from 'lucide-vue-next'
 import type { Project } from '@/schemas/ledgerSchema'
 import { useLedgerStore } from '@/stores/ledgerStore'
+import { useModalLayer } from '@/composables/useModalLayer'
 import { formatCurrencyAmount } from '@/core/currency'
 import { getTodayIso } from '@/core/ledgerHelpers'
 import CurrencyAmountInput from '@/components/CurrencyAmountInput.vue'
@@ -23,6 +24,14 @@ const emit = defineEmits<{
 
 const { t, locale } = useI18n()
 const store = useLedgerStore()
+
+const dialogRef = ref<HTMLElement | null>(null)
+
+useModalLayer(
+  () => Boolean(props.open && props.project),
+  () => emit('close'),
+  dialogRef,
+)
 
 const collectorMode = ref<'pool' | 'member'>('pool')
 const customPoolName = ref('')
@@ -195,6 +204,10 @@ async function handleSubmit() {
   <Teleport to="body">
     <div
       v-if="open && project"
+      ref="dialogRef"
+      role="dialog"
+      aria-modal="true"
+      :aria-label="t('pool.modalTitle')"
       class="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/50 backdrop-blur-sm sm:items-center sm:p-4"
       @click.self="emit('close')"
     >
