@@ -38,6 +38,7 @@ import type {
 } from '@/schemas/ledgerSchema'
 import AllProjectsModal from '@/components/AllProjectsModal.vue'
 import JoinSharedProjectModal from '@/components/JoinSharedProjectModal.vue'
+import MemberAvatar from '@/components/MemberAvatar.vue'
 import PhotoLightboxModal from '@/components/PhotoLightboxModal.vue'
 import ProjectExpenseModal from '@/components/ProjectExpenseModal.vue'
 import ProjectSettleTab from '@/components/ProjectSettleTab.vue'
@@ -686,14 +687,10 @@ onBeforeUnmount(() => {
             type="button"
             :aria-label="t('settings.title')"
             :title="t('settings.title')"
-            class="relative inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-600 transition hover:bg-slate-100 hover:text-slate-900 active:scale-95 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white"
+            class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-600 transition hover:bg-slate-100 hover:text-slate-900 active:scale-95 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white"
             @click="openSettingsModal('general')"
           >
             <Settings class="h-3.5 w-3.5" />
-            <span
-              v-if="store.deletedTransactions.length > 0"
-              class="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-rose-500 ring-2 ring-white dark:ring-slate-950"
-            />
           </button>
         </div>
       </div>
@@ -840,10 +837,30 @@ onBeforeUnmount(() => {
                     {{ proj.baseCurrency }}
                   </span>
                 </div>
-                <div class="flex w-full items-baseline justify-between gap-1">
-                  <span class="truncate text-sm font-extrabold tabular-nums text-emerald-700 dark:text-emerald-400">
-                    {{ fmt(store.getProjectTotalExpense(proj.id), proj.baseCurrency) }}
-                  </span>
+                <div class="truncate text-sm font-extrabold tabular-nums text-emerald-700 dark:text-emerald-400">
+                  {{ fmt(store.getProjectTotalExpense(proj.id), proj.baseCurrency) }}
+                </div>
+                <div
+                  class="flex w-full items-center justify-between gap-1.5"
+                  :title="proj.members.map((m) => m.name).join('、')"
+                >
+                  <div class="flex items-center -space-x-1">
+                    <MemberAvatar
+                      v-for="m in proj.members.slice(0, 4)"
+                      :key="m.id"
+                      :name="m.name"
+                      :color="m.avatarColor"
+                      :image="m.avatarImage"
+                      size="xxs"
+                      ring
+                    />
+                    <span
+                      v-if="proj.members.length > 4"
+                      class="inline-flex h-3.5 min-w-[14px] items-center justify-center rounded-full bg-slate-200 px-1 text-[8px] font-bold text-slate-700 ring-1 ring-white dark:bg-slate-700 dark:text-slate-200 dark:ring-slate-900"
+                    >
+                      +{{ proj.members.length - 4 }}
+                    </span>
+                  </div>
                   <span class="shrink-0 text-[10px] font-medium text-slate-400 dark:text-slate-500">
                     {{ t('project.memberCount', { count: proj.members.length }) }}
                   </span>

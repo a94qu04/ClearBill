@@ -13,6 +13,7 @@ import {
 } from 'lucide-vue-next'
 import { useLedgerStore } from '@/stores/ledgerStore'
 import { formatCurrencyAmount } from '@/core/currency'
+import MemberAvatar from '@/components/MemberAvatar.vue'
 
 interface Props {
   open: boolean
@@ -157,7 +158,27 @@ function onDragEnd() {
                 <div class="truncate text-sm font-bold text-slate-900 dark:text-white">
                   {{ proj.name }}
                 </div>
-                <div class="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
+                <div
+                  class="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400"
+                  :title="proj.members.map((m) => m.name).join('、')"
+                >
+                  <span class="inline-flex items-center -space-x-1">
+                    <MemberAvatar
+                      v-for="m in proj.members.slice(0, 4)"
+                      :key="m.id"
+                      :name="m.name"
+                      :color="m.avatarColor"
+                      :image="m.avatarImage"
+                      size="xxs"
+                      ring
+                    />
+                    <span
+                      v-if="proj.members.length > 4"
+                      class="inline-flex h-3.5 min-w-[14px] items-center justify-center rounded-full bg-slate-200 px-1 text-[8px] font-bold text-slate-700 ring-1 ring-white dark:bg-slate-700 dark:text-slate-200 dark:ring-slate-900"
+                    >
+                      +{{ proj.members.length - 4 }}
+                    </span>
+                  </span>
                   <span>{{ t('project.memberCount', { count: proj.members.length }) }}</span>
                   <span>·</span>
                   <span class="font-bold tabular-nums text-emerald-700 dark:text-emerald-400">
@@ -236,7 +257,27 @@ function onDragEnd() {
                 <div class="truncate text-sm font-bold text-slate-700 dark:text-slate-200">
                   {{ proj.name }}
                 </div>
-                <div class="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-slate-400">
+                <div
+                  class="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-slate-400"
+                  :title="proj.members.map((m) => m.name).join('、')"
+                >
+                  <span class="inline-flex items-center -space-x-1">
+                    <MemberAvatar
+                      v-for="m in proj.members.slice(0, 4)"
+                      :key="m.id"
+                      :name="m.name"
+                      :color="m.avatarColor"
+                      :image="m.avatarImage"
+                      size="xxs"
+                      ring
+                    />
+                    <span
+                      v-if="proj.members.length > 4"
+                      class="inline-flex h-3.5 min-w-[14px] items-center justify-center rounded-full bg-slate-200 px-1 text-[8px] font-bold text-slate-700 ring-1 ring-white dark:bg-slate-700 dark:text-slate-200 dark:ring-slate-900"
+                    >
+                      +{{ proj.members.length - 4 }}
+                    </span>
+                  </span>
                   <span>{{ t('project.memberCount', { count: proj.members.length }) }}</span>
                   <span>·</span>
                   <span class="font-bold tabular-nums text-slate-600 dark:text-slate-300">
