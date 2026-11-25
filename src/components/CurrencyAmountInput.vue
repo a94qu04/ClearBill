@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Check, RotateCcw } from 'lucide-vue-next'
+import { Check, ChevronDown, Percent, RotateCcw } from 'lucide-vue-next'
 import {
   formatGroupedNumberInput,
   getCurrencyDecimals,
@@ -104,6 +104,7 @@ const isFocused = ref(false)
 const feeBase = ref<number | null>(null)
 const serviceFeeEnabled = ref(false)
 const fxFeeEnabled = ref(false)
+const feePanelExpanded = ref(false)
 const serviceFeePercentInput = ref<string>(String(savedRates.service))
 const fxFeePercentInput = ref<string>(String(savedRates.fx))
 
@@ -493,12 +494,36 @@ const sizeClasses = computed(() => {
       </div>
     </div>
 
-    <!-- 數字下方：可自訂 % 數之「服務費」與「刷卡手續費」互動開關列（點一下確認套用／再點取消） -->
+    <!-- 數字下方：預設收合之「服務費／刷卡費」按需展開區塊（節省手機版面空間） -->
     <div
       v-if="showServiceFeeButton || showFxFeeButton"
       class="space-y-1.5"
     >
+      <div class="flex items-center justify-between gap-2">
+        <button
+          type="button"
+          class="inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition active:scale-95"
+          :class="
+            isAnyFeeApplied
+              ? 'border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300'
+              : feePanelExpanded
+                ? 'border-slate-300 bg-slate-100 text-slate-800 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100'
+                : 'border-slate-200 bg-slate-50 text-slate-500 hover:border-emerald-400 hover:text-emerald-700 dark:border-slate-700 dark:bg-slate-800/70 dark:text-slate-400 dark:hover:text-emerald-300'
+          "
+          @mousedown.prevent
+          @click="feePanelExpanded = !feePanelExpanded"
+        >
+          <Percent class="h-3 w-3 shrink-0" />
+          <span>{{ t('project.feePanelToggle') }}</span>
+          <ChevronDown
+            class="h-3 w-3 shrink-0 transition-transform duration-200"
+            :class="feePanelExpanded ? 'rotate-180' : ''"
+          />
+        </button>
+      </div>
+
       <div
+        v-if="feePanelExpanded"
         class="grid gap-1.5"
         :class="showServiceFeeButton && showFxFeeButton ? 'grid-cols-2' : 'grid-cols-1'"
       >

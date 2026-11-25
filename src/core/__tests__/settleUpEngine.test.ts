@@ -445,4 +445,53 @@ describe('settleUpEngine - 多人債務最小化結算演算法', () => {
       { fromMemberId: 'a_alice', toMemberId: 'm_bob', amount: 1500, currency: 'THB' },
     ])
   })
+
+  it('結算切換自訂匯率與結帳幣別不會變動原交易之 exchangeRateToBase，切回原匯率可 100% 還原', () => {
+    const rawTxs: Transaction[] = [
+      createExpenseTx({
+        id: '20000000-0000-4000-8000-000000000001',
+        amount: 1000,
+        currency: 'THB',
+        exchangeRateToBase: 0.91,
+        splitConfig: {
+          payerId: 'alice',
+          mode: 'equal',
+          shares: [
+            { memberId: 'alice', finalAmount: 500 },
+            { memberId: 'bob', finalAmount: 500 },
+          ],
+        },
+      }),
+      createExpenseTx({
+        id: '20000000-0000-4000-8000-000000000002',
+        amount: 1000,
+        currency: 'THB',
+        exchangeRateToBase: 0.95,
+        splitConfig: {
+          payerId: 'alice',
+          mode: 'equal',
+          shares: [
+            { memberId: 'alice', finalAmount: 500 },
+            { memberId: 'bob', finalAmount: 500 },
+          ],
+        },
+      }),
+    ]
+
+    // 先以各筆原匯率結算：910 + 950 = 1860 TWD
+    const orig = calculateSettleUp(rawTxs, 'TWD', ['alice', 'bob'])
+    expect(orig.totalProjectExpense).toBe(1860)
+
+    // 切換統一自訂結算匯率 1.0：2000 TWD
+    const custom = calculateSettleUp(rawTxs, 'TWD', ['alice', 'bob'], {
+      overrideRatesByCurrency: { THB: 1.0 },
+    })
+    expect(custom.totalProjectExpense).toBe(2000)
+
+    // 切回各筆原匯率：原始兩筆交易的匯率 0.91 與 0.95 應毫髮無傷並還原 1860 TWD
+    expect(rawTxs[0].exchangeRateToBase).toBe(0.91)
+    expect(rawTxs[1].exchangeRateToBase).toBe(0.95)
+    const restored = calculateSettleUp(rawTxs, 'TWD', ['alice', 'bob'])
+    expect(restored.totalProjectExpense).toBe(1860)
+  })
 })

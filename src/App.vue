@@ -559,17 +559,20 @@ function openAddProjectExpenseSheet() {
 
 function closeProjectExpenseSheet() {
   projExpenseSheetOpen.value = false
+  editingExpenseTx.value = null
   duplicateExpenseTx.value = null
   quickIntakePrefill.value = null
 }
 
 function startDuplicateTransaction(tx: Transaction) {
-  const targetProject = store.getProjectById(tx.projectId)
-  if (!targetProject || tx.type === 'transfer') return
+  const originalTx =
+    store.visibleTransactions.find((item) => item.id === tx.id) ?? tx
+  const targetProject = store.getProjectById(originalTx.projectId)
+  if (!targetProject || originalTx.type === 'transfer') return
   store.selectProject(targetProject.id)
   editingExpenseTx.value = null
   quickIntakePrefill.value = null
-  duplicateExpenseTx.value = tx
+  duplicateExpenseTx.value = originalTx
   projExpenseSheetOpen.value = true
 }
 
@@ -580,26 +583,28 @@ function handleInspectMemberInExpenses(memberId: string) {
   })
 }
 
-/** 編輯交易：維持當前頁面不跳轉，在首頁修改完成或關閉皆留在首頁 */
+/** 編輯交易：一律從資料庫正本讀取（避免結算匯率副本覆寫原匯率），維持當前頁面不跳轉 */
 function startEditTransaction(tx: Transaction) {
-  const targetProject = store.getProjectById(tx.projectId)
+  const originalTx =
+    store.visibleTransactions.find((item) => item.id === tx.id) ?? tx
+  const targetProject = store.getProjectById(originalTx.projectId)
   if (!targetProject) return
 
   store.selectProject(targetProject.id)
   duplicateExpenseTx.value = null
   quickIntakePrefill.value = null
 
-  if (tx.type === 'transfer') {
-    editingSettleTx.value = tx
+  if (originalTx.type === 'transfer') {
+    editingSettleTx.value = originalTx
     settleInitialFromId.value = ''
     settleInitialToId.value = ''
     settleSuggestedAmount.value = null
-    settleCurrency.value = tx.currency
+    settleCurrency.value = originalTx.currency
     settleSheetOpen.value = true
     return
   }
 
-  editingExpenseTx.value = tx
+  editingExpenseTx.value = originalTx
   projExpenseSheetOpen.value = true
 }
 
@@ -749,7 +754,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div
-    class="safe-bottom-page min-h-screen bg-slate-50 text-slate-900 transition-colors duration-200 dark:bg-slate-950 dark:text-slate-100"
+    class="safe-bottom-page min-h-screen bg-slate-100/90 text-slate-900 transition-colors duration-200 dark:bg-slate-950 dark:text-slate-100"
   >
     <!-- 極簡 App 頂部導覽列（支援 iOS Safe Area、左上小收據 Icon 回首頁、右上設定齒輪） -->
     <header
@@ -1572,7 +1577,9 @@ onBeforeUnmount(() => {
           v-else-if="projectTab === 'settle' && store.activeProjectSettleUp"
           :project="store.activeProject"
           :settle-up="store.activeProjectSettleUp"
+          :base-settle-up="store.activeProjectBaseSettleUp"
           :expenses="store.activeProjectEffectiveExpenses"
+          :raw-expenses="store.activeProjectExpenses"
           :settlements="store.activeProjectSettlements"
           :my-member-id="activeProjectMyMemberId"
           @record-payment="openRecordSettlementModal"

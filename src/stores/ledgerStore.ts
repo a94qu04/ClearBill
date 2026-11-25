@@ -82,20 +82,20 @@ export const INITIAL_CURRENCIES = [
 ] as const
 
 export const AVATAR_PALETTE = [
-  '#10b981',
-  '#3b82f6',
-  '#f59e0b',
-  '#8b5cf6',
-  '#ec4899',
-  '#06b6d4',
-  '#f97316',
-  '#14b8a6',
-  '#ef4444',
-  '#6366f1',
-  '#84cc16',
-  '#d946ef',
-  '#0284c7',
-  '#b45309',
+  '#059669', // 翡翠綠
+  '#2563eb', // 寶藍
+  '#d97706', // 琥珀金
+  '#7c3aed', // 靛紫
+  '#db2777', // 洋紅
+  '#0891b2', // 湖水青
+  '#ea580c', // 亮橘
+  '#dc2626', // 正紅
+  '#4f46e5', // 湛藍紫
+  '#65a30d', // 鮮萊姆綠
+  '#c026d3', // 紫紅
+  '#0369a1', // 深海藍
+  '#92400e', // 焦糖棕
+  '#0f766e', // 深水鴨青
 ] as const
 
 export const PROJECT_CARD_PALETTE = [
@@ -118,13 +118,13 @@ export interface ManagedCategory {
 }
 
 export const DEFAULT_MANAGED_CATEGORIES: ManagedCategory[] = [
-  { key: 'cat_food', color: '#f97316', isBuiltin: true },
-  { key: 'cat_transport', color: '#3b82f6', isBuiltin: true },
-  { key: 'cat_lodging', color: '#8b5cf6', isBuiltin: true },
-  { key: 'cat_shopping', color: '#ec4899', isBuiltin: true },
-  { key: 'cat_entertainment', color: '#06b6d4', isBuiltin: true },
-  { key: 'cat_daily', color: '#10b981', isBuiltin: true },
-  { key: 'cat_other', color: '#64748b', isBuiltin: true },
+  { key: 'cat_food', color: '#ea580c', isBuiltin: true },
+  { key: 'cat_transport', color: '#2563eb', isBuiltin: true },
+  { key: 'cat_lodging', color: '#7c3aed', isBuiltin: true },
+  { key: 'cat_shopping', color: '#db2777', isBuiltin: true },
+  { key: 'cat_entertainment', color: '#0891b2', isBuiltin: true },
+  { key: 'cat_daily', color: '#ca8a04', isBuiltin: true },
+  { key: 'cat_other', color: '#475569', isBuiltin: true },
 ]
 
 function generateUuid(): string {
@@ -718,6 +718,26 @@ export const useLedgerStore = defineStore('ledger', () => {
     return getSuggestedExchangeRate(f, tCode)
   }
 
+  function getProjectCustomRatesForTarget(
+    project: Project,
+    targetCurrency: string,
+  ): Record<string, number> | undefined {
+    const target = targetCurrency.trim().toUpperCase()
+    const bucket = project.settlementCustomRatesByCurrency?.[target]
+    if (bucket && Object.keys(bucket).length > 0) {
+      return bucket
+    }
+    const currentSettle = getProjectSettlementCurrency(project)
+    if (
+      target === currentSettle &&
+      project.settlementCustomRates &&
+      Object.keys(project.settlementCustomRates).length > 0
+    ) {
+      return project.settlementCustomRates
+    }
+    return undefined
+  }
+
   /**
    * 依據專案設定的結帳幣別與匯率模式（per_tx / live / custom）產出結算幣別與匯率覆寫設定
    */
@@ -729,6 +749,10 @@ export const useLedgerStore = defineStore('ledger', () => {
     if (mode === 'per_tx') return undefined
 
     const settleCurrency = getProjectSettlementCurrency(project)
+    const savedCustomForTarget = getProjectCustomRatesForTarget(
+      project,
+      settleCurrency,
+    )
     const txs =
       projectTxs ??
       visibleTransactions.value.filter((tx) => tx.projectId === project.id)
@@ -746,7 +770,7 @@ export const useLedgerStore = defineStore('ledger', () => {
           overrides[cur] = rate
         }
       } else if (mode === 'custom') {
-        const custom = project.settlementCustomRates?.[cur]
+        const custom = savedCustomForTarget?.[cur]
         if (typeof custom === 'number' && Number.isFinite(custom) && custom > 0) {
           overrides[cur] = custom
         } else {
@@ -799,8 +823,28 @@ export const useLedgerStore = defineStore('ledger', () => {
       return existing
     }
 
+    // 依目標結帳幣別分桶完整保留各幣別曾設定的自訂結算匯率，切換後再切回絕不洗掉
+    const nextByCurrency: Record<string, Record<string, number>> = {}
+    if (existing.settlementCustomRatesByCurrency) {
+      for (const [targetCur, map] of Object.entries(
+        existing.settlementCustomRatesByCurrency,
+      )) {
+        nextByCurrency[targetCur] = { ...map }
+      }
+    }
+    if (
+      existing.settlementCustomRates &&
+      Object.keys(existing.settlementCustomRates).length > 0
+    ) {
+      nextByCurrency[prevSettleCurrency] = {
+        ...(nextByCurrency[prevSettleCurrency] ?? {}),
+        ...existing.settlementCustomRates,
+      }
+    }
+
+    const restoredCustomForNewTarget = nextByCurrency[normalized]
     const nextMode =
-      existing.settlementRateMode === 'custom'
+      existing.settlementRateMode === 'custom' && !restoredCustomForNewTarget
         ? 'live'
         : existing.settlementRateMode
 
@@ -808,8 +852,11 @@ export const useLedgerStore = defineStore('ledger', () => {
       ...existing,
       settlementCurrency: normalized,
       settlementRateMode: nextMode,
-      // 切換結帳幣別時清除舊目標幣別的自訂匯率表，避免舊匯率錯套至新結帳幣別
-      settlementCustomRates: undefined,
+      settlementCustomRates: restoredCustomForNewTarget
+        ? { ...restoredCustomForNewTarget }
+        : undefined,
+      settlementCustomRatesByCurrency:
+        Object.keys(nextByCurrency).length > 0 ? nextByCurrency : undefined,
       members: existing.members.map((m) => ({ ...m })),
       updatedAt: Date.now(),
     }
@@ -829,6 +876,7 @@ export const useLedgerStore = defineStore('ledger', () => {
     const existing = projects.value.find((p) => p.id === projectId && !p.isDeleted)
     if (!existing) return null
 
+    const settleCurrency = getProjectSettlementCurrency(existing)
     const cleanCustom: Record<string, number> = {}
     if (customRates) {
       for (const [k, v] of Object.entries(customRates)) {
@@ -839,13 +887,31 @@ export const useLedgerStore = defineStore('ledger', () => {
       }
     }
 
+    const mergedCurrentCustom =
+      Object.keys(cleanCustom).length > 0
+        ? cleanCustom
+        : getProjectCustomRatesForTarget(existing, settleCurrency)
+
+    const nextByCurrency: Record<string, Record<string, number>> = {}
+    if (existing.settlementCustomRatesByCurrency) {
+      for (const [targetCur, map] of Object.entries(
+        existing.settlementCustomRatesByCurrency,
+      )) {
+        nextByCurrency[targetCur] = { ...map }
+      }
+    }
+    if (mergedCurrentCustom && Object.keys(mergedCurrentCustom).length > 0) {
+      nextByCurrency[settleCurrency] = { ...mergedCurrentCustom }
+    }
+
     const updated: Project = {
       ...existing,
       settlementRateMode: mode,
-      settlementCustomRates:
-        Object.keys(cleanCustom).length > 0
-          ? cleanCustom
-          : existing.settlementCustomRates,
+      settlementCustomRates: mergedCurrentCustom
+        ? { ...mergedCurrentCustom }
+        : existing.settlementCustomRates,
+      settlementCustomRatesByCurrency:
+        Object.keys(nextByCurrency).length > 0 ? nextByCurrency : undefined,
       members: existing.members.map((m) => ({ ...m })),
       updatedAt: Date.now(),
     }
@@ -1005,6 +1071,17 @@ export const useLedgerStore = defineStore('ledger', () => {
       settlementCurrency,
       proj.members.map((m) => m.id),
       options,
+    )
+  })
+
+  /** 以專案記帳主幣別（baseCurrency）＋各筆原始匯率計算的結算對照（供結算頁跨幣別結帳時小標示主幣別原額） */
+  const activeProjectBaseSettleUp = computed(() => {
+    const proj = activeProject.value
+    if (!proj) return null
+    return calculateSettleUp(
+      activeProjectTransactions.value,
+      proj.baseCurrency,
+      proj.members.map((m) => m.id),
     )
   })
 
@@ -2932,6 +3009,7 @@ export const useLedgerStore = defineStore('ledger', () => {
     activeProjectEffectiveExpenses,
     activeProjectSettlements,
     activeProjectSettleUp,
+    activeProjectBaseSettleUp,
     projectTotalExpenseMap,
     liveRatesCache,
     liveRatesFetchedAt,
@@ -2952,6 +3030,7 @@ export const useLedgerStore = defineStore('ledger', () => {
     getProjectLastCurrency,
     rememberProjectLastCurrency,
     getProjectSettlementRateOverrides,
+    getProjectCustomRatesForTarget,
     updateProjectSettlementCurrency,
     updateProjectSettlementRateConfig,
     getProjectById,

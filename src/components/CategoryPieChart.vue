@@ -9,15 +9,44 @@ import { formatCurrencyAmount } from '@/core/currency'
 
 interface Props {
   transactions: Transaction[]
+  rawTransactions?: Transaction[]
   baseCurrency: string
+  projectBaseCurrency?: string
 }
 
-const props = defineProps<Props>()
+const props = withDefaults(defineProps<Props>(), {
+  rawTransactions: undefined,
+  projectBaseCurrency: undefined,
+})
 
 const { t, locale } = useI18n()
 const store = useLedgerStore()
 
 const activeKey = ref<string | null>(null)
+
+const showProjectBaseHint = computed(
+  () =>
+    Boolean(props.projectBaseCurrency) &&
+    props.projectBaseCurrency!.trim().toUpperCase() !==
+      props.baseCurrency.trim().toUpperCase(),
+)
+
+const projectBaseStats = computed(() => {
+  if (!showProjectBaseHint.value || !props.projectBaseCurrency) return null
+  return calculateCategoryStats(
+    props.rawTransactions ?? props.transactions,
+    props.projectBaseCurrency,
+  )
+})
+
+const projectBaseAmountMap = computed<Map<string, number>>(() => {
+  const map = new Map<string, number>()
+  if (!projectBaseStats.value) return map
+  for (const item of projectBaseStats.value.items) {
+    map.set(item.categoryKey, item.amount)
+  }
+  return map
+})
 
 function resolveCategoryLabel(cat: ManagedCategory): string {
   if (cat.customLabel) return cat.customLabel
@@ -92,8 +121,8 @@ function toggleFocus(key: string) {
   activeKey.value = activeKey.value === key ? null : key
 }
 
-function fmt(amount: number): string {
-  return formatCurrencyAmount(amount, props.baseCurrency, locale.value)
+function fmt(amount: number, currency = props.baseCurrency): string {
+  return formatCurrencyAmount(amount, currency, locale.value)
 }
 </script>
 
@@ -190,20 +219,30 @@ function fmt(amount: number): string {
             <span class="mt-0.5 max-w-full truncate text-sm font-extrabold tabular-nums text-slate-900 dark:text-white">
               {{ fmt(stats.totalNetExpense) }}
             </span>
+            <span
+              v-if="showProjectBaseHint && projectBaseStats && projectBaseCurrency"
+              class="max-w-full truncate text-[9px] font-bold tabular-nums text-amber-700 dark:text-amber-300"
+            >
+              {{ fmt(projectBaseStats.totalNetExpense, projectBaseCurrency) }}
+            </span>
           </template>
         </div>
       </div>
 
-      <!-- 右側分類佔比明細清單 -->
-      <ul class="w-full min-w-0 flex-1 space-y-2">
-        <li v-for="slice in slices" :key="slice.categoryKey">
+      <!-- 右側分類佔比明細清單（高對比斑馬紋與明確色條） -->
+      <ul class="w-full min-w-0 flex-1 divide-y divide-slate-100 overflow-hidden rounded-xl border border-slate-200/80 dark:divide-slate-800 dark:border-slate-800">
+        <li
+          v-for="slice in slices"
+          :key="slice.categoryKey"
+          class="odd:bg-white even:bg-slate-50/80 dark:odd:bg-slate-900 dark:even:bg-slate-800/45"
+        >
           <button
             type="button"
-            class="w-full rounded-xl px-2.5 py-1.5 text-left transition"
+            class="w-full px-2.5 py-2 text-left transition"
             :class="
               activeKey === slice.categoryKey
-                ? 'bg-slate-100 ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700'
-                : 'hover:bg-slate-50 dark:hover:bg-slate-800/60'
+                ? 'bg-indigo-50/80 ring-1 ring-inset ring-indigo-200 dark:bg-indigo-950/40 dark:ring-indigo-800'
+                : 'hover:bg-slate-100/70 dark:hover:bg-slate-800/70'
             "
             @click="toggleFocus(slice.categoryKey)"
             @mouseenter="activeKey = slice.categoryKey"
@@ -218,21 +257,29 @@ function fmt(amount: number): string {
                 <span class="truncate font-semibold text-slate-800 dark:text-slate-100">
                   {{ slice.label }}
                 </span>
-                <span class="shrink-0 text-[10px] text-slate-400">
+                <span class="shrink-0 text-[10px] text-slate-500 dark:text-slate-400">
                   {{ t('stats.entryCount', { count: slice.count }) }}
                 </span>
               </div>
-              <div class="flex shrink-0 items-center gap-2 tabular-nums">
-                <span class="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
-                  {{ slice.percentage }}%
-                </span>
-                <span class="font-bold text-slate-900 dark:text-white">
-                  {{ fmt(slice.amount) }}
+              <div class="flex shrink-0 flex-col items-end tabular-nums">
+                <div class="flex items-center gap-1.5">
+                  <span class="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+                    {{ slice.percentage }}%
+                  </span>
+                  <span class="font-bold text-slate-900 dark:text-white">
+                    {{ fmt(slice.amount) }}
+                  </span>
+                </div>
+                <span
+                  v-if="showProjectBaseHint && projectBaseCurrency && projectBaseAmountMap.has(slice.categoryKey)"
+                  class="text-[9px] font-semibold text-amber-700/90 dark:text-amber-300/90"
+                >
+                  {{ fmt(projectBaseAmountMap.get(slice.categoryKey)!, projectBaseCurrency) }}
                 </span>
               </div>
             </div>
             <!-- 迷你比例進度條 -->
-            <div class="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
+            <div class="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-slate-200/80 dark:bg-slate-800">
               <div
                 class="h-full rounded-full transition-all duration-300"
                 :style="{

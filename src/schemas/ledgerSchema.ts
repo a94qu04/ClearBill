@@ -195,6 +195,10 @@ export const ProjectSchema = z.object({
   settlementRateMode: z.enum(['per_tx', 'live', 'custom']).optional(),
   /** 選填：當 settlementRateMode 為 custom 時，各幣別折合結帳幣別之自訂結算匯率 */
   settlementCustomRates: z.record(z.string(), z.number().finite().positive()).optional(),
+  /** 選填：依目標結帳幣別分桶保留之自訂結算匯率（切換結帳幣別與原匯率時不洗掉原設定） */
+  settlementCustomRatesByCurrency: z
+    .record(z.string(), z.record(z.string(), z.number().finite().positive()))
+    .optional(),
   /** 選填：大團常用拆帳子群組（如「A 車」「喝酒組」），完整向下相容 */
   splitGroups: z.array(ProjectSplitGroupSchema).max(20).optional(),
   syncMeta: ProjectSyncMetaSchema.optional(),

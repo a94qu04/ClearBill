@@ -21,6 +21,7 @@ import type { Project, Transaction } from '@/schemas/ledgerSchema'
 import {
   applySettlementRatesToTransactions,
   buildHubSettlementTransfers,
+  type MemberNetBalance,
   type SettleUpResult,
 } from '@/core/settleUpEngine'
 import { formatCurrencyAmount } from '@/core/currency'
@@ -40,12 +41,16 @@ import MemberAvatar from '@/components/MemberAvatar.vue'
 interface Props {
   project: Project
   settleUp: SettleUpResult
+  baseSettleUp?: SettleUpResult | null
   expenses: Transaction[]
+  rawExpenses?: Transaction[]
   settlements: Transaction[]
   myMemberId?: string
 }
 
 const props = withDefaults(defineProps<Props>(), {
+  baseSettleUp: null,
+  rawExpenses: undefined,
   myMemberId: undefined,
 })
 
@@ -136,11 +141,77 @@ function toggleMemberDetail(memberId: string) {
     selectedMemberDetailId.value === memberId ? null : memberId
 }
 
+const sourceRawExpenses = computed<Transaction[]>(
+  () => props.rawExpenses ?? props.expenses,
+)
+
+const baseBalanceMap = computed<Map<string, MemberNetBalance>>(() => {
+  const map = new Map<string, MemberNetBalance>()
+  if (!props.baseSettleUp) return map
+  for (const b of props.baseSettleUp.balances) {
+    map.set(b.memberId, b)
+  }
+  return map
+})
+
+function getBaseBalance(memberId: string): MemberNetBalance | null {
+  return baseBalanceMap.value.get(memberId) ?? null
+}
+
+/** 當前結帳幣別折回專案主幣別之參考匯率（供待還款金額小標示主幣別金額使用） */
+const settlementToBaseRate = computed<number>(() => {
+  const settle = settlementCurrency.value
+  const base = props.project.baseCurrency.trim().toUpperCase()
+  if (settle === base) return 1
+  if (currentRateMode.value === 'custom') {
+    const savedCustom = store.getProjectCustomRatesForTarget(props.project, settle)
+    const baseToSettle = savedCustom?.[base]
+    if (typeof baseToSettle === 'number' && Number.isFinite(baseToSettle) && baseToSettle > 0) {
+      return 1 / baseToSettle
+    }
+  }
+  return store.getEffectiveExchangeRate(settle, base)
+})
+
+function convertSettleAmountToBase(amount: number): number {
+  return amount * settlementToBaseRate.value
+}
+
+/** 各外幣於原始交易中實際記錄的匯率範圍（供「各筆原匯率」模式清楚呈現保留的原匯率資料） */
+const originalRatesSummary = computed<Array<{ currency: string; text: string }>>(() => {
+  const base = props.project.baseCurrency.trim().toUpperCase()
+  const byCur = new Map<string, number[]>()
+  for (const tx of [...sourceRawExpenses.value, ...props.settlements]) {
+    if (tx.isDeleted) continue
+    const cur = tx.currency.trim().toUpperCase()
+    if (!cur || cur === base) continue
+    const r = tx.exchangeRateToBase
+    if (Number.isFinite(r) && r > 0) {
+      const list = byCur.get(cur)
+      if (list) list.push(r)
+      else byCur.set(cur, [r])
+    }
+  }
+  const result: Array<{ currency: string; text: string }> = []
+  for (const [cur, rates] of byCur.entries()) {
+    const min = Math.min(...rates)
+    const max = Math.max(...rates)
+    const text =
+      Math.abs(max - min) < 0.00001
+        ? `1 ${cur} = ${min} ${base}`
+        : `1 ${cur} = ${min} ~ ${max} ${base}`
+    result.push({ currency: cur, text })
+  }
+  return result
+})
+
 interface MemberStatementEntry {
   tx: Transaction
   title: string
   shareInSettle: number
   paidInSettle: number
+  shareInBase: number
+  paidInBase: number
   isRefund: boolean
 }
 
@@ -148,6 +219,11 @@ const selectedMemberStatement = computed<MemberStatementEntry[]>(() => {
   const memberId = selectedMemberDetailId.value
   if (!memberId) return []
   const list: MemberStatementEntry[] = []
+
+  const rawById = new Map<string, Transaction>()
+  for (const rtx of sourceRawExpenses.value) {
+    rawById.set(rtx.id, rtx)
+  }
 
   const sorted = [...props.expenses]
     .filter((tx) => !tx.isDeleted && (tx.type === 'expense' || tx.type === 'refund'))
@@ -159,7 +235,9 @@ const selectedMemberStatement = computed<MemberStatementEntry[]>(() => {
 
   for (const tx of sorted) {
     if (!tx.splitConfig) continue
+    const rawTx = rawById.get(tx.id) ?? tx
     const rate = tx.exchangeRateToBase > 0 ? tx.exchangeRateToBase : 1
+    const rawRate = rawTx.exchangeRateToBase > 0 ? rawTx.exchangeRateToBase : 1
     const sign = tx.type === 'refund' ? -1 : 1
     const shareObj = tx.splitConfig.shares.find((s) => s.memberId === memberId)
     const shareAmt = shareObj ? shareObj.finalAmount : 0
@@ -174,10 +252,12 @@ const selectedMemberStatement = computed<MemberStatementEntry[]>(() => {
 
     if (shareAmt <= 0 && paidAmt <= 0) continue
     list.push({
-      tx,
+      tx: rawTx,
       title: tx.note?.trim() || getCategoryLabel(tx.categoryKey),
       shareInSettle: sign * shareAmt * rate,
       paidInSettle: sign * paidAmt * rate,
+      shareInBase: sign * shareAmt * rawRate,
+      paidInBase: sign * paidAmt * rawRate,
       isRefund: tx.type === 'refund',
     })
   }
@@ -234,13 +314,21 @@ const formattedLiveRatesFetchedAt = computed(() => {
 
 function syncSettleRateDrafts() {
   const target = settlementCurrency.value
+  const base = props.project.baseCurrency.trim().toUpperCase()
+  const savedBucket = store.getProjectCustomRatesForTarget(props.project, target)
   const next: Record<string, string> = {}
   for (const cur of foreignCurrenciesInProject.value) {
-    const saved = props.project.settlementCustomRates?.[cur]
+    const saved = savedBucket?.[cur]
     const live = store.getLiveExchangeRate(cur, target)
-    const fallbackTx = props.expenses.find(
-      (tx) => tx.currency.trim().toUpperCase() === cur && tx.exchangeRateToBase > 0,
-    )?.exchangeRateToBase
+    // 僅當結帳幣別等同記帳主幣別時，才從「原始未覆寫交易」取回原記帳匯率，避免讀取覆寫副本
+    const fallbackTx =
+      target === base
+        ? sourceRawExpenses.value.find(
+            (tx) =>
+              tx.currency.trim().toUpperCase() === cur &&
+              tx.exchangeRateToBase > 0,
+          )?.exchangeRateToBase
+        : undefined
     const val = saved ?? live ?? fallbackTx ?? store.getEffectiveExchangeRate(cur, target)
     next[cur] = val !== undefined && val !== null ? String(val) : ''
   }
@@ -254,6 +342,7 @@ watch(
     props.project.baseCurrency,
     props.project.settlementRateMode,
     JSON.stringify(props.project.settlementCustomRates ?? {}),
+    JSON.stringify(props.project.settlementCustomRatesByCurrency ?? {}),
     foreignCurrenciesInProject.value.join(','),
     store.liveRatesFetchedAt,
   ],
@@ -682,9 +771,9 @@ async function handleExportLongImage() {
   <div class="space-y-4 lg:grid lg:grid-cols-12 lg:items-start lg:gap-5 lg:space-y-0">
     <!-- 左欄：結帳幣別匯率設定 ＋ 各成員總支出與展開明細 -->
     <div class="space-y-4 lg:col-span-7">
-    <!-- 結帳幣別與匯率設定卡片（可自行選擇要結帳的幣別，並於含外幣時切換各筆原匯率／即時匯率／自訂結算匯率） -->
+    <!-- 結帳幣別與匯率設定卡片（可自行選擇要結帳的幣別，並於含外幣時切換各筆原匯率／即時匯率／自訂結算匯率；原匯率資料永久保留） -->
     <section
-      class="space-y-2.5 rounded-2xl border border-amber-200/80 bg-amber-50/40 p-3.5 shadow-sm dark:border-amber-900/60 dark:bg-amber-950/20"
+      class="space-y-2.5 rounded-2xl border border-amber-300/90 bg-amber-50/70 p-3.5 shadow-sm dark:border-amber-800/70 dark:bg-amber-950/30"
     >
       <div class="flex flex-wrap items-center justify-between gap-2">
         <div class="flex items-center gap-2">
@@ -775,9 +864,31 @@ async function handleExportLongImage() {
           </button>
         </div>
 
+        <!-- 各筆原匯率模式：顯示完整保留之各外幣原始記帳匯率 -->
+        <div
+          v-if="currentRateMode === 'per_tx'"
+          class="space-y-1.5 text-[11px] text-amber-900 dark:text-amber-200"
+        >
+          <div
+            v-if="originalRatesSummary.length > 0"
+            class="flex flex-wrap items-center gap-1.5"
+          >
+            <span
+              v-for="item in originalRatesSummary"
+              :key="item.currency"
+              class="inline-flex items-center rounded-lg border border-amber-200/90 bg-white/95 px-2.5 py-1 font-bold tabular-nums shadow-sm dark:border-amber-800/60 dark:bg-slate-900"
+            >
+              {{ item.text }}
+            </span>
+          </div>
+          <p class="text-[10px] font-medium text-amber-800/80 dark:text-amber-300/80">
+            {{ t('rates.perTxPreservedHint') }}
+          </p>
+        </div>
+
         <!-- 即時匯率對照顯示 -->
         <div
-          v-if="currentRateMode === 'live'"
+          v-else-if="currentRateMode === 'live'"
           class="flex flex-wrap items-center gap-2 text-[11px] text-amber-900 dark:text-amber-200"
         >
           <span
@@ -837,7 +948,7 @@ async function handleExportLongImage() {
     <!-- 公費袋（公積金）專屬餘額卡（啟用公費袋時獨立呈現，不混亂真人成員對帳） -->
     <section
       v-if="poolBalances.length > 0"
-      class="space-y-2 rounded-2xl border border-teal-200/80 bg-teal-50/50 p-3.5 shadow-sm dark:border-teal-900/60 dark:bg-teal-950/25"
+      class="space-y-2 rounded-2xl border border-teal-300/90 bg-teal-50/70 p-3.5 shadow-sm dark:border-teal-800/70 dark:bg-teal-950/30"
     >
       <div class="flex items-center justify-between gap-2">
         <div class="flex items-center gap-1.5 text-xs font-bold text-teal-900 dark:text-teal-200">
@@ -856,7 +967,7 @@ async function handleExportLongImage() {
       <div
         v-for="pb in poolBalances"
         :key="pb.memberId"
-        class="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-white/90 px-3 py-2.5 dark:bg-slate-900/90"
+        class="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-teal-200/80 bg-white/95 px-3 py-2.5 shadow-sm dark:border-teal-900/60 dark:bg-slate-900/90"
       >
         <div class="min-w-0">
           <div class="text-xs font-bold text-slate-800 dark:text-slate-100">
@@ -864,6 +975,12 @@ async function handleExportLongImage() {
           </div>
           <div class="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
             {{ t('pool.paidOutLabel') }} {{ fmt(pb.totalPaid, settlementCurrency) }}
+            <span
+              v-if="isCrossCurrencySettlement && getBaseBalance(pb.memberId)"
+              class="ml-1 text-[10px] font-medium text-amber-700 dark:text-amber-300"
+            >
+              ({{ fmt(getBaseBalance(pb.memberId)!.totalPaid, project.baseCurrency) }})
+            </span>
           </div>
         </div>
         <div class="text-right">
@@ -876,6 +993,12 @@ async function handleExportLongImage() {
             "
           >
             {{ fmt(Math.abs(pb.netAmount), settlementCurrency) }}
+          </div>
+          <div
+            v-if="isCrossCurrencySettlement && getBaseBalance(pb.memberId)"
+            class="text-[10px] font-semibold tabular-nums text-amber-700 dark:text-amber-300"
+          >
+            {{ fmt(Math.abs(getBaseBalance(pb.memberId)!.netAmount), project.baseCurrency) }}
           </div>
           <div class="text-[10px] font-semibold text-slate-400">
             {{
@@ -890,9 +1013,9 @@ async function handleExportLongImage() {
       </div>
     </section>
 
-    <!-- 各成員總支出與結算總覽（含一鍵分享精簡／明細切換、排序與報表匯出） -->
+    <!-- 各成員總支出與結算總覽（含主幣別小標示、一鍵分享精簡／明細切換、排序與報表匯出） -->
     <section
-      class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900"
+      class="rounded-2xl border border-slate-200/90 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900"
     >
       <div class="mb-3 flex flex-wrap items-start justify-between gap-2">
         <div>
@@ -917,11 +1040,17 @@ async function handleExportLongImage() {
               }}</span>
             </button>
           </div>
-          <div class="mt-0.5 text-[11px] font-semibold tabular-nums text-slate-500 dark:text-slate-400">
-            {{ t('settle.projectTotalSpend') }}:
+          <div class="mt-0.5 flex flex-wrap items-baseline gap-1.5 text-[11px] font-semibold tabular-nums text-slate-500 dark:text-slate-400">
+            <span>{{ t('settle.projectTotalSpend') }}:</span>
             <strong class="text-slate-900 dark:text-white">{{
               fmt(settleUp.totalProjectExpense, settlementCurrency)
             }}</strong>
+            <span
+              v-if="isCrossCurrencySettlement && baseSettleUp"
+              class="rounded-md bg-amber-100/80 px-1.5 py-0.5 text-[10px] font-bold text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
+            >
+              {{ t('rates.baseAmountTag', { amount: fmt(baseSettleUp.totalProjectExpense, project.baseCurrency) }) }}
+            </span>
           </div>
         </div>
 
@@ -957,8 +1086,12 @@ async function handleExportLongImage() {
           class="overflow-hidden rounded-xl border text-left transition hover:brightness-[0.98] active:scale-[0.99]"
           :class="
             selectedMemberDetailId === bal.memberId
-              ? 'border-emerald-400 bg-emerald-50/60 ring-2 ring-emerald-500/20 dark:border-emerald-500/70 dark:bg-emerald-950/40'
-              : 'border-slate-100 bg-slate-50 dark:border-slate-800 dark:bg-slate-800/60'
+              ? 'border-emerald-500 bg-emerald-50 ring-2 ring-emerald-500/25 dark:border-emerald-400 dark:bg-emerald-950/50'
+              : bal.netAmount > 0
+                ? 'border-emerald-200/90 bg-emerald-50/55 dark:border-emerald-900/60 dark:bg-emerald-950/25'
+                : bal.netAmount < 0
+                  ? 'border-rose-200/90 bg-rose-50/55 dark:border-rose-900/60 dark:bg-rose-950/25'
+                  : 'border-slate-200 bg-slate-100/75 dark:border-slate-700/80 dark:bg-slate-800/70'
           "
           :style="{
             borderLeftWidth: '4px',
@@ -991,15 +1124,21 @@ async function handleExportLongImage() {
                   class="text-sm font-extrabold tabular-nums"
                   :class="
                     bal.netAmount > 0
-                      ? 'text-emerald-600 dark:text-emerald-400'
+                      ? 'text-emerald-700 dark:text-emerald-400'
                       : bal.netAmount < 0
                         ? 'text-rose-600 dark:text-rose-400'
-                        : 'text-slate-400'
+                        : 'text-slate-500'
                   "
                 >
                   {{ bal.netAmount > 0 ? '+' : '' }}{{ fmt(bal.netAmount, settlementCurrency) }}
                 </div>
-                <div class="text-[10px] text-slate-400">
+                <div
+                  v-if="isCrossCurrencySettlement && getBaseBalance(bal.memberId)"
+                  class="text-[10px] font-semibold tabular-nums text-amber-700/90 dark:text-amber-300/90"
+                >
+                  {{ getBaseBalance(bal.memberId)!.netAmount > 0 ? '+' : '' }}{{ fmt(getBaseBalance(bal.memberId)!.netAmount, project.baseCurrency) }}
+                </div>
+                <div class="text-[10px] font-medium text-slate-500 dark:text-slate-400">
                   {{
                     bal.netAmount > 0
                       ? t('settle.shouldReceive')
@@ -1012,18 +1151,30 @@ async function handleExportLongImage() {
             </div>
 
             <div
-              class="mt-2.5 grid grid-cols-2 gap-2 border-t border-slate-200/70 pt-2 text-[11px] dark:border-slate-700/70"
+              class="mt-2.5 grid grid-cols-2 gap-2 border-t border-slate-200/80 pt-2 text-[11px] dark:border-slate-700/70"
             >
               <div>
-                <span class="text-slate-400">{{ t('settle.memberTotalExpense') }}</span>
-                <div class="font-bold tabular-nums text-slate-800 dark:text-slate-100">
+                <span class="text-slate-500 dark:text-slate-400">{{ t('settle.memberTotalExpense') }}</span>
+                <div class="font-bold tabular-nums text-slate-900 dark:text-slate-100">
                   {{ fmt(bal.totalExpense, settlementCurrency) }}
+                </div>
+                <div
+                  v-if="isCrossCurrencySettlement && getBaseBalance(bal.memberId)"
+                  class="text-[10px] font-medium tabular-nums text-slate-500 dark:text-slate-400"
+                >
+                  {{ fmt(getBaseBalance(bal.memberId)!.totalExpense, project.baseCurrency) }}
                 </div>
               </div>
               <div class="text-right">
-                <span class="text-slate-400">{{ t('settle.memberTotalPaid') }}</span>
-                <div class="font-semibold tabular-nums text-slate-600 dark:text-slate-300">
+                <span class="text-slate-500 dark:text-slate-400">{{ t('settle.memberTotalPaid') }}</span>
+                <div class="font-semibold tabular-nums text-slate-700 dark:text-slate-200">
                   {{ fmt(bal.totalPaid, settlementCurrency) }}
+                </div>
+                <div
+                  v-if="isCrossCurrencySettlement && getBaseBalance(bal.memberId)"
+                  class="text-[10px] font-medium tabular-nums text-slate-500 dark:text-slate-400"
+                >
+                  {{ fmt(getBaseBalance(bal.memberId)!.totalPaid, project.baseCurrency) }}
                 </div>
               </div>
             </div>
@@ -1101,12 +1252,12 @@ async function handleExportLongImage() {
 
         <ul
           v-else
-          class="max-h-64 divide-y divide-slate-200/70 overflow-y-auto rounded-xl bg-white px-2.5 dark:divide-slate-800 dark:bg-slate-900"
+          class="max-h-64 divide-y divide-slate-200/80 overflow-y-auto rounded-xl border border-slate-200/80 bg-white dark:divide-slate-800 dark:border-slate-800 dark:bg-slate-900"
         >
           <li
             v-for="item in selectedMemberStatement"
             :key="item.tx.id"
-            class="flex items-center justify-between gap-2 py-2 text-xs"
+            class="flex items-center justify-between gap-2 px-2.5 py-2 text-xs odd:bg-white even:bg-slate-50/85 dark:odd:bg-slate-900 dark:even:bg-slate-800/45"
           >
             <button
               type="button"
@@ -1124,7 +1275,7 @@ async function handleExportLongImage() {
                   {{ item.title }}
                 </span>
               </div>
-              <div class="mt-0.5 text-[10px] text-slate-400">
+              <div class="mt-0.5 text-[10px] text-slate-500 dark:text-slate-400">
                 {{ item.tx.date }} · {{ fmt(item.tx.amount, item.tx.currency) }}
               </div>
             </button>
@@ -1135,6 +1286,12 @@ async function handleExportLongImage() {
               >
                 {{ t('settle.memberTotalExpense') }}
                 {{ fmt(item.shareInSettle, settlementCurrency) }}
+                <span
+                  v-if="isCrossCurrencySettlement"
+                  class="block text-[9px] font-medium text-amber-700/90 dark:text-amber-300/90"
+                >
+                  {{ fmt(item.shareInBase, project.baseCurrency) }}
+                </span>
               </div>
               <div
                 v-if="item.paidInSettle !== 0"
@@ -1142,6 +1299,12 @@ async function handleExportLongImage() {
               >
                 {{ t('settle.memberTotalPaid') }}
                 {{ fmt(item.paidInSettle, settlementCurrency) }}
+                <span
+                  v-if="isCrossCurrencySettlement"
+                  class="ml-1 text-[9px] font-medium text-amber-700/80 dark:text-amber-300/80"
+                >
+                  ({{ fmt(item.paidInBase, project.baseCurrency) }})
+                </span>
               </div>
             </div>
           </li>
@@ -1176,10 +1339,12 @@ async function handleExportLongImage() {
 
     <!-- 右欄：消費結構圓餅圖 ＋ 待還款結算 ＋ 已記錄還款明細 -->
     <div class="space-y-4 lg:col-span-5">
-    <!-- 消費結構圓餅圖統計 -->
+    <!-- 消費結構圓餅圖統計（跨幣別結帳時同步小標示主幣別金額） -->
     <CategoryPieChart
       :transactions="expenses"
+      :raw-transactions="sourceRawExpenses"
       :base-currency="settlementCurrency"
+      :project-base-currency="project.baseCurrency"
     />
 
     <!-- 待還款結算（支援「最少轉帳」vs「財務長集中收付」、只看我濾鏡與一鍵收公費） -->
@@ -1288,7 +1453,7 @@ async function handleExportLongImage() {
         <li
           v-for="(transfer, idx) in visibleTransfers"
           :key="idx"
-          class="flex items-center justify-between gap-2 rounded-xl border border-slate-100 bg-slate-50 px-3.5 py-2.5 dark:border-slate-800 dark:bg-slate-800/70"
+          class="flex items-center justify-between gap-2 rounded-xl border border-sky-200/90 bg-sky-50/50 px-3.5 py-2.5 dark:border-sky-900/60 dark:bg-sky-950/25"
         >
           <div class="min-w-0">
             <div class="flex flex-wrap items-center gap-1.5 text-xs font-semibold text-slate-800 dark:text-slate-100">
@@ -1308,8 +1473,16 @@ async function handleExportLongImage() {
                 <span>{{ getMemberName(transfer.toMemberId) }}</span>
               </span>
             </div>
-            <div class="mt-0.5 text-sm font-extrabold tabular-nums text-emerald-700 dark:text-emerald-400">
-              {{ fmt(transfer.amount, transfer.currency) }}
+            <div class="mt-0.5 flex flex-wrap items-baseline gap-1.5 tabular-nums">
+              <span class="text-sm font-extrabold text-emerald-700 dark:text-emerald-400">
+                {{ fmt(transfer.amount, transfer.currency) }}
+              </span>
+              <span
+                v-if="isCrossCurrencySettlement"
+                class="rounded bg-amber-100/80 px-1.5 py-0.5 text-[10px] font-bold text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
+              >
+                ≈ {{ fmt(convertSettleAmountToBase(transfer.amount), project.baseCurrency) }}
+              </span>
             </div>
             <button
               v-if="getMemberPaymentInfo(transfer.toMemberId)"
@@ -1354,11 +1527,11 @@ async function handleExportLongImage() {
         {{ t('settle.noHistory') }}
       </p>
 
-      <ul v-else class="divide-y divide-slate-100 dark:divide-slate-800">
+      <ul v-else class="divide-y divide-slate-200/80 overflow-hidden rounded-xl border border-slate-200/80 dark:divide-slate-800 dark:border-slate-800">
         <li
           v-for="tx in settlements"
           :key="tx.id"
-          class="flex items-center justify-between gap-2 py-2.5"
+          class="flex items-center justify-between gap-2 px-3 py-2.5 odd:bg-white even:bg-slate-50/85 dark:odd:bg-slate-900 dark:even:bg-slate-800/45"
         >
           <div class="min-w-0">
             <div class="flex flex-wrap items-center gap-1.5 text-xs font-semibold text-slate-800 dark:text-slate-100">

@@ -620,14 +620,14 @@ defineExpose({ resetFilters, setMemberFilter })
     <!-- 依日期分組之明細清單（含單日小計與點擊展開分攤詳情） -->
     <div v-else class="space-y-4">
       <div v-for="group in groupedTransactions" :key="group.date">
-        <!-- 日期分組標頭列 -->
+        <!-- 日期分組標頭列（高對比靛藍石板條） -->
         <div
-          class="mb-1 flex items-center justify-between rounded-lg bg-slate-50 px-2.5 py-1 text-[11px] font-bold text-slate-500 dark:bg-slate-800/70 dark:text-slate-400"
+          class="mb-1.5 flex items-center justify-between rounded-xl border border-indigo-100 bg-indigo-50/75 px-3 py-1.5 text-[11px] font-bold text-indigo-950 dark:border-indigo-900/60 dark:bg-indigo-950/40 dark:text-indigo-200"
         >
           <span>{{ group.dateLabel }}</span>
           <span
             v-if="group.projectNetSubtotal !== null && projectBaseCurrency"
-            class="tabular-nums text-slate-700 dark:text-slate-200"
+            class="tabular-nums text-indigo-900 dark:text-indigo-100"
           >
             {{
               t('project.daySubtotal', {
@@ -635,20 +635,24 @@ defineExpose({ resetFilters, setMemberFilter })
               })
             }}
           </span>
-          <span v-else class="text-[10px] font-medium">
+          <span v-else class="text-[10px] font-semibold text-indigo-700/80 dark:text-indigo-300">
             {{ t('stats.entryCount', { count: group.items.length }) }}
           </span>
         </div>
 
-        <ul class="divide-y divide-slate-100 dark:divide-slate-800">
-          <li v-for="tx in group.items" :key="tx.id">
+        <ul class="divide-y divide-slate-200/80 overflow-hidden rounded-xl border border-slate-200/80 dark:divide-slate-800 dark:border-slate-800">
+          <li
+            v-for="tx in group.items"
+            :key="tx.id"
+            class="odd:bg-white even:bg-slate-50/80 dark:odd:bg-slate-900 dark:even:bg-slate-800/40"
+          >
             <SwipeableTxRow
               @edit="emit('edit', tx)"
               @delete="emit('delete', tx.id)"
             >
               <!-- 點擊整列可展開／收合分攤詳情 -->
               <div
-                class="cursor-pointer py-2.5 transition hover:bg-slate-50/70 dark:hover:bg-slate-800/30"
+                class="cursor-pointer px-2.5 py-2.5 transition hover:bg-indigo-50/40 dark:hover:bg-slate-800/60"
                 @click="toggleExpandTx(tx.id)"
               >
                 <div class="flex items-center justify-between gap-2.5">

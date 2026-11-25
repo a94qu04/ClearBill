@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Camera, Clock, Plus, RefreshCw, X } from 'lucide-vue-next'
 import { useLedgerStore, type ManagedCategory } from '@/stores/ledgerStore'
@@ -39,7 +39,6 @@ const emit = defineEmits<{
 const { t, locale } = useI18n()
 const store = useLedgerStore()
 
-let isHydrating = false
 const txType = ref<'expense' | 'refund'>('expense')
 const splitPreset = ref<SplitConfig | null>(null)
 const splitResetKey = ref(0)
@@ -98,6 +97,17 @@ function handleApplyQuickRatePreset(val: number) {
   exchangeRateSource.value = 'custom'
 }
 
+function handleUserCurrencyChange(nextCurrency: string) {
+  currency.value = nextCurrency
+  if (!props.project) return
+  const resolved = resolveExchangeRateForCurrency(
+    nextCurrency,
+    props.project.baseCurrency,
+  )
+  exchangeRate.value = resolved.rate
+  exchangeRateSource.value = resolved.source
+}
+
 function confirmInlineAddCurrency() {
   const code = inlineNewCurrencyCode.value.trim().toUpperCase()
   if (!/^[A-Z]{3}$/.test(code)) {
@@ -105,7 +115,7 @@ function confirmInlineAddCurrency() {
     return
   }
   const added = store.addCurrency(code)
-  currency.value = added
+  handleUserCurrencyChange(added)
   inlineNewCurrencyCode.value = ''
   inlineNewCurrencyOpen.value = false
   emit('toast', t('settings.currencyAddedToast', { code: added }))
@@ -271,7 +281,6 @@ async function handleApplyLiveRate() {
 
 function hydrateForm() {
   if (!props.project) return
-  isHydrating = true
   errorText.value = ''
   inlineNewCategoryOpen.value = false
   inlineNewCurrencyOpen.value = false
@@ -359,7 +368,6 @@ function hydrateForm() {
 
   splitResetKey.value += 1
   initialSnapshot.value = captureFormSnapshot()
-  isHydrating = false
 }
 
 watch(
@@ -379,14 +387,20 @@ watch(
   { immediate: true },
 )
 
-watch(currency, (nextCurrency) => {
-  if (isHydrating || !props.project) return
-  const resolved = resolveExchangeRateForCurrency(
-    nextCurrency,
-    props.project.baseCurrency,
-  )
-  exchangeRate.value = resolved.rate
-  exchangeRateSource.value = resolved.source
+function handleEscapeKey(event: KeyboardEvent) {
+  if (!props.open) return
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    void requestClose()
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('keydown', handleEscapeKey)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleEscapeKey)
 })
 
 function fmt(val: number, cur: string): string {
@@ -531,34 +545,43 @@ async function handleSubmit(continueAdding = false) {
 
 <template>
   <Teleport to="body">
-    <div
-      v-if="open && project"
-      class="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/50 backdrop-blur-sm sm:items-center sm:p-4"
-      @click.self="requestClose"
+    <Transition
+      enter-active-class="transition duration-200 ease-out"
+      enter-from-class="opacity-0"
+      enter-to-class="opacity-100"
+      leave-active-class="transition duration-150 ease-in"
+      leave-from-class="opacity-100"
+      leave-to-class="opacity-0"
     >
       <div
-        class="flex max-h-[92vh] w-full max-w-lg flex-col overflow-hidden rounded-t-3xl border border-slate-200 bg-white shadow-2xl dark:border-slate-800 dark:bg-slate-900 sm:rounded-3xl"
+        v-if="open && project"
+        class="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/50 backdrop-blur-sm sm:items-center sm:p-4"
+        @click.self="requestClose"
       >
-        <!-- Sticky 固定頂部標題列 -->
         <div
-          class="flex shrink-0 items-center justify-between border-b border-slate-100 px-5 py-3.5 dark:border-slate-800"
+          class="flex max-h-[92vh] w-full max-w-lg flex-col overflow-hidden rounded-t-3xl border border-slate-200 bg-white shadow-2xl dark:border-slate-800 dark:bg-slate-900 sm:rounded-3xl"
         >
-          <h2 class="text-base font-bold text-slate-900 dark:text-white">
-            {{
-              editingTx
-                ? t('project.editExpenseTitle')
-                : t('project.addExpenseTitle')
-            }}
-          </h2>
-          <button
-            type="button"
-            :aria-label="t('settings.close')"
-            class="rounded-full p-1 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
-            @click="requestClose"
+          <!-- Sticky 固定頂部標題列（× 按鈕加上 mousedown.prevent 防止金額框 blur 位移吃掉點擊） -->
+          <div
+            class="flex shrink-0 items-center justify-between border-b border-slate-100 px-5 py-3.5 dark:border-slate-800"
           >
-            <X class="h-5 w-5" />
-          </button>
-        </div>
+            <h2 class="text-base font-bold text-slate-900 dark:text-white">
+              {{
+                editingTx
+                  ? t('project.editExpenseTitle')
+                  : t('project.addExpenseTitle')
+              }}
+            </h2>
+            <button
+              type="button"
+              :aria-label="t('settings.close')"
+              class="inline-flex h-9 w-9 items-center justify-center rounded-full text-slate-500 transition hover:bg-slate-100 hover:text-slate-800 active:scale-95 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-white"
+              @mousedown.prevent
+              @click.stop="requestClose"
+            >
+              <X class="h-5 w-5" />
+            </button>
+          </div>
 
         <!-- 中間可捲動表單主體 -->
         <form
@@ -603,15 +626,16 @@ async function handleSubmit(continueAdding = false) {
 
           <CurrencyAmountInput
             v-model="amount"
-            v-model:currency="currency"
+            :currency="currency"
             :currencies="currencyOptions"
             show-currency-select
             enable-expression
             show-service-fee-button
             show-fx-fee-button
             size="lg"
-            autofocus
+            :autofocus="!editingTx"
             placeholder="0"
+            @update:currency="handleUserCurrencyChange"
           />
 
           <!-- 不跳出表單即可現場新增 3 碼幣別（如 THB / SGD / VND） -->
@@ -904,13 +928,22 @@ async function handleSubmit(continueAdding = false) {
           </p>
         </form>
 
-        <!-- Sticky 固定底部儲存按鈕列（無須滑到最底即可隨時秒存，新增模式附「存並續記」，避讓 iPhone Home Indicator） -->
+        <!-- Sticky 固定底部儲存按鈕列（新增模式附「存並續記」、修改模式附明確「取消」鈕，避讓 iPhone Home Indicator） -->
         <div
           class="safe-sticky-pb shrink-0 border-t border-slate-100 bg-white/95 px-5 pt-3 backdrop-blur dark:border-slate-800 dark:bg-slate-900/95 sm:pb-3"
         >
           <div class="flex items-center gap-2">
             <button
-              v-if="!editingTx"
+              v-if="editingTx"
+              type="button"
+              class="shrink-0 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs font-bold text-slate-700 transition hover:bg-slate-100 active:scale-95 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+              @mousedown.prevent
+              @click="requestClose"
+            >
+              {{ t('confirm.cancelButton') }}
+            </button>
+            <button
+              v-else
               type="button"
               :disabled="!splitValid || (amount ?? 0) <= 0"
               class="shrink-0 rounded-2xl border border-slate-200 bg-slate-50 px-3.5 py-3 text-xs font-bold text-slate-700 transition hover:bg-slate-100 disabled:opacity-40 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
@@ -945,7 +978,8 @@ async function handleSubmit(continueAdding = false) {
             </button>
           </div>
         </div>
+        </div>
       </div>
-    </div>
+    </Transition>
   </Teleport>
 </template>
