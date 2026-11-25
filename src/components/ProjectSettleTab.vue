@@ -13,7 +13,10 @@ import {
   Trash2,
 } from 'lucide-vue-next'
 import type { Project, Transaction } from '@/schemas/ledgerSchema'
-import type { SettleUpResult } from '@/core/settleUpEngine'
+import {
+  applySettlementRatesToTransactions,
+  type SettleUpResult,
+} from '@/core/settleUpEngine'
 import { formatCurrencyAmount } from '@/core/currency'
 import { buildProjectSettlementShareText } from '@/core/shareFormatter'
 import { buildProjectExcelBytes } from '@/core/excelExporter'
@@ -37,7 +40,7 @@ interface Props {
 const props = defineProps<Props>()
 
 const emit = defineEmits<{
-  (e: 'recordPayment', payload: { fromMemberId: string; toMemberId: string; amount: number }): void
+  (e: 'recordPayment', payload: { fromMemberId: string; toMemberId: string; amount: number; currency: string }): void
   (e: 'editSettlement', tx: Transaction): void
   (e: 'deleteSettlement', id: string): void
   (e: 'toast', message: string): void
@@ -50,12 +53,31 @@ const includeDetailsInShare = ref(false)
 const isGeneratingImage = ref(false)
 const customSettleRateDrafts = ref<Record<string, string>>({})
 
-const foreignCurrenciesInProject = computed<string[]>(() => {
-  const base = props.project.baseCurrency.trim().toUpperCase()
-  const set = new Set<string>()
+const settlementCurrency = computed<string>(() =>
+  store.getProjectSettlementCurrency(props.project),
+)
+
+const isCrossCurrencySettlement = computed<boolean>(
+  () =>
+    settlementCurrency.value !== props.project.baseCurrency.trim().toUpperCase(),
+)
+
+const settlementCurrencyChoices = computed<string[]>(() => {
+  const set = new Set<string>(store.availableCurrencies)
+  set.add(props.project.baseCurrency.trim().toUpperCase())
+  set.add(settlementCurrency.value)
   for (const tx of props.expenses) {
+    if (tx.currency) set.add(tx.currency.trim().toUpperCase())
+  }
+  return Array.from(set)
+})
+
+const foreignCurrenciesInProject = computed<string[]>(() => {
+  const target = settlementCurrency.value
+  const set = new Set<string>()
+  for (const tx of [...props.expenses, ...props.settlements]) {
     const cur = tx.currency.trim().toUpperCase()
-    if (cur && cur !== base) set.add(cur)
+    if (cur && cur !== target) set.add(cur)
   }
   return Array.from(set)
 })
@@ -80,15 +102,15 @@ const formattedLiveRatesFetchedAt = computed(() => {
 })
 
 function syncSettleRateDrafts() {
-  const base = props.project.baseCurrency
+  const target = settlementCurrency.value
   const next: Record<string, string> = {}
   for (const cur of foreignCurrenciesInProject.value) {
     const saved = props.project.settlementCustomRates?.[cur]
-    const live = store.getLiveExchangeRate(cur, base)
+    const live = store.getLiveExchangeRate(cur, target)
     const fallbackTx = props.expenses.find(
       (tx) => tx.currency.trim().toUpperCase() === cur && tx.exchangeRateToBase > 0,
     )?.exchangeRateToBase
-    const val = saved ?? live ?? fallbackTx
+    const val = saved ?? live ?? fallbackTx ?? store.getEffectiveExchangeRate(cur, target)
     next[cur] = val !== undefined && val !== null ? String(val) : ''
   }
   customSettleRateDrafts.value = next
@@ -97,6 +119,8 @@ function syncSettleRateDrafts() {
 watch(
   () => [
     props.project.id,
+    props.project.settlementCurrency,
+    props.project.baseCurrency,
     props.project.settlementRateMode,
     JSON.stringify(props.project.settlementCustomRates ?? {}),
     foreignCurrenciesInProject.value.join(','),
@@ -107,6 +131,16 @@ watch(
   },
   { immediate: true },
 )
+
+async function handleChangeSettlementCurrency(event: Event) {
+  const nextCurrency = (event.target as HTMLSelectElement).value
+  if (!nextCurrency || nextCurrency === settlementCurrency.value) return
+  if (!store.liveRatesFetchedAt) {
+    void store.refreshExchangeRates(false)
+  }
+  await store.updateProjectSettlementCurrency(props.project.id, nextCurrency)
+  emit('toast', t('rates.settlementCurrencyChangedToast', { currency: nextCurrency }))
+}
 
 async function handleSelectSettleRateMode(mode: 'per_tx' | 'live' | 'custom') {
   if (mode === 'live' && !store.liveRatesFetchedAt) {
@@ -141,10 +175,10 @@ async function handleSaveCustomSettleRates() {
 }
 
 async function handleFillLiveToCustomSettleRate(cur: string) {
-  let live = store.getLiveExchangeRate(cur, props.project.baseCurrency)
+  let live = store.getLiveExchangeRate(cur, settlementCurrency.value)
   if (live === null) {
     await store.refreshExchangeRates(true)
-    live = store.getLiveExchangeRate(cur, props.project.baseCurrency)
+    live = store.getLiveExchangeRate(cur, settlementCurrency.value)
   }
   if (live === null) {
     emit('toast', t('project.liveRateUnavailableToast'))
@@ -280,7 +314,19 @@ function getCategoryColor(key: string): string {
 }
 
 function handleExportExcel() {
-  const allProjectTxs = [...props.expenses, ...props.settlements]
+  const { settlementCurrency: targetCur, options } =
+    store.getProjectSettlementOptions(props.project, [
+      ...props.expenses,
+      ...props.settlements,
+    ])
+  const effectiveSettlements = applySettlementRatesToTransactions(
+    props.settlements,
+    targetCur,
+    options.overrideRatesByCurrency,
+    options.projectBaseCurrency,
+    options.baseToSettlementRate,
+  )
+  const allProjectTxs = [...props.expenses, ...effectiveSettlements]
   const bytes = buildProjectExcelBytes(
     props.project,
     allProjectTxs,
@@ -402,17 +448,40 @@ async function handleExportLongImage() {
 
 <template>
   <div class="space-y-4">
-    <!-- 結算金額使用匯率選擇卡片（當專案含外幣時顯示，可自由切換各筆原匯率／即時匯率／自訂結算匯率） -->
+    <!-- 結帳幣別與匯率設定卡片（可自行選擇要結帳的幣別，並於含外幣時切換各筆原匯率／即時匯率／自訂結算匯率） -->
     <section
-      v-if="foreignCurrenciesInProject.length > 0"
       class="space-y-2.5 rounded-2xl border border-amber-200/80 bg-amber-50/40 p-3.5 shadow-sm dark:border-amber-900/60 dark:bg-amber-950/20"
     >
-      <div class="flex items-center justify-between gap-2">
-        <div class="flex items-center gap-1.5 text-xs font-bold text-slate-800 dark:text-slate-100">
-          <ArrowLeftRight class="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
-          <span>{{ t('rates.settleRateTitle') }}</span>
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <div class="flex items-center gap-2">
+          <div class="flex items-center gap-1.5 text-xs font-bold text-slate-800 dark:text-slate-100">
+            <ArrowLeftRight class="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
+            <span>{{ t('rates.settlementCurrencyLabel') }}</span>
+          </div>
+          <select
+            :value="settlementCurrency"
+            :aria-label="t('rates.settlementCurrencyLabel')"
+            class="rounded-lg border border-amber-300/80 bg-white px-2.5 py-1 text-xs font-extrabold text-slate-900 focus:border-emerald-500 focus:outline-none dark:border-amber-800 dark:bg-slate-900 dark:text-white"
+            @change="handleChangeSettlementCurrency"
+          >
+            <option
+              v-for="code in settlementCurrencyChoices"
+              :key="code"
+              :value="code"
+            >
+              {{ code }}
+            </option>
+          </select>
+          <span
+            v-if="isCrossCurrencySettlement"
+            class="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800 dark:bg-amber-900/50 dark:text-amber-200"
+          >
+            {{ t('rates.settlementCurrencyNote', { base: project.baseCurrency }) }}
+          </span>
         </div>
+
         <button
+          v-if="foreignCurrenciesInProject.length > 0"
           type="button"
           :disabled="store.isRefreshingLiveRates"
           class="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700 hover:underline disabled:opacity-50 dark:text-amber-300"
@@ -432,101 +501,103 @@ async function handleExportLongImage() {
         </button>
       </div>
 
-      <div class="grid grid-cols-3 gap-1 rounded-xl bg-white/80 p-1 text-[11px] font-bold dark:bg-slate-900/80">
-        <button
-          type="button"
-          class="rounded-lg py-1.5 transition"
-          :class="
-            currentRateMode === 'per_tx'
-              ? 'bg-slate-900 text-white shadow-sm dark:bg-emerald-500 dark:text-slate-950'
-              : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
-          "
-          @click="handleSelectSettleRateMode('per_tx')"
-        >
-          {{ t('rates.modePerTx') }}
-        </button>
-        <button
-          type="button"
-          class="rounded-lg py-1.5 transition"
-          :class="
-            currentRateMode === 'live'
-              ? 'bg-slate-900 text-white shadow-sm dark:bg-emerald-500 dark:text-slate-950'
-              : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
-          "
-          @click="handleSelectSettleRateMode('live')"
-        >
-          {{ t('rates.modeLive') }}
-        </button>
-        <button
-          type="button"
-          class="rounded-lg py-1.5 transition"
-          :class="
-            currentRateMode === 'custom'
-              ? 'bg-slate-900 text-white shadow-sm dark:bg-emerald-500 dark:text-slate-950'
-              : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
-          "
-          @click="handleSelectSettleRateMode('custom')"
-        >
-          {{ t('rates.modeCustom') }}
-        </button>
-      </div>
-
-      <!-- 即時匯率對照顯示 -->
-      <div
-        v-if="currentRateMode === 'live'"
-        class="flex flex-wrap items-center gap-2 text-[11px] text-amber-900 dark:text-amber-200"
-      >
-        <span
-          v-for="cur in foreignCurrenciesInProject"
-          :key="cur"
-          class="inline-flex items-center gap-1 rounded-lg bg-white/90 px-2.5 py-1 font-bold tabular-nums shadow-sm dark:bg-slate-900"
-        >
-          <span>1 {{ cur }} =</span>
-          <span class="text-emerald-700 dark:text-emerald-400">
-            {{ store.getLiveExchangeRate(cur, project.baseCurrency) ?? '—' }}
-          </span>
-          <span>{{ project.baseCurrency }}</span>
-        </span>
-      </div>
-
-      <!-- 自訂結算匯率輸入列 -->
-      <div v-else-if="currentRateMode === 'custom'" class="space-y-1.5">
-        <div
-          v-for="cur in foreignCurrenciesInProject"
-          :key="cur"
-          class="flex items-center gap-1.5 rounded-xl bg-white/90 px-2.5 py-1.5 text-xs dark:bg-slate-900"
-        >
-          <span class="shrink-0 font-bold text-slate-700 dark:text-slate-200">
-            1 {{ cur }} =
-          </span>
-          <input
-            v-model="customSettleRateDrafts[cur]"
-            type="number"
-            step="any"
-            min="0"
-            inputmode="decimal"
-            class="min-w-0 flex-1 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-bold tabular-nums text-slate-900 focus:border-emerald-500 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white"
-            @keyup.enter="handleSaveCustomSettleRates"
-          />
-          <span class="shrink-0 text-[11px] font-bold text-slate-500">
-            {{ project.baseCurrency }}
-          </span>
+      <template v-if="foreignCurrenciesInProject.length > 0">
+        <div class="grid grid-cols-3 gap-1 rounded-xl bg-white/80 p-1 text-[11px] font-bold dark:bg-slate-900/80">
           <button
             type="button"
-            class="shrink-0 rounded-lg border border-slate-200 px-2 py-1 text-[10px] font-semibold text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300"
-            @click="handleFillLiveToCustomSettleRate(cur)"
+            class="rounded-lg py-1.5 transition"
+            :class="
+              currentRateMode === 'per_tx'
+                ? 'bg-slate-900 text-white shadow-sm dark:bg-emerald-500 dark:text-slate-950'
+                : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
+            "
+            @click="handleSelectSettleRateMode('per_tx')"
           >
-            {{ t('rates.useLiveShort') }}
+            {{ t('rates.modePerTx') }}
+          </button>
+          <button
+            type="button"
+            class="rounded-lg py-1.5 transition"
+            :class="
+              currentRateMode === 'live'
+                ? 'bg-slate-900 text-white shadow-sm dark:bg-emerald-500 dark:text-slate-950'
+                : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
+            "
+            @click="handleSelectSettleRateMode('live')"
+          >
+            {{ t('rates.modeLive') }}
+          </button>
+          <button
+            type="button"
+            class="rounded-lg py-1.5 transition"
+            :class="
+              currentRateMode === 'custom'
+                ? 'bg-slate-900 text-white shadow-sm dark:bg-emerald-500 dark:text-slate-950'
+                : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
+            "
+            @click="handleSelectSettleRateMode('custom')"
+          >
+            {{ t('rates.modeCustom') }}
           </button>
         </div>
-        <button
-          type="button"
-          class="w-full rounded-xl bg-slate-900 py-1.5 text-[11px] font-bold text-white hover:bg-slate-800 dark:bg-emerald-500 dark:text-slate-950"
-          @click="handleSaveCustomSettleRates"
+
+        <!-- 即時匯率對照顯示 -->
+        <div
+          v-if="currentRateMode === 'live'"
+          class="flex flex-wrap items-center gap-2 text-[11px] text-amber-900 dark:text-amber-200"
         >
-          {{ t('rates.applySettleCustomButton') }}
-        </button>
-      </div>
+          <span
+            v-for="cur in foreignCurrenciesInProject"
+            :key="cur"
+            class="inline-flex items-center gap-1 rounded-lg bg-white/90 px-2.5 py-1 font-bold tabular-nums shadow-sm dark:bg-slate-900"
+          >
+            <span>1 {{ cur }} =</span>
+            <span class="text-emerald-700 dark:text-emerald-400">
+              {{ store.getEffectiveExchangeRate(cur, settlementCurrency) }}
+            </span>
+            <span>{{ settlementCurrency }}</span>
+          </span>
+        </div>
+
+        <!-- 自訂結算匯率輸入列 -->
+        <div v-else-if="currentRateMode === 'custom'" class="space-y-1.5">
+          <div
+            v-for="cur in foreignCurrenciesInProject"
+            :key="cur"
+            class="flex items-center gap-1.5 rounded-xl bg-white/90 px-2.5 py-1.5 text-xs dark:bg-slate-900"
+          >
+            <span class="shrink-0 font-bold text-slate-700 dark:text-slate-200">
+              1 {{ cur }} =
+            </span>
+            <input
+              v-model="customSettleRateDrafts[cur]"
+              type="number"
+              step="any"
+              min="0"
+              inputmode="decimal"
+              class="min-w-0 flex-1 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-bold tabular-nums text-slate-900 focus:border-emerald-500 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+              @keyup.enter="handleSaveCustomSettleRates"
+            />
+            <span class="shrink-0 text-[11px] font-bold text-slate-500">
+              {{ settlementCurrency }}
+            </span>
+            <button
+              type="button"
+              class="shrink-0 rounded-lg border border-slate-200 px-2 py-1 text-[10px] font-semibold text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300"
+              @click="handleFillLiveToCustomSettleRate(cur)"
+            >
+              {{ t('rates.useLiveShort') }}
+            </button>
+          </div>
+          <button
+            type="button"
+            class="w-full rounded-xl bg-slate-900 py-1.5 text-[11px] font-bold text-white hover:bg-slate-800 dark:bg-emerald-500 dark:text-slate-950"
+            @click="handleSaveCustomSettleRates"
+          >
+            {{ t('rates.applySettleCustomButton') }}
+          </button>
+        </div>
+      </template>
     </section>
 
     <!-- 各成員總支出與結算總覽（含一鍵分享精簡／明細切換與報表匯出） -->
@@ -541,7 +612,7 @@ async function handleExportLongImage() {
           <div class="mt-0.5 text-[11px] font-semibold tabular-nums text-slate-500 dark:text-slate-400">
             {{ t('settle.projectTotalSpend') }}:
             <strong class="text-slate-900 dark:text-white">{{
-              fmt(settleUp.totalProjectExpense, project.baseCurrency)
+              fmt(settleUp.totalProjectExpense, settlementCurrency)
             }}</strong>
           </div>
         </div>
@@ -605,7 +676,7 @@ async function handleExportLongImage() {
                         : 'text-slate-400'
                   "
                 >
-                  {{ bal.netAmount > 0 ? '+' : '' }}{{ fmt(bal.netAmount, project.baseCurrency) }}
+                  {{ bal.netAmount > 0 ? '+' : '' }}{{ fmt(bal.netAmount, settlementCurrency) }}
                 </div>
                 <div class="text-[10px] text-slate-400">
                   {{
@@ -625,13 +696,13 @@ async function handleExportLongImage() {
               <div>
                 <span class="text-slate-400">{{ t('settle.memberTotalExpense') }}</span>
                 <div class="font-bold tabular-nums text-slate-800 dark:text-slate-100">
-                  {{ fmt(bal.totalExpense, project.baseCurrency) }}
+                  {{ fmt(bal.totalExpense, settlementCurrency) }}
                 </div>
               </div>
               <div class="text-right">
                 <span class="text-slate-400">{{ t('settle.memberTotalPaid') }}</span>
                 <div class="font-semibold tabular-nums text-slate-600 dark:text-slate-300">
-                  {{ fmt(bal.totalPaid, project.baseCurrency) }}
+                  {{ fmt(bal.totalPaid, settlementCurrency) }}
                 </div>
               </div>
             </div>
@@ -667,7 +738,7 @@ async function handleExportLongImage() {
     <!-- 消費結構圓餅圖統計 -->
     <CategoryPieChart
       :transactions="expenses"
-      :base-currency="project.baseCurrency"
+      :base-currency="settlementCurrency"
     />
 
     <!-- 待還款結算 -->
@@ -722,6 +793,7 @@ async function handleExportLongImage() {
                 fromMemberId: transfer.fromMemberId,
                 toMemberId: transfer.toMemberId,
                 amount: transfer.amount,
+                currency: transfer.currency,
               })
             "
           >

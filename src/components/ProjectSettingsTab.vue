@@ -279,18 +279,20 @@ function handleExportProjectExcel() {
   const rawProjectTxs = store.visibleTransactions.filter(
     (tx) => tx.projectId === props.project.id,
   )
-  const overrides = store.getProjectSettlementRateOverrides(
+  const { settlementCurrency, options } = store.getProjectSettlementOptions(
     props.project,
     rawProjectTxs,
   )
   const projectTxs = applySettlementRatesToTransactions(
     rawProjectTxs,
-    props.project.baseCurrency,
-    overrides,
+    settlementCurrency,
+    options.overrideRatesByCurrency,
+    options.projectBaseCurrency,
+    options.baseToSettlementRate,
   )
   const settleUp = calculateSettleUp(
     projectTxs,
-    props.project.baseCurrency,
+    settlementCurrency,
     props.project.members.map((m) => m.id),
   )
   const bytes = buildProjectExcelBytes(props.project, projectTxs, settleUp, {
@@ -348,19 +350,21 @@ async function handleExportProjectLongImage() {
     const rawProjectTxs = store.visibleTransactions.filter(
       (tx) => tx.projectId === props.project.id,
     )
-    const overrides = store.getProjectSettlementRateOverrides(
+    const { settlementCurrency, options } = store.getProjectSettlementOptions(
       props.project,
       rawProjectTxs,
     )
     const projectTxs = applySettlementRatesToTransactions(
       rawProjectTxs,
-      props.project.baseCurrency,
-      overrides,
+      settlementCurrency,
+      options.overrideRatesByCurrency,
+      options.projectBaseCurrency,
+      options.baseToSettlementRate,
     )
     const expenses = projectTxs.filter((tx) => tx.type !== 'transfer')
     const settleUp = calculateSettleUp(
       projectTxs,
-      props.project.baseCurrency,
+      settlementCurrency,
       props.project.members.map((m) => m.id),
     )
     const blob = await generateProjectReportPngBlob(

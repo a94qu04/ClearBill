@@ -235,6 +235,7 @@ export function buildProjectExcelBytes(
   settleUp: SettleUpResult,
   labels: ExcelExportLabels,
 ): Uint8Array {
+  const targetCurrency = settleUp.currency || project.baseCurrency
   const memberMap = new Map<string, string>()
   for (const m of project.members) {
     memberMap.set(m.id, m.name)
@@ -275,8 +276,8 @@ export function buildProjectExcelBytes(
   for (const tx of sortedTxs) {
     const sign = tx.type === 'refund' ? -1 : 1
     const rate = tx.exchangeRateToBase > 0 ? tx.exchangeRateToBase : 1
-    const baseUnits = toMinorUnits(tx.amount * rate, project.baseCurrency)
-    const signedBaseAmount = sign * fromMinorUnits(baseUnits, project.baseCurrency)
+    const baseUnits = toMinorUnits(tx.amount * rate, targetCurrency)
+    const signedBaseAmount = sign * fromMinorUnits(baseUnits, targetCurrency)
     const signedOriginalAmount = sign * tx.amount
 
     let payersText = ''
@@ -306,7 +307,7 @@ export function buildProjectExcelBytes(
         tx.currency,
         rate,
         signedBaseAmount,
-        project.baseCurrency,
+        targetCurrency,
         payersText,
         sharesText,
       ],
@@ -321,7 +322,7 @@ export function buildProjectExcelBytes(
         project.name,
         labels.summaryHeaders.projectTotal,
         settleUp.totalProjectExpense,
-        project.baseCurrency,
+        targetCurrency,
       ],
     },
     { cells: [] },

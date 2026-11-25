@@ -111,32 +111,72 @@ function simplifyDebtFromUnits(
 }
 
 export interface SettleUpOptions {
-  /** 選填：依幣別覆寫外幣折合主幣別之結算匯率（例如統一套用即時匯率或自訂結算匯率） */
+  /** 選填：依幣別覆寫該幣別折合「結帳幣別」之匯率（例如統一套用即時匯率或自訂結算匯率） */
   overrideRatesByCurrency?: Record<string, number>
+  /** 選填：專案原本的記帳主幣別（當結帳幣別 ≠ 記帳主幣別時，用於將原匯率換算至結帳幣別） */
+  projectBaseCurrency?: string
+  /** 選填：1 記帳主幣別 = ? 結帳幣別（於 per_tx 模式下跨結帳幣別換算使用） */
+  baseToSettlementRate?: number
 }
 
 /**
- * 依據指定的結算覆寫匯率表，產出供圓餅圖、報表匯出與結算共用之交易清單副本（不修改原始資料）
+ * 依據指定的結帳幣別與覆寫匯率表，產出供圓餅圖、報表匯出與結算共用之交易清單副本（不修改原始資料）
  */
 export function applySettlementRatesToTransactions(
   transactions: Transaction[],
-  baseCurrency: string,
+  settlementCurrency: string,
   overrideRatesByCurrency?: Record<string, number>,
+  projectBaseCurrency?: string,
+  baseToSettlementRate?: number,
 ): Transaction[] {
-  if (!overrideRatesByCurrency || Object.keys(overrideRatesByCurrency).length === 0) {
+  const target = settlementCurrency.trim().toUpperCase()
+  const projBase = (projectBaseCurrency || target).trim().toUpperCase()
+  const hasOverrides = Boolean(
+    overrideRatesByCurrency && Object.keys(overrideRatesByCurrency).length > 0,
+  )
+  const crossCurrencySettlement = target !== projBase
+
+  if (!hasOverrides && !crossCurrencySettlement) {
     return transactions
   }
-  const base = baseCurrency.trim().toUpperCase()
+
+  const validBaseToTarget =
+    typeof baseToSettlementRate === 'number' &&
+    Number.isFinite(baseToSettlementRate) &&
+    baseToSettlementRate > 0
+      ? baseToSettlementRate
+      : null
+
   return transactions.map((tx) => {
     const txCur = tx.currency.trim().toUpperCase()
-    if (txCur === base) return tx
-    const override = overrideRatesByCurrency[txCur]
+    if (txCur === target) {
+      return tx.exchangeRateToBase === 1
+        ? tx
+        : {
+            ...tx,
+            exchangeRateToBase: 1,
+          }
+    }
+
+    const override = overrideRatesByCurrency?.[txCur]
     if (typeof override === 'number' && Number.isFinite(override) && override > 0) {
       return {
         ...tx,
         exchangeRateToBase: override,
       }
     }
+
+    if (crossCurrencySettlement && validBaseToTarget !== null) {
+      const originalToBase = txCur === projBase ? 1 : tx.exchangeRateToBase > 0 ? tx.exchangeRateToBase : 1
+      const convertedRate = Number((originalToBase * validBaseToTarget).toFixed(6))
+      if (Number.isFinite(convertedRate) && convertedRate > 0) {
+        return {
+          ...tx,
+          exchangeRateToBase: convertedRate,
+        }
+      }
+    }
+
     return tx
   })
 }
@@ -146,19 +186,21 @@ export function applySettlementRatesToTransactions(
  * - 自動忽略已軟刪除（isDeleted）與不含 splitConfig 的交易
  * - 支援 expense（單人或多人墊付支出）、refund（退款返還）與 transfer（專案內已付還款沖銷）
  * - 同步計算每位成員的個人消費總支出（totalExpense）、總墊付（totalPaid）與淨收支（netAmount）
- * - 支援跨幣別交易：可依每筆 exchangeRateToBase 或選填 overrideRatesByCurrency 換算至專案基準幣別，並確保系統總淨額恆等於 0
+ * - 支援跨幣別交易與獨立結帳幣別：可依各筆原匯率、即時匯率或自訂匯率換算至結帳幣別，並確保系統總淨額恆等於 0
  */
 export function calculateSettleUp(
   transactions: Transaction[],
-  baseCurrency = 'TWD',
+  settlementCurrency = 'TWD',
   knownMemberIds: string[] = [],
   options?: SettleUpOptions,
 ): SettleUpResult {
-  const currency = CurrencyCodeSchema.parse(baseCurrency)
+  const currency = CurrencyCodeSchema.parse(settlementCurrency)
   const effectiveTransactions = applySettlementRatesToTransactions(
     transactions,
     currency,
     options?.overrideRatesByCurrency,
+    options?.projectBaseCurrency,
+    options?.baseToSettlementRate,
   )
   const netUnitMap = new Map<string, number>()
   const expenseUnitMap = new Map<string, number>()

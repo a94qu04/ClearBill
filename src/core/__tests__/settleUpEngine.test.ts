@@ -307,4 +307,85 @@ describe('settleUpEngine - 多人債務最小化結算演算法', () => {
     ])
     expect(overridden.balances.reduce((acc, b) => acc + b.netAmount, 0)).toBe(0)
   })
+
+  it('支援結算頁獨立指定不同於記帳主幣別之結帳幣別（含原幣別保留 1:1、跨幣別轉換與結帳幣別還款沖銷）', () => {
+    // 專案記帳主幣別為 KRW：
+    // 1. Alice 墊付 KRW 100,000（兩人平分各 50,000 KRW）
+    // 2. Bob 先在台灣用 TWD 1,000 訂票（記帳時折合 KRW 匯率 40，兩人平分各 500 TWD）
+    const transactions: Transaction[] = [
+      createExpenseTx({
+        id: '99999999-9999-4999-8999-999999999991',
+        amount: 100000,
+        currency: 'KRW',
+        exchangeRateToBase: 1,
+        splitConfig: {
+          payerId: 'alice',
+          mode: 'equal',
+          shares: [
+            { memberId: 'alice', finalAmount: 50000 },
+            { memberId: 'bob', finalAmount: 50000 },
+          ],
+        },
+      }),
+      createExpenseTx({
+        id: '99999999-9999-4999-8999-999999999992',
+        amount: 1000,
+        currency: 'TWD',
+        exchangeRateToBase: 40,
+        splitConfig: {
+          payerId: 'bob',
+          mode: 'equal',
+          shares: [
+            { memberId: 'alice', finalAmount: 500 },
+            { memberId: 'bob', finalAmount: 500 },
+          ],
+        },
+      }),
+    ]
+
+    // 結算頁改選以 TWD 結帳（1 KRW = 0.024 TWD）：
+    // - KRW 100,000 -> TWD 2,400（各負擔 1,200，Alice 墊付 2,400）
+    // - TWD 1,000 原幣別即為結帳幣別 -> 嚴格維持 1:1 = TWD 1,000（各負擔 500，Bob 墊付 1,000）
+    // - 總支出 = 3,400 TWD；Alice 淨額 +700，Bob 淨額 -700 -> Bob 付 Alice 700 TWD
+    const inTwd = calculateSettleUp(transactions, 'TWD', ['alice', 'bob'], {
+      projectBaseCurrency: 'KRW',
+      baseToSettlementRate: 0.024,
+    })
+
+    expect(inTwd.currency).toBe('TWD')
+    expect(inTwd.totalProjectExpense).toBe(3400)
+    expect(inTwd.transfers).toEqual([
+      { fromMemberId: 'bob', toMemberId: 'alice', amount: 700, currency: 'TWD' },
+    ])
+    expect(inTwd.balances.reduce((acc, b) => acc + b.netAmount, 0)).toBe(0)
+
+    // Bob 直接以 TWD 還款 700 給 Alice 後應完全結清
+    const afterPaid = calculateSettleUp(
+      [
+        ...transactions,
+        createExpenseTx({
+          id: '99999999-9999-4999-8999-999999999993',
+          type: 'transfer',
+          amount: 700,
+          currency: 'TWD',
+          exchangeRateToBase: 41.6667,
+          categoryKey: 'cat_settlement',
+          splitConfig: {
+            payerId: 'bob',
+            mode: 'custom_plus_equal',
+            shares: [{ memberId: 'alice', finalAmount: 700 }],
+          },
+        }),
+      ],
+      'TWD',
+      ['alice', 'bob'],
+      {
+        projectBaseCurrency: 'KRW',
+        baseToSettlementRate: 0.024,
+      },
+    )
+
+    expect(afterPaid.transfers).toEqual([])
+    expect(afterPaid.balances.every((b) => b.netAmount === 0)).toBe(true)
+  })
 })

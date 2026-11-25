@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { X } from 'lucide-vue-next'
 import { useLedgerStore } from '@/stores/ledgerStore'
@@ -15,12 +15,14 @@ interface Props {
   initialFromId?: string
   initialToId?: string
   suggestedAmount?: number | null
+  currency?: string | null
 }
 
 const props = withDefaults(defineProps<Props>(), {
   initialFromId: '',
   initialToId: '',
   suggestedAmount: null,
+  currency: null,
 })
 
 const emit = defineEmits<{
@@ -30,6 +32,13 @@ const emit = defineEmits<{
 
 const { t, locale } = useI18n()
 const store = useLedgerStore()
+
+const effectiveCurrency = computed<string>(() => {
+  if (props.editingTx) return props.editingTx.currency
+  if (props.currency) return props.currency.trim().toUpperCase()
+  if (props.project) return store.getProjectSettlementCurrency(props.project)
+  return store.defaultCurrency
+})
 
 const fromId = ref('')
 const toId = ref('')
@@ -78,14 +87,23 @@ async function handleSubmit() {
     return
   }
 
+  const payCurrency = effectiveCurrency.value
+  const projectBase = props.project.baseCurrency.trim().toUpperCase()
+  const rateToBase =
+    payCurrency === projectBase
+      ? 1
+      : props.editingTx && props.editingTx.currency.trim().toUpperCase() === payCurrency
+        ? props.editingTx.exchangeRateToBase
+        : store.getEffectiveExchangeRate(payCurrency, projectBase)
+
   try {
     if (props.editingTx) {
       await store.updateTransaction(props.editingTx.id, {
         projectId: props.project.id,
         type: 'transfer',
         amount: numericAmount,
-        currency: props.project.baseCurrency,
-        exchangeRateToBase: 1,
+        currency: payCurrency,
+        exchangeRateToBase: rateToBase,
         categoryKey: 'cat_settlement',
         date: date.value || getTodayIso(),
         time: '00:00',
@@ -113,7 +131,8 @@ async function handleSubmit() {
       fromMemberId: fromId.value,
       toMemberId: toId.value,
       amount: numericAmount,
-      currency: props.project.baseCurrency,
+      currency: payCurrency,
+      exchangeRateToBase: rateToBase,
       date: date.value || getTodayIso(),
       note: note.value,
     })
@@ -193,11 +212,11 @@ async function handleSubmit() {
 
           <div>
             <label class="mb-1 block text-xs font-semibold text-slate-500">
-              {{ t('settle.paidAmountLabel') }} ({{ project.baseCurrency }})
+              {{ t('settle.paidAmountLabel') }} ({{ effectiveCurrency }})
             </label>
             <CurrencyAmountInput
               v-model="amount"
-              :currency="project.baseCurrency"
+              :currency="effectiveCurrency"
               size="lg"
               autofocus
               placeholder="0"
@@ -208,7 +227,7 @@ async function handleSubmit() {
             >
               {{
                 t('settle.remainingHint', {
-                  amount: fmt(suggestedAmount, project.baseCurrency),
+                  amount: fmt(suggestedAmount, effectiveCurrency),
                 })
               }}
             </p>

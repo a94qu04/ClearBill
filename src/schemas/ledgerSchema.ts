@@ -162,9 +162,11 @@ export const ProjectSchema = z.object({
   cardColor: z.string().trim().max(32).optional(),
   /** 選填：專案小卡自訂封面照片（16:9 輕量壓縮 Data URL） */
   cardCoverImage: z.string().max(280_000).optional(),
+  /** 選填：結算頁面自行設定之結帳幣別（未設定時預設等同記帳主幣別 baseCurrency） */
+  settlementCurrency: CurrencyCodeSchema.optional(),
   /** 選填：結算金額使用之匯率模式（per_tx=各筆原匯率 | live=統一套用即時匯率 | custom=統一自訂結算匯率） */
   settlementRateMode: z.enum(['per_tx', 'live', 'custom']).optional(),
-  /** 選填：當 settlementRateMode 為 custom 時，各外幣折合主幣別之自訂結算匯率 */
+  /** 選填：當 settlementRateMode 為 custom 時，各幣別折合結帳幣別之自訂結算匯率 */
   settlementCustomRates: z.record(z.string(), z.number().finite().positive()).optional(),
   syncMeta: ProjectSyncMetaSchema.optional(),
   createdAt: z.number().int().nonnegative(),

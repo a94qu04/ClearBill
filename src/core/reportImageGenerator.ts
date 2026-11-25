@@ -80,12 +80,13 @@ export async function generateProjectReportPngBlob(
     memberNameMap.set(m.id, m.name)
     memberColorMap.set(m.id, m.avatarColor || '#10b981')
   }
+  const targetCurrency = settleUp.currency || project.baseCurrency
   const nameOf = (id: string) => memberNameMap.get(id) ?? id
   const colorOf = (id: string) => memberColorMap.get(id) ?? '#10b981'
-  const fmt = (amount: number, cur = project.baseCurrency) =>
+  const fmt = (amount: number, cur = targetCurrency) =>
     formatCurrencyAmount(amount, cur, locale)
 
-  const catStats = calculateCategoryStats(expenses, project.baseCurrency)
+  const catStats = calculateCategoryStats(expenses, targetCurrency)
   const validEntries = expenses
     .filter((tx) => !tx.isDeleted && (tx.type === 'expense' || tx.type === 'refund'))
     .sort((a, b) => {
@@ -143,7 +144,7 @@ export async function generateProjectReportPngBlob(
   ctx.font = `600 15px ${fontStack}`
   ctx.textAlign = 'right'
   ctx.fillText(
-    `${labels.memberCountLabel} · ${project.baseCurrency}`,
+    `${labels.memberCountLabel} · ${targetCurrency}`,
     PAD + CARD_W - 28,
     y + 38,
   )
@@ -165,7 +166,7 @@ export async function generateProjectReportPngBlob(
   ctx.font = `800 32px ${fontStack}`
   ctx.textAlign = 'right'
   ctx.fillText(
-    fmt(settleUp.totalProjectExpense, project.baseCurrency),
+    fmt(settleUp.totalProjectExpense, targetCurrency),
     PAD + CARD_W - 28,
     y + 124,
   )
@@ -420,11 +421,11 @@ export async function generateProjectReportPngBlob(
         PAD + CARD_W - 24,
         ey + 18,
       )
-      if (tx.currency !== project.baseCurrency) {
+      if (tx.currency !== targetCurrency) {
         ctx.fillStyle = '#d97706'
         ctx.font = `600 12px ${fontStack}`
         ctx.fillText(
-          `≈ ${sign}${fmt(tx.amount * tx.exchangeRateToBase, project.baseCurrency)}`,
+          `≈ ${sign}${fmt(tx.amount * tx.exchangeRateToBase, targetCurrency)}`,
           PAD + CARD_W - 24,
           ey + 36,
         )

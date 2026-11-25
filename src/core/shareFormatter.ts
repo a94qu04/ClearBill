@@ -51,14 +51,15 @@ export function buildProjectSettlementShareText(
   for (const member of project.members) {
     memberNameMap.set(member.id, member.name)
   }
+  const targetCurrency = settleUp.currency || project.baseCurrency
   const nameOf = (id: string) => memberNameMap.get(id) ?? id
-  const fmt = (amount: number, currency = project.baseCurrency) =>
+  const fmt = (amount: number, currency = targetCurrency) =>
     formatCurrencyAmount(amount, currency, locale)
 
   const lines: string[] = []
   lines.push(`${labels.headerPrefix} ${project.name}`)
   lines.push(
-    `${labels.totalSpendLabel}: ${fmt(settleUp.totalProjectExpense, project.baseCurrency)}`,
+    `${labels.totalSpendLabel}: ${fmt(settleUp.totalProjectExpense, targetCurrency)}`,
   )
   lines.push('')
 
@@ -114,8 +115,8 @@ export function buildProjectSettlementShareText(
         const sign = tx.type === 'refund' ? '-' : ''
         const originalText = `${sign}${fmt(tx.amount, tx.currency)}`
         const amountText =
-          tx.currency !== project.baseCurrency
-            ? `${originalText} (≈ ${sign}${fmt(tx.amount * tx.exchangeRateToBase, project.baseCurrency)})`
+          tx.currency !== targetCurrency
+            ? `${originalText} (≈ ${sign}${fmt(tx.amount * tx.exchangeRateToBase, targetCurrency)})`
             : originalText
 
         let payerText = ''

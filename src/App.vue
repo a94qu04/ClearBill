@@ -287,6 +287,7 @@ const editingSettleTx = ref<Transaction | null>(null)
 const settleInitialFromId = ref('')
 const settleInitialToId = ref('')
 const settleSuggestedAmount = ref<number | null>(null)
+const settleCurrency = ref<string | null>(null)
 
 // 列表元件 ref（用於復原時清除遮蔽篩選）
 const homeTxListRef = ref<InstanceType<typeof TransactionListSection> | null>(null)
@@ -352,8 +353,8 @@ const homeProjectTransactions = computed(() =>
   }),
 )
 
-const activeProjectTotalSpent = computed(
-  () => store.activeProjectSettleUp?.totalProjectExpense ?? 0,
+const activeProjectTotalSpent = computed(() =>
+  store.activeProject ? store.getProjectTotalExpense(store.activeProject.id) : 0,
 )
 
 const topBarTitle = computed(() => {
@@ -497,6 +498,7 @@ function startEditTransaction(tx: Transaction) {
     settleInitialFromId.value = ''
     settleInitialToId.value = ''
     settleSuggestedAmount.value = null
+    settleCurrency.value = tx.currency
     settleSheetOpen.value = true
     return
   }
@@ -509,11 +511,13 @@ function openRecordSettlementModal(payload: {
   fromMemberId: string
   toMemberId: string
   amount: number
+  currency?: string
 }) {
   editingSettleTx.value = null
   settleInitialFromId.value = payload.fromMemberId
   settleInitialToId.value = payload.toMemberId
   settleSuggestedAmount.value = payload.amount
+  settleCurrency.value = payload.currency ?? null
   settleSheetOpen.value = true
 }
 
@@ -1465,6 +1469,7 @@ onBeforeUnmount(() => {
       :initial-from-id="settleInitialFromId"
       :initial-to-id="settleInitialToId"
       :suggested-amount="settleSuggestedAmount"
+      :currency="settleCurrency"
       @close="settleSheetOpen = false"
       @saved="showToast($event)"
     />

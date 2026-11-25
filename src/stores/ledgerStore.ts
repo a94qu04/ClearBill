@@ -24,7 +24,9 @@ import {
 import {
   applySettlementRatesToTransactions,
   calculateSettleUp,
+  type SettleUpOptions,
 } from '@/core/settleUpEngine'
+import { getSuggestedExchangeRate } from '@/core/ledgerHelpers'
 import {
   computeCrossRateFromUsdTable,
   loadCachedLiveRates,
@@ -185,6 +187,7 @@ export interface RecordSettlementPayload {
   toMemberId: string
   amount: number
   currency: string
+  exchangeRateToBase?: number
   date: string
   time?: string
   note?: string
@@ -557,8 +560,27 @@ export const useLedgerStore = defineStore('ledger', () => {
     saveUserPrefs()
   }
 
+  /** 取得專案目前於結算頁使用的結帳幣別（未設定時預設等同記帳主幣別） */
+  function getProjectSettlementCurrency(
+    project: Pick<Project, 'baseCurrency' | 'settlementCurrency'>,
+  ): string {
+    return (project.settlementCurrency || project.baseCurrency).trim().toUpperCase()
+  }
+
+  /** 取得任意兩幣別的最佳參考匯率（即時快取 > 記憶自訂 > 離線估算） */
+  function getEffectiveExchangeRate(from: string, to: string): number {
+    const f = from.trim().toUpperCase()
+    const tCode = to.trim().toUpperCase()
+    if (!f || !tCode || f === tCode) return 1
+    const live = getLiveExchangeRate(f, tCode)
+    if (live !== null && live > 0) return live
+    const remembered = getRememberedExchangeRate(f, tCode)
+    if (remembered !== null && remembered > 0) return remembered
+    return getSuggestedExchangeRate(f, tCode)
+  }
+
   /**
-   * 依據專案設定的結算匯率模式（per_tx / live / custom）產出外幣結算匯率覆寫表
+   * 依據專案設定的結帳幣別與匯率模式（per_tx / live / custom）產出結算幣別與匯率覆寫設定
    */
   function getProjectSettlementRateOverrides(
     project: Project,
@@ -567,37 +589,97 @@ export const useLedgerStore = defineStore('ledger', () => {
     const mode = project.settlementRateMode ?? 'per_tx'
     if (mode === 'per_tx') return undefined
 
-    const base = project.baseCurrency.trim().toUpperCase()
+    const settleCurrency = getProjectSettlementCurrency(project)
     const txs =
       projectTxs ??
       visibleTransactions.value.filter((tx) => tx.projectId === project.id)
     const foreignCurrencies = new Set<string>()
     for (const tx of txs) {
       const c = tx.currency.trim().toUpperCase()
-      if (c && c !== base) foreignCurrencies.add(c)
+      if (c && c !== settleCurrency) foreignCurrencies.add(c)
     }
 
     const overrides: Record<string, number> = {}
     for (const cur of foreignCurrencies) {
       if (mode === 'live') {
-        const live = getLiveExchangeRate(cur, base)
-        if (live !== null && live > 0) {
-          overrides[cur] = live
+        const rate = getEffectiveExchangeRate(cur, settleCurrency)
+        if (rate > 0) {
+          overrides[cur] = rate
         }
       } else if (mode === 'custom') {
         const custom = project.settlementCustomRates?.[cur]
         if (typeof custom === 'number' && Number.isFinite(custom) && custom > 0) {
           overrides[cur] = custom
         } else {
-          const live = getLiveExchangeRate(cur, base)
-          if (live !== null && live > 0) {
-            overrides[cur] = live
+          const fallback = getEffectiveExchangeRate(cur, settleCurrency)
+          if (fallback > 0) {
+            overrides[cur] = fallback
           }
         }
       }
     }
 
     return Object.keys(overrides).length > 0 ? overrides : undefined
+  }
+
+  function getProjectSettlementOptions(
+    project: Project,
+    projectTxs?: Transaction[],
+  ): { settlementCurrency: string; options: SettleUpOptions } {
+    const settlementCurrency = getProjectSettlementCurrency(project)
+    const projectBaseCurrency = project.baseCurrency.trim().toUpperCase()
+    const overrideRatesByCurrency = getProjectSettlementRateOverrides(
+      project,
+      projectTxs,
+    )
+    const baseToSettlementRate =
+      projectBaseCurrency === settlementCurrency
+        ? 1
+        : getEffectiveExchangeRate(projectBaseCurrency, settlementCurrency)
+
+    return {
+      settlementCurrency,
+      options: {
+        ...(overrideRatesByCurrency ? { overrideRatesByCurrency } : {}),
+        projectBaseCurrency,
+        baseToSettlementRate,
+      },
+    }
+  }
+
+  async function updateProjectSettlementCurrency(
+    projectId: string,
+    currency: string,
+  ): Promise<Project | null> {
+    const existing = projects.value.find((p) => p.id === projectId && !p.isDeleted)
+    if (!existing) return null
+
+    const normalized = CurrencyCodeSchema.parse(currency)
+    const prevSettleCurrency = getProjectSettlementCurrency(existing)
+    if (normalized === prevSettleCurrency && existing.settlementCurrency === normalized) {
+      return existing
+    }
+
+    const nextMode =
+      existing.settlementRateMode === 'custom'
+        ? 'live'
+        : existing.settlementRateMode
+
+    const updated: Project = {
+      ...existing,
+      settlementCurrency: normalized,
+      settlementRateMode: nextMode,
+      // 切換結帳幣別時清除舊目標幣別的自訂匯率表，避免舊匯率錯套至新結帳幣別
+      settlementCustomRates: undefined,
+      members: existing.members.map((m) => ({ ...m })),
+      updatedAt: Date.now(),
+    }
+
+    const saved = await saveProjectToNormalVault(updated)
+    projects.value = projects.value.map((p) => (p.id === projectId ? saved : p))
+    await enqueueAndFlushProjectChange(projectId, 'project', saved.id, saved.updatedAt)
+    markGoogleDriveDirty()
+    return saved
   }
 
   async function updateProjectSettlementRateConfig(
@@ -755,37 +837,39 @@ export const useLedgerStore = defineStore('ledger', () => {
     activeProjectTransactions.value.filter((tx) => tx.type === 'transfer'),
   )
 
-  /** 專案內依當前結算匯率模式套用換算後之消費清單（供圓餅圖、結算與報表 100% 同步一致） */
+  /** 專案內依當前結帳幣別與結算匯率模式套用換算後之消費清單（供圓餅圖、結算與報表 100% 同步一致） */
   const activeProjectEffectiveExpenses = computed(() => {
     const proj = activeProject.value
     if (!proj) return []
-    const overrides = getProjectSettlementRateOverrides(
+    const { settlementCurrency, options } = getProjectSettlementOptions(
       proj,
       activeProjectTransactions.value,
     )
     return applySettlementRatesToTransactions(
       activeProjectExpenses.value,
-      proj.baseCurrency,
-      overrides,
+      settlementCurrency,
+      options.overrideRatesByCurrency,
+      options.projectBaseCurrency,
+      options.baseToSettlementRate,
     )
   })
 
   const activeProjectSettleUp = computed(() => {
     const proj = activeProject.value
     if (!proj) return null
-    const overrides = getProjectSettlementRateOverrides(
+    const { settlementCurrency, options } = getProjectSettlementOptions(
       proj,
       activeProjectTransactions.value,
     )
     return calculateSettleUp(
       activeProjectTransactions.value,
-      proj.baseCurrency,
+      settlementCurrency,
       proj.members.map((m) => m.id),
-      overrides ? { overrideRatesByCurrency: overrides } : undefined,
+      options,
     )
   })
 
-  /** 各專案累計淨消費總額對照表（採與 settleUpEngine 完全一致之整數運算，供首頁與清單卡片顯示） */
+  /** 各專案累計淨消費總額對照表（以記帳主幣別 baseCurrency 計算，供首頁小卡與頂部標頭顯示） */
   const projectTotalExpenseMap = computed<Record<string, number>>(() => {
     const txByProject = new Map<string, Transaction[]>()
     for (const tx of visibleTransactions.value) {
@@ -802,7 +886,11 @@ export const useLedgerStore = defineStore('ledger', () => {
         result[proj.id] = 0
         continue
       }
-      const overrides = getProjectSettlementRateOverrides(proj, projTxs)
+      const sameCurrency =
+        getProjectSettlementCurrency(proj) === proj.baseCurrency.trim().toUpperCase()
+      const overrides = sameCurrency
+        ? getProjectSettlementRateOverrides(proj, projTxs)
+        : undefined
       const settle = calculateSettleUp(
         projTxs,
         proj.baseCurrency,
@@ -2143,12 +2231,22 @@ export const useLedgerStore = defineStore('ledger', () => {
   async function recordSettlementPayment(
     payload: RecordSettlementPayload,
   ): Promise<Transaction> {
+    const proj = projects.value.find((p) => p.id === payload.projectId)
+    const payCurrency = payload.currency.trim().toUpperCase()
+    const baseCurrency = proj?.baseCurrency.trim().toUpperCase() ?? payCurrency
+    const effectiveRate =
+      payload.exchangeRateToBase && payload.exchangeRateToBase > 0
+        ? payload.exchangeRateToBase
+        : payCurrency === baseCurrency
+          ? 1
+          : getEffectiveExchangeRate(payCurrency, baseCurrency)
+
     return addTransaction({
       projectId: payload.projectId,
       type: 'transfer',
       amount: payload.amount,
-      currency: payload.currency,
-      exchangeRateToBase: 1,
+      currency: payCurrency,
+      exchangeRateToBase: effectiveRate,
       categoryKey: 'cat_settlement',
       date: payload.date,
       time: payload.time || '00:00',
@@ -2440,12 +2538,16 @@ export const useLedgerStore = defineStore('ledger', () => {
     isRefreshingLiveRates,
     refreshExchangeRates,
     getLiveExchangeRate,
+    getEffectiveExchangeRate,
+    getProjectSettlementCurrency,
+    getProjectSettlementOptions,
     getProjectTotalExpense,
     getProjectTransactionCount,
     getRememberedExchangeRate,
     rememberExchangeRate,
     clearRememberedExchangeRate,
     getProjectSettlementRateOverrides,
+    updateProjectSettlementCurrency,
     updateProjectSettlementRateConfig,
     getProjectById,
     getAnyProjectById,
