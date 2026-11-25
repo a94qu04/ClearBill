@@ -481,58 +481,45 @@ const sizeClasses = computed(() => {
       />
     </div>
 
-    <!-- 手機友善迷你運算按鈕列（不犧牲數字鍵盤，也能一指點加減乘除） -->
+    <!-- 同一排整合：加減乘除算式按鈕 ＋ 服務費／刷卡費按需展開膠囊 -->
     <div
-      v-if="enableExpression && (showMathToolbar || isFocused || isExpressionInput)"
-      class="flex flex-wrap items-center justify-between gap-1.5 px-0.5"
-    >
-      <div class="flex flex-wrap items-center gap-1">
-        <button
-          v-for="op in (['+', '-', '×', '÷'] as const)"
-          :key="op"
-          type="button"
-          class="inline-flex h-6 min-w-[28px] items-center justify-center rounded-lg border border-slate-200 bg-white px-2 text-xs font-bold text-slate-700 shadow-sm transition hover:bg-slate-100 active:scale-95 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
-          @mousedown.prevent
-          @click="appendOperator(op)"
-        >
-          {{ op }}
-        </button>
-        <button
-          v-if="isExpressionInput && evaluatedExpressionValue !== null"
-          type="button"
-          class="inline-flex h-6 items-center justify-center rounded-lg bg-emerald-600 px-2.5 text-xs font-bold text-white shadow-sm transition hover:bg-emerald-700 active:scale-95 dark:bg-emerald-500 dark:text-slate-950"
-          @mousedown.prevent
-          @click="commitExpressionIfValid"
-        >
-          =
-        </button>
-      </div>
-
-      <div class="text-[11px]">
-        <span
-          v-if="isExpressionInput && evaluatedExpressionValue !== null"
-          class="font-bold tabular-nums text-emerald-600 dark:text-emerald-400"
-        >
-          = {{ formattedExpressionPreview }}
-        </span>
-        <span
-          v-else-if="isExpressionInput"
-          class="font-medium text-amber-600 dark:text-amber-400"
-        >
-          {{ t('project.expressionIncomplete') }}
-        </span>
-      </div>
-    </div>
-
-    <!-- 數字下方：預設收合之「服務費／刷卡費」按需展開區塊（節省手機版面空間） -->
-    <div
-      v-if="showServiceFeeButton || showFxFeeButton"
+      v-if="
+        (enableExpression && (showMathToolbar || isFocused || isExpressionInput)) ||
+        showServiceFeeButton ||
+        showFxFeeButton
+      "
       class="space-y-1.5"
     >
-      <div class="flex items-center justify-between gap-2">
+      <div class="flex flex-wrap items-center justify-between gap-1.5 px-0.5">
+        <div
+          v-if="enableExpression && (showMathToolbar || isFocused || isExpressionInput)"
+          class="flex items-center gap-1"
+        >
+          <button
+            v-for="op in (['+', '-', '×', '÷'] as const)"
+            :key="op"
+            type="button"
+            class="inline-flex h-7 min-w-[30px] items-center justify-center rounded-lg border border-slate-200 bg-white px-2 text-xs font-bold text-slate-700 shadow-xs transition hover:bg-slate-100 active:scale-95 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+            @mousedown.prevent
+            @click="appendOperator(op)"
+          >
+            {{ op }}
+          </button>
+          <button
+            v-if="isExpressionInput && evaluatedExpressionValue !== null"
+            type="button"
+            class="inline-flex h-7 items-center justify-center rounded-lg bg-emerald-600 px-2.5 text-xs font-bold text-white shadow-xs transition hover:bg-emerald-700 active:scale-95 dark:bg-emerald-500 dark:text-slate-950"
+            @mousedown.prevent
+            @click="commitExpressionIfValid"
+          >
+            =
+          </button>
+        </div>
+
         <button
+          v-if="showServiceFeeButton || showFxFeeButton"
           type="button"
-          class="inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition active:scale-95"
+          class="ml-auto inline-flex h-7 items-center gap-1 rounded-full border px-2.5 text-[11px] font-semibold transition active:scale-95"
           :class="
             isAnyFeeApplied
               ? 'border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300'
@@ -552,8 +539,27 @@ const sizeClasses = computed(() => {
         </button>
       </div>
 
+      <!-- 算式即時求值預覽（僅於輸入算式時顯示） -->
       <div
-        v-if="feePanelExpanded"
+        v-if="enableExpression && isExpressionInput"
+        class="px-0.5 text-right text-[11px]"
+      >
+        <span
+          v-if="evaluatedExpressionValue !== null"
+          class="font-bold tabular-nums text-emerald-600 dark:text-emerald-400"
+        >
+          = {{ formattedExpressionPreview }}
+        </span>
+        <span
+          v-else
+          class="font-medium text-amber-600 dark:text-amber-400"
+        >
+          {{ t('project.expressionIncomplete') }}
+        </span>
+      </div>
+
+      <div
+        v-if="(showServiceFeeButton || showFxFeeButton) && feePanelExpanded"
         class="grid gap-1.5"
         :class="showServiceFeeButton && showFxFeeButton ? 'grid-cols-2' : 'grid-cols-1'"
       >

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, nextTick, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   AlertCircle,
@@ -233,8 +233,13 @@ function applyPresetFromConfig(config: SplitConfig | null | undefined) {
   })
 }
 
+// 僅於成員 ID 結構真正異動、preset 切換或外部重設時才重套拆帳預設；避免儲存／刪除子群組更新專案物件時洗掉使用者剛勾選的成員
+const memberIdsSignature = computed(() =>
+  props.members.map((m) => m.id).join(','),
+)
+
 watch(
-  () => [props.members, props.initialSplitConfig, props.resetKey] as const,
+  () => [memberIdsSignature.value, props.initialSplitConfig, props.resetKey] as const,
   ([, nextConfig]) => {
     applyPresetFromConfig(nextConfig)
   },
@@ -300,6 +305,16 @@ function resetAllSharesToEqual() {
 // 大團一鍵快選與常用子群組操作
 const saveGroupInputOpen = ref(false)
 const newGroupName = ref('')
+const newGroupInputRef = ref<HTMLInputElement | null>(null)
+
+function toggleSaveGroupInput() {
+  saveGroupInputOpen.value = !saveGroupInputOpen.value
+  if (saveGroupInputOpen.value) {
+    void nextTick(() => {
+      newGroupInputRef.value?.focus()
+    })
+  }
+}
 
 const nonPoolMembers = computed(() =>
   props.members.filter((m) => !m.isPool),
@@ -958,9 +973,9 @@ watch(
       <p>{{ dynamicHint.text }}</p>
     </div>
 
-    <!-- 大團一鍵快選與常用子群組工具列（單行橫向滑動，手機不佔高度、10 人點選 2 下完成） -->
-    <div v-if="members.length >= 2" class="mb-2.5 space-y-1.5">
-      <div class="no-scrollbar flex flex-nowrap items-center gap-1.5 overflow-x-auto pb-0.5">
+    <!-- 大團一鍵快選與常用子群組工具列（採自動換行呈現，已存群組與「+ 存群組」於電腦與手機皆完整可見不裁切） -->
+    <div v-if="members.length >= 2" class="mb-2.5 space-y-2">
+      <div class="flex flex-wrap items-center gap-1.5">
         <span
           class="shrink-0 rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold tabular-nums text-slate-500 dark:bg-slate-800 dark:text-slate-400"
         >
@@ -995,7 +1010,20 @@ watch(
           {{ t('split.quickSelectPayerOnly') }}
         </button>
 
-        <!-- 已存常用拆帳子群組膠囊 -->
+        <!-- 選取至少一位成員即可將目前名單存為常用子群組 -->
+        <button
+          v-if="selectedSplitMemberIds.length >= 1"
+          type="button"
+          class="inline-flex shrink-0 items-center gap-0.5 whitespace-nowrap rounded-full border border-dashed border-emerald-400 px-2 py-0.5 text-[11px] font-semibold text-emerald-700 hover:bg-emerald-50 dark:border-emerald-600 dark:text-emerald-400 dark:hover:bg-emerald-950/40"
+          @click="toggleSaveGroupInput"
+        >
+          <Plus class="h-3 w-3 shrink-0" />
+          <span>{{ t('split.saveAsGroupButton') }}</span>
+        </button>
+      </div>
+
+      <!-- 已存常用拆帳子群組膠囊列（獨立呈現，存完立即顯眼可見） -->
+      <div v-if="splitGroups.length > 0" class="flex flex-wrap items-center gap-1.5">
         <span
           v-for="grp in splitGroups"
           :key="grp.id"
@@ -1008,7 +1036,7 @@ watch(
         >
           <button
             type="button"
-            class="whitespace-nowrap py-0.5 pl-2 pr-1"
+            class="whitespace-nowrap py-0.5 pl-2.5 pr-1"
             @click="applySplitGroup(grp)"
           >
             {{ grp.name }} ({{ grp.memberIds.length }})
@@ -1016,26 +1044,12 @@ watch(
           <button
             type="button"
             :aria-label="t('home.deleteTx')"
-            class="px-1 py-0.5 opacity-70 hover:opacity-100"
+            class="px-1.5 py-0.5 opacity-70 hover:opacity-100"
             @click.stop="emit('removeSplitGroup', grp.id)"
           >
             <X class="h-2.5 w-2.5" />
           </button>
         </span>
-
-        <!-- 選取部分成員時可將目前名單存為常用子群組 -->
-        <button
-          v-if="
-            selectedSplitMemberIds.length >= 1 &&
-            selectedSplitMemberIds.length < members.length
-          "
-          type="button"
-          class="inline-flex shrink-0 items-center gap-0.5 whitespace-nowrap rounded-full border border-dashed border-emerald-400 px-2 py-0.5 text-[11px] font-semibold text-emerald-700 hover:bg-emerald-50 dark:border-emerald-600 dark:text-emerald-400 dark:hover:bg-emerald-950/40"
-          @click="saveGroupInputOpen = !saveGroupInputOpen"
-        >
-          <Plus class="h-3 w-3 shrink-0" />
-          <span>{{ t('split.saveAsGroupButton') }}</span>
-        </button>
       </div>
 
       <div
@@ -1043,16 +1057,17 @@ watch(
         class="flex items-center gap-1.5 rounded-xl bg-slate-50 p-1.5 dark:bg-slate-800/70"
       >
         <input
+          ref="newGroupInputRef"
           v-model="newGroupName"
           type="text"
           maxlength="24"
           :placeholder="t('split.groupNamePlaceholder')"
           class="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-900 focus:border-emerald-500 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-white"
-          @keyup.enter="confirmSaveCurrentAsGroup"
+          @keydown.enter.prevent.stop="confirmSaveCurrentAsGroup"
         />
         <button
           type="button"
-          :disabled="!newGroupName.trim()"
+          :disabled="!newGroupName.trim() || selectedSplitMemberIds.length === 0"
           class="shrink-0 rounded-lg bg-emerald-600 px-2.5 py-1 text-xs font-bold text-white disabled:opacity-40 dark:bg-emerald-500 dark:text-slate-950"
           @click="confirmSaveCurrentAsGroup"
         >

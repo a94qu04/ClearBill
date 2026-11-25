@@ -251,6 +251,9 @@ export function calculateSettleUp(
 
     for (const share of shares) {
       const shareBaseUnits = toMinorUnits(share.finalAmount * rate, currency)
+      if (shareBaseUnits === 0) {
+        continue
+      }
       totalShareUnitsInBase += shareBaseUnits
       addUnits(netUnitMap, share.memberId, -direction * shareBaseUnits)
       if (isSpendingTx) {

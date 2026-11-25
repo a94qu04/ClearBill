@@ -5,6 +5,7 @@ import {
   Calendar,
   Camera,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   Clock,
   Plus,
@@ -73,6 +74,85 @@ const splitErrorText = ref<string | null>(null)
 const errorText = ref('')
 const errorBoxRef = ref<HTMLElement | null>(null)
 const dialogRef = ref<HTMLElement | null>(null)
+const categoryScrollRef = ref<HTMLElement | null>(null)
+const isDraggingCategoryBar = ref(false)
+const canScrollCatLeft = ref(false)
+const canScrollCatRight = ref(false)
+
+let catDragStartX = 0
+let catDragStartScrollLeft = 0
+let catDragMoved = false
+let catSuppressNextClick = false
+
+function updateCategoryScrollButtons() {
+  const el = categoryScrollRef.value
+  if (!el) {
+    canScrollCatLeft.value = false
+    canScrollCatRight.value = false
+    return
+  }
+  canScrollCatLeft.value = el.scrollLeft > 4
+  canScrollCatRight.value = el.scrollLeft + el.clientWidth < el.scrollWidth - 4
+}
+
+function handleCategoryPointerDown(event: PointerEvent) {
+  if (event.pointerType !== 'mouse' || event.button !== 0) return
+  const el = categoryScrollRef.value
+  if (!el) return
+  isDraggingCategoryBar.value = true
+  catDragStartX = event.clientX
+  catDragStartScrollLeft = el.scrollLeft
+  catDragMoved = false
+  catSuppressNextClick = false
+}
+
+function handleCategoryPointerMove(event: PointerEvent) {
+  if (!isDraggingCategoryBar.value) return
+  const el = categoryScrollRef.value
+  if (!el) return
+  const dx = event.clientX - catDragStartX
+  if (Math.abs(dx) > 5) {
+    catDragMoved = true
+    catSuppressNextClick = true
+  }
+  if (catDragMoved) {
+    el.scrollLeft = catDragStartScrollLeft - dx
+    updateCategoryScrollButtons()
+  }
+}
+
+function handleCategoryPointerUp() {
+  isDraggingCategoryBar.value = false
+  catDragMoved = false
+}
+
+function handleCategoryClickCapture(event: MouseEvent) {
+  if (catSuppressNextClick) {
+    catSuppressNextClick = false
+    event.preventDefault()
+    event.stopPropagation()
+  }
+}
+
+function handleCategoryWheel(event: WheelEvent) {
+  const el = categoryScrollRef.value
+  if (!el || el.scrollWidth <= el.clientWidth) return
+  const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY
+  if (delta !== 0) {
+    event.preventDefault()
+    el.scrollLeft += delta
+    updateCategoryScrollButtons()
+  }
+}
+
+function scrollCategoryBar(direction: 'left' | 'right') {
+  const el = categoryScrollRef.value
+  if (!el) return
+  el.scrollBy({
+    left: direction === 'right' ? 180 : -180,
+    behavior: 'smooth',
+  })
+}
 
 const inlineNewCategoryOpen = ref(false)
 const inlineNewCategoryName = ref('')
@@ -437,6 +517,7 @@ function hydrateForm() {
   void nextTick(() => {
     initialSnapshot.value = captureFormSnapshot()
     snapshotReady.value = true
+    updateCategoryScrollButtons()
   })
 }
 
@@ -871,47 +952,81 @@ async function handleSubmit(continueAdding = false) {
               />
 
               <div class="space-y-2 px-3.5 py-2.5">
-                <div class="no-scrollbar flex flex-nowrap items-center gap-1.5 overflow-x-auto pb-0.5">
+                <div class="relative flex items-center gap-1">
                   <button
-                    v-for="cat in allCategories"
-                    :key="cat.key"
+                    v-if="canScrollCatLeft"
                     type="button"
-                    class="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full py-1 pl-1.5 pr-3 text-xs font-semibold transition"
-                    :style="
-                      categoryKey === cat.key
-                        ? { backgroundColor: cat.color }
-                        : undefined
-                    "
-                    :class="
-                      categoryKey === cat.key
-                        ? 'text-white shadow-xs'
-                        : 'bg-slate-100 text-slate-600 dark:bg-[#2C2C2E] dark:text-slate-300'
-                    "
-                    @click="categoryKey = cat.key"
+                    :aria-label="t('photo.prev')"
+                    class="hidden h-7 w-6 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500 transition hover:bg-slate-200 hover:text-slate-900 dark:bg-[#2C2C2E] dark:text-slate-300 sm:inline-flex"
+                    @click="scrollCategoryBar('left')"
                   >
-                    <CategoryIconBadge
-                      v-if="categoryKey === cat.key"
-                      :icon="cat.icon"
-                      :category-key="cat.key"
-                      size="xs"
-                      plain
-                    />
-                    <CategoryIconBadge
-                      v-else
-                      :icon="cat.icon"
-                      :category-key="cat.key"
-                      :color="cat.color"
-                      size="xs"
-                    />
-                    <span>{{ cat.label }}</span>
+                    <ChevronLeft class="h-3.5 w-3.5" />
                   </button>
-                  <button
-                    type="button"
-                    class="inline-flex shrink-0 items-center gap-0.5 whitespace-nowrap rounded-full border border-dashed border-slate-300 px-2.5 py-1 text-xs font-semibold text-slate-500 hover:border-emerald-500 hover:text-emerald-600 dark:border-slate-600"
-                    @click="inlineNewCategoryOpen = !inlineNewCategoryOpen"
+
+                  <div
+                    ref="categoryScrollRef"
+                    class="no-scrollbar flex min-w-0 flex-1 flex-nowrap items-center gap-1.5 overflow-x-auto pb-0.5 select-none"
+                    :class="isDraggingCategoryBar ? 'cursor-grabbing' : 'cursor-grab'"
+                    @pointerdown="handleCategoryPointerDown"
+                    @pointermove="handleCategoryPointerMove"
+                    @pointerup="handleCategoryPointerUp"
+                    @pointerleave="handleCategoryPointerUp"
+                    @pointercancel="handleCategoryPointerUp"
+                    @click.capture="handleCategoryClickCapture"
+                    @wheel="handleCategoryWheel"
+                    @scroll="updateCategoryScrollButtons"
                   >
-                    <Plus class="h-3 w-3" />
-                    <span>{{ t('search.addCategoryInline') }}</span>
+                    <button
+                      v-for="cat in allCategories"
+                      :key="cat.key"
+                      type="button"
+                      class="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full py-1 pl-1.5 pr-3 text-xs font-semibold transition"
+                      :style="
+                        categoryKey === cat.key
+                          ? { backgroundColor: cat.color }
+                          : undefined
+                      "
+                      :class="
+                        categoryKey === cat.key
+                          ? 'text-white shadow-xs'
+                          : 'bg-slate-100 text-slate-600 dark:bg-[#2C2C2E] dark:text-slate-300'
+                      "
+                      @click="categoryKey = cat.key"
+                    >
+                      <CategoryIconBadge
+                        v-if="categoryKey === cat.key"
+                        :icon="cat.icon"
+                        :category-key="cat.key"
+                        size="xs"
+                        plain
+                      />
+                      <CategoryIconBadge
+                        v-else
+                        :icon="cat.icon"
+                        :category-key="cat.key"
+                        :color="cat.color"
+                        size="xs"
+                      />
+                      <span>{{ cat.label }}</span>
+                    </button>
+                    <button
+                      type="button"
+                      class="inline-flex shrink-0 items-center gap-0.5 whitespace-nowrap rounded-full border border-dashed border-slate-300 px-2.5 py-1 text-xs font-semibold text-slate-500 hover:border-emerald-500 hover:text-emerald-600 dark:border-slate-600"
+                      @click="inlineNewCategoryOpen = !inlineNewCategoryOpen"
+                    >
+                      <Plus class="h-3 w-3" />
+                      <span>{{ t('search.addCategoryInline') }}</span>
+                    </button>
+                  </div>
+
+                  <button
+                    v-if="canScrollCatRight"
+                    type="button"
+                    :aria-label="t('photo.next')"
+                    class="hidden h-7 w-6 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500 transition hover:bg-slate-200 hover:text-slate-900 dark:bg-[#2C2C2E] dark:text-slate-300 sm:inline-flex"
+                    @click="scrollCategoryBar('right')"
+                  >
+                    <ChevronRight class="h-3.5 w-3.5" />
                   </button>
                 </div>
                 <div v-if="inlineNewCategoryOpen" class="flex gap-1.5">
@@ -921,7 +1036,7 @@ async function handleSubmit(continueAdding = false) {
                     maxlength="24"
                     :placeholder="t('search.newCategoryPlaceholder')"
                     class="min-w-0 flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs dark:border-slate-700 dark:bg-[#2C2C2E] dark:text-white"
-                    @keyup.enter="confirmInlineAddCategory"
+                    @keydown.enter.prevent.stop="confirmInlineAddCategory"
                   />
                   <button
                     type="button"

@@ -100,7 +100,15 @@ const currentRateModeLabel = computed(() => {
 })
 
 const poolMembers = computed(() => props.project.members.filter((m) => m.isPool))
-const poolMemberIds = computed(() => new Set(poolMembers.value.map((m) => m.id)))
+const poolMemberIds = computed(() => {
+  const ids = new Set(poolMembers.value.map((m) => m.id))
+  for (const b of props.settleUp.balances) {
+    if (b.memberId.startsWith('pool_')) {
+      ids.add(b.memberId)
+    }
+  }
+  return ids
+})
 
 const poolBalances = computed(() =>
   props.settleUp.balances.filter((b) => poolMemberIds.value.has(b.memberId)),
@@ -536,7 +544,10 @@ function fmt(amount: number, currency: string): string {
 }
 
 function getMemberName(memberId: string): string {
-  return props.project.members.find((m) => m.id === memberId)?.name ?? memberId
+  const found = props.project.members.find((m) => m.id === memberId)
+  if (found) return found.name
+  if (memberId.startsWith('pool_')) return t('pool.defaultName')
+  return memberId
 }
 
 function getMemberColor(memberId: string): string {

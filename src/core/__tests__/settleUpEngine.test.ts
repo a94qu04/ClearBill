@@ -494,4 +494,30 @@ describe('settleUpEngine - 多人債務最小化結算演算法', () => {
     const restored = calculateSettleUp(rawTxs, 'TWD', ['alice', 'bob'])
     expect(restored.totalProjectExpense).toBe(1860)
   })
+
+  it('已刪除之公費袋若在歷史消費僅殘留 0 元分攤項目，結算清單不得復活成幽靈成員', () => {
+    const txs: Transaction[] = [
+      createExpenseTx({
+        id: '30000000-0000-4000-8000-000000000001',
+        amount: 600,
+        currency: 'TWD',
+        exchangeRateToBase: 1,
+        splitConfig: {
+          payerId: 'alice',
+          mode: 'equal',
+          shares: [
+            { memberId: 'alice', finalAmount: 300 },
+            { memberId: 'bob', finalAmount: 300 },
+            { memberId: 'pool_mww38l7v', finalAmount: 0 },
+          ],
+        },
+      }),
+    ]
+
+    const result = calculateSettleUp(txs, 'TWD', ['alice', 'bob'])
+    expect(result.balances.map((b) => b.memberId)).toEqual(['alice', 'bob'])
+    expect(result.transfers).toEqual([
+      { fromMemberId: 'bob', toMemberId: 'alice', amount: 300, currency: 'TWD' },
+    ])
+  })
 })

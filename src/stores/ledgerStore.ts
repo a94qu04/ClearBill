@@ -2447,18 +2447,74 @@ export const useLedgerStore = defineStore('ledger', () => {
 
     const nextDefaultPayer =
       existing.defaultPayerId === memberId
-        ? remainingMembers[0]?.id
+        ? remainingMembers.find((m) => !m.isPool)?.id ?? remainingMembers[0]?.id
         : existing.defaultPayerId
 
+    const cleanedSplitGroups = existing.splitGroups
+      ?.map((g) => ({
+        ...g,
+        memberIds: g.memberIds.filter((id) => id !== memberId),
+      }))
+      .filter((g) => g.memberIds.length > 0)
+
+    const now = Date.now()
+    const baseExisting = toPlainClone(existing)
     const updated: Project = {
-      ...existing,
+      ...baseExisting,
       members: remainingMembers,
       defaultPayerId: nextDefaultPayer,
-      updatedAt: Date.now(),
+      splitGroups:
+        cleanedSplitGroups && cleanedSplitGroups.length > 0
+          ? cleanedSplitGroups
+          : undefined,
+      updatedAt: now,
     }
 
     const saved = await saveProjectToNormalVault(updated)
     projects.value = projects.value.map((p) => (p.id === projectId ? saved : p))
+
+    // 順手清理既有交易中該已刪除成員的 0 元分攤殘留（避免日後匯出或對帳出現幽靈成員 ID）
+    const txsWithZeroShare = transactions.value.filter(
+      (tx) =>
+        !tx.isDeleted &&
+        tx.projectId === projectId &&
+        tx.splitConfig?.shares.some(
+          (s) => s.memberId === memberId && s.finalAmount === 0,
+        ),
+    )
+    if (txsWithZeroShare.length > 0) {
+      const cleanedTxMap = new Map<string, Transaction>()
+      for (const tx of txsWithZeroShare) {
+        if (!tx.splitConfig) continue
+        const nextShares = tx.splitConfig.shares.filter(
+          (s) => !(s.memberId === memberId && s.finalAmount === 0),
+        )
+        if (nextShares.length === 0) continue
+        const plainTx = toPlainClone(tx)
+        const cleanedTx: Transaction = {
+          ...plainTx,
+          splitConfig: {
+            ...plainTx.splitConfig!,
+            shares: nextShares,
+          },
+          updatedAt: now,
+        }
+        const savedTx = await saveTransactionToNormalVault(cleanedTx)
+        cleanedTxMap.set(savedTx.id, savedTx)
+        await enqueueAndFlushProjectChange(
+          projectId,
+          'transaction',
+          savedTx.id,
+          savedTx.updatedAt,
+        )
+      }
+      if (cleanedTxMap.size > 0) {
+        transactions.value = transactions.value.map(
+          (tx) => cleanedTxMap.get(tx.id) ?? tx,
+        )
+      }
+    }
+
     await enqueueAndFlushProjectChange(projectId, 'project', saved.id, saved.updatedAt)
     markGoogleDriveDirty()
     return { ok: true }
@@ -2759,10 +2815,11 @@ export const useLedgerStore = defineStore('ledger', () => {
       currentGroups.push(savedGroup)
     }
 
+    const baseExisting = toPlainClone(existing)
     const updated: Project = {
-      ...existing,
+      ...baseExisting,
       splitGroups: currentGroups,
-      members: existing.members.map((m) => ({ ...m })),
+      members: baseExisting.members.map((m) => ({ ...m })),
       updatedAt: Date.now(),
     }
     const saved = await saveProjectToNormalVault(updated)
@@ -2780,16 +2837,42 @@ export const useLedgerStore = defineStore('ledger', () => {
     if (!existing || !existing.splitGroups?.length) return
 
     const nextGroups = existing.splitGroups.filter((g) => g.id !== groupId)
+    const baseExisting = toPlainClone(existing)
     const updated: Project = {
-      ...existing,
+      ...baseExisting,
       splitGroups: nextGroups.length > 0 ? nextGroups : undefined,
-      members: existing.members.map((m) => ({ ...m })),
+      members: baseExisting.members.map((m) => ({ ...m })),
       updatedAt: Date.now(),
     }
     const saved = await saveProjectToNormalVault(updated)
     projects.value = projects.value.map((p) => (p.id === projectId ? saved : p))
     await enqueueAndFlushProjectChange(projectId, 'project', saved.id, saved.updatedAt)
     markGoogleDriveDirty()
+  }
+
+  /** 查找專案有效交易中是否遺留尚未掛回成員清單之孤兒公費袋 ID（例如先刪公費成員又復原紀錄） */
+  function findOrphanedPoolMemberIdInTransactions(
+    projectId: string,
+    existingMemberIds: Set<string>,
+  ): string | null {
+    for (const tx of transactions.value) {
+      if (tx.isDeleted || tx.projectId !== projectId || !tx.splitConfig) continue
+      const candidateIds: string[] = [
+        tx.splitConfig.payerId,
+        ...(tx.splitConfig.payers ?? [])
+          .filter((p) => p.amount > 0)
+          .map((p) => p.memberId),
+        ...tx.splitConfig.shares
+          .filter((s) => s.finalAmount > 0)
+          .map((s) => s.memberId),
+      ]
+      for (const id of candidateIds) {
+        if (id.startsWith('pool_') && !existingMemberIds.has(id)) {
+          return id
+        }
+      }
+    }
+    return null
   }
 
   async function ensureProjectPoolMember(
@@ -2802,16 +2885,23 @@ export const useLedgerStore = defineStore('ledger', () => {
     const already = existing.members.find((m) => m.isPool)
     if (already) return already
 
+    const existingMemberIds = new Set(existing.members.map((m) => m.id))
+    const orphanedPoolId = findOrphanedPoolMemberIdInTransactions(
+      projectId,
+      existingMemberIds,
+    )
+
     const poolMember: ProjectMember = {
-      id: `pool_${Date.now().toString(36)}`,
+      id: orphanedPoolId ?? `pool_${Date.now().toString(36)}`,
       name: poolName.trim().slice(0, 50) || 'Pool',
       avatarColor: '#0f766e',
       isPool: true,
     }
 
+    const baseExisting = toPlainClone(existing)
     const updated: Project = {
-      ...existing,
-      members: [...existing.members.map((m) => ({ ...m })), poolMember],
+      ...baseExisting,
+      members: [...baseExisting.members.map((m) => ({ ...m })), poolMember],
       updatedAt: Date.now(),
     }
     const saved = await saveProjectToNormalVault(updated)
@@ -3009,21 +3099,60 @@ export const useLedgerStore = defineStore('ledger', () => {
 
     const now = Date.now()
 
-    // 若該筆消費原本屬於某個專案且該專案目前處於軟刪除狀態，一併復原專案確保消費自動回到專案中
+    // 若該筆消費原本屬於某個專案且該專案目前處於軟刪除狀態，一併復原專案；若交易指向已刪除的公費袋 ID，亦自動補回該公費袋成員避免出現孤兒 ID
     let targetProjectId = target.projectId
     if (targetProjectId) {
       const parentProject = projects.value.find((p) => p.id === targetProjectId)
-      if (parentProject && parentProject.isDeleted) {
-        const restoredProject = await saveProjectToNormalVault({
-          ...parentProject,
-          isDeleted: false,
-          isActive: true,
-          members: parentProject.members.map((m) => ({ ...m })),
-          updatedAt: now,
-        })
-        projects.value = projects.value.map((p) =>
-          p.id === restoredProject.id ? restoredProject : p,
-        )
+      if (parentProject) {
+        const existingMemberIds = new Set(parentProject.members.map((m) => m.id))
+        const missingPoolIds = new Set<string>()
+        if (target.splitConfig) {
+          const refIds = [
+            target.splitConfig.payerId,
+            ...(target.splitConfig.payers ?? [])
+              .filter((p) => p.amount > 0)
+              .map((p) => p.memberId),
+            ...target.splitConfig.shares
+              .filter((s) => s.finalAmount > 0)
+              .map((s) => s.memberId),
+          ]
+          for (const refId of refIds) {
+            if (refId.startsWith('pool_') && !existingMemberIds.has(refId)) {
+              missingPoolIds.add(refId)
+            }
+          }
+        }
+
+        if (parentProject.isDeleted || missingPoolIds.size > 0) {
+          const plainParent = toPlainClone(parentProject)
+          const extraPoolMembers: ProjectMember[] = Array.from(missingPoolIds).map(
+            (poolId) => ({
+              id: poolId,
+              name: '公費袋',
+              avatarColor: '#0f766e',
+              isPool: true,
+            }),
+          )
+          const restoredProject = await saveProjectToNormalVault({
+            ...plainParent,
+            isDeleted: false,
+            isActive: true,
+            members: [
+              ...plainParent.members.map((m) => ({ ...m })),
+              ...extraPoolMembers,
+            ],
+            updatedAt: now,
+          })
+          projects.value = projects.value.map((p) =>
+            p.id === restoredProject.id ? restoredProject : p,
+          )
+          await enqueueAndFlushProjectChange(
+            restoredProject.id,
+            'project',
+            restoredProject.id,
+            restoredProject.updatedAt,
+          )
+        }
       }
       // 同步切換回該專案，讓使用者馬上看到復原後的帳目與更新後結算
       activeProjectId.value = targetProjectId
