@@ -731,24 +731,33 @@ defineExpose({ resetFilters })
                     </a>
                   </div>
 
-                  <!-- 詳情列底部快捷編輯／刪除按鈕 -->
-                  <div class="flex items-center justify-end gap-2 border-t border-slate-200/70 pt-2 dark:border-slate-700/70">
-                    <button
-                      type="button"
-                      class="inline-flex items-center gap-1 rounded-lg bg-white px-2.5 py-1 text-[11px] font-bold text-slate-700 shadow-sm hover:bg-emerald-50 hover:text-emerald-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:text-emerald-400"
-                      @click="emit('edit', tx)"
+                  <!-- 詳情列底部：編輯者標記 ＋ 快捷編輯／刪除按鈕 -->
+                  <div class="flex flex-wrap items-center justify-between gap-2 border-t border-slate-200/70 pt-2 dark:border-slate-700/70">
+                    <span
+                      v-if="tx.lastEditedBy"
+                      class="text-[10px] font-medium text-slate-400 dark:text-slate-500"
                     >
-                      <Pencil class="h-3 w-3" />
-                      <span>{{ t('home.editTx') }}</span>
-                    </button>
-                    <button
-                      type="button"
-                      class="inline-flex items-center gap-1 rounded-lg bg-white px-2.5 py-1 text-[11px] font-bold text-rose-600 shadow-sm hover:bg-rose-50 dark:bg-slate-900 dark:text-rose-400"
-                      @click="emit('delete', tx.id)"
-                    >
-                      <Trash2 class="h-3 w-3" />
-                      <span>{{ t('home.deleteTx') }}</span>
-                    </button>
+                      {{ t('project.lastEditedByLabel', { name: tx.lastEditedBy }) }}
+                    </span>
+                    <span v-else />
+                    <div class="flex items-center gap-2">
+                      <button
+                        type="button"
+                        class="inline-flex items-center gap-1 rounded-lg bg-white px-2.5 py-1 text-[11px] font-bold text-slate-700 shadow-sm hover:bg-emerald-50 hover:text-emerald-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:text-emerald-400"
+                        @click="emit('edit', tx)"
+                      >
+                        <Pencil class="h-3 w-3" />
+                        <span>{{ t('home.editTx') }}</span>
+                      </button>
+                      <button
+                        type="button"
+                        class="inline-flex items-center gap-1 rounded-lg bg-white px-2.5 py-1 text-[11px] font-bold text-rose-600 shadow-sm hover:bg-rose-50 dark:bg-slate-900 dark:text-rose-400"
+                        @click="emit('delete', tx.id)"
+                      >
+                        <Trash2 class="h-3 w-3" />
+                        <span>{{ t('home.deleteTx') }}</span>
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>

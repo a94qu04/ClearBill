@@ -346,6 +346,26 @@ export async function joinSharedProjectOnFirestore(
 }
 
 /**
+ * 團主重設共享專案的存取金鑰（舊邀請連結立即失效，不影響既有已加入旅伴同步）
+ */
+export async function rotateProjectAccessKeyOnFirestore(
+  shareId: string,
+): Promise<string> {
+  try {
+    const { db, firestoreModule } = await getFirebaseContext()
+    const { doc, updateDoc } = firestoreModule
+    const nextAccessKey = generateSecureToken(24)
+    const projectRef = doc(db, 'shared_projects', shareId)
+    await updateDoc(projectRef, {
+      accessKey: nextAccessKey,
+    })
+    return nextAccessKey
+  } catch (err) {
+    throw mapFirebaseError(err)
+  }
+}
+
+/**
  * 推送單一共享專案之設定／成員變更至 Firestore
  */
 export async function pushProjectUpdateToFirestore(

@@ -36,6 +36,7 @@ import {
   X,
 } from 'lucide-vue-next'
 import MemberAvatar from '@/components/MemberAvatar.vue'
+import { askConfirm } from '@/composables/useConfirm'
 import { compressAvatarImageFileToDataUrl } from '@/core/imageCompressor'
 import { SUPPORTED_LOCALES, setAppLocale, type SupportedLocale } from '@/i18n'
 import {
@@ -90,10 +91,11 @@ const editingCatKey = ref<string | null>(null)
 const editingCatName = ref('')
 const editingCatColor = ref<string>(AVATAR_PALETTE[0])
 
-// 我的成員檔案（預設成員名稱與大頭貼）
+// 我的成員檔案（預設成員名稱、大頭貼與收款帳號）
 const profileDisplayName = ref(store.userProfile.displayName)
 const profileAvatarColor = ref(store.userProfile.avatarColor || AVATAR_PALETTE[0])
 const profileAvatarImage = ref<string | undefined>(store.userProfile.avatarImage)
+const profilePaymentInfo = ref(store.userProfile.paymentInfo ?? '')
 const applyProfileToExisting = ref(true)
 const isSavingProfile = ref(false)
 
@@ -188,6 +190,7 @@ watch(
       profileAvatarColor.value =
         store.userProfile.avatarColor || AVATAR_PALETTE[0]
       profileAvatarImage.value = store.userProfile.avatarImage
+      profilePaymentInfo.value = store.userProfile.paymentInfo ?? ''
       syncCustomRateDrafts()
       void store.refreshExchangeRates(false).then(() => syncCustomRateDrafts())
     }
@@ -207,6 +210,7 @@ watch(
     profileDisplayName.value = next.displayName
     profileAvatarColor.value = next.avatarColor || AVATAR_PALETTE[0]
     profileAvatarImage.value = next.avatarImage
+    profilePaymentInfo.value = next.paymentInfo ?? ''
   },
   { deep: true },
 )
@@ -237,6 +241,7 @@ async function handleSaveProfile() {
         displayName: profileDisplayName.value,
         avatarColor: profileAvatarColor.value,
         avatarImage: profileAvatarImage.value ?? null,
+        paymentInfo: profilePaymentInfo.value.trim() || null,
       },
       { applyToExistingProjects: applyProfileToExisting.value },
     )
@@ -415,21 +420,32 @@ function handleRemoveCurrency(code: string) {
   emit('toast', t('settings.currencyRemovedToast', { code }))
 }
 
+function formatBytesLabel(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
+}
+
 // ==================== 本地 JSON 備份匯出與合併匯入 ====================
-function handleExportLocalJson() {
-  const backup = store.exportLedgerBackup()
+function handleExportLocalJson(omitReceiptImages = false) {
+  const backup = store.exportLedgerBackup({ omitReceiptImages })
   const blob = new Blob([JSON.stringify(backup, null, 2)], {
     type: 'application/json;charset=utf-8',
   })
   const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
   link.href = url
-  link.download = `clearbill-backup-${getTodayIso()}.json`
+  link.download = omitReceiptImages
+    ? `clearbill-backup-lite-${getTodayIso()}.json`
+    : `clearbill-backup-${getTodayIso()}.json`
   document.body.appendChild(link)
   link.click()
   document.body.removeChild(link)
   URL.revokeObjectURL(url)
-  emit('toast', t('backup.exportedToast'))
+  emit(
+    'toast',
+    omitReceiptImages ? t('backup.exportedLiteToast') : t('backup.exportedToast'),
+  )
 }
 
 async function handleImportLocalJson(event: Event) {
@@ -616,12 +632,13 @@ async function handlePermanentDeleteTx(id: string) {
 async function handleEmptyTrash() {
   const count = store.deletedTransactions.length
   if (count === 0) return
-  if (
-    typeof window !== 'undefined' &&
-    !window.confirm(t('trash.emptyAllConfirm', { count }))
-  ) {
-    return
-  }
+  const confirmed = await askConfirm({
+    title: t('trash.emptyAll'),
+    message: t('trash.emptyAllConfirm', { count }),
+    confirmText: t('trash.emptyAll'),
+    tone: 'danger',
+  })
+  if (!confirmed) return
   const removed = await store.emptyTrash()
   if (removed > 0) {
     emit('toast', t('trash.emptiedToast', { count: removed }))
@@ -808,6 +825,21 @@ function fmt(amount: number, currency: string): string {
                   />
                 </div>
 
+                <!-- 選填：我的收款帳號／轉帳資訊（結算與一鍵分享時自動帶出） -->
+                <div class="space-y-1">
+                  <label class="block text-[11px] font-semibold text-slate-600 dark:text-slate-300">
+                    {{ t('profile.paymentInfoLabel') }}
+                  </label>
+                  <input
+                    v-model="profilePaymentInfo"
+                    type="text"
+                    maxlength="120"
+                    :placeholder="t('profile.paymentInfoPlaceholder')"
+                    class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-900 focus:border-emerald-500 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+                    @keyup.enter="handleSaveProfile"
+                  />
+                </div>
+
                 <label
                   v-if="store.allNonDeletedProjects.length > 0"
                   class="flex cursor-pointer items-center gap-2 text-[11px] text-slate-600 dark:text-slate-300"
@@ -851,6 +883,13 @@ function fmt(amount: number, currency: string): string {
 
                 <p class="text-[11px] leading-relaxed text-slate-600 dark:text-slate-300">
                   {{ t('backup.googleDesc') }}
+                </p>
+
+                <p
+                  v-if="store.googleDriveAccount || store.googleDriveAutoSync"
+                  class="rounded-xl bg-white/70 px-2.5 py-1.5 text-[10px] leading-relaxed text-slate-500 dark:bg-slate-900/60 dark:text-slate-400"
+                >
+                  {{ t('backup.googleHourlySessionNote') }}
                 </p>
 
                 <!-- 已連結 Google 帳號卡片 -->
@@ -1582,14 +1621,54 @@ function fmt(amount: number, currency: string): string {
                   {{ t('backup.localDesc') }}
                 </p>
 
+                <!-- 本機資料與圖片占用空間概覽 -->
+                <div
+                  class="grid grid-cols-3 gap-2 rounded-xl border border-slate-200/80 bg-white px-3 py-2 text-center dark:border-slate-800 dark:bg-slate-900"
+                >
+                  <div>
+                    <div class="text-[10px] text-slate-400">
+                      {{ t('backup.storageProjectsLabel') }}
+                    </div>
+                    <div class="text-xs font-extrabold tabular-nums text-slate-900 dark:text-white">
+                      {{ store.storageUsageStats.projectCount }}
+                    </div>
+                  </div>
+                  <div class="border-x border-slate-100 dark:border-slate-800">
+                    <div class="text-[10px] text-slate-400">
+                      {{ t('backup.storageEntriesLabel') }}
+                    </div>
+                    <div class="text-xs font-extrabold tabular-nums text-slate-900 dark:text-white">
+                      {{ store.storageUsageStats.transactionCount }}
+                    </div>
+                  </div>
+                  <div>
+                    <div class="text-[10px] text-slate-400">
+                      {{ t('backup.storageImagesLabel') }}
+                    </div>
+                    <div class="text-xs font-extrabold tabular-nums text-emerald-700 dark:text-emerald-400">
+                      {{ formatBytesLabel(store.storageUsageStats.totalImageBytes) }}
+                    </div>
+                  </div>
+                </div>
+
                 <div class="grid grid-cols-1 gap-2">
                   <button
                     type="button"
                     class="flex w-full items-center justify-center gap-1.5 rounded-xl bg-slate-900 px-3 py-2.5 text-xs font-bold text-white transition hover:bg-slate-800 dark:bg-emerald-500 dark:text-slate-950 dark:hover:bg-emerald-400"
-                    @click="handleExportLocalJson"
+                    @click="handleExportLocalJson(false)"
                   >
                     <Download class="h-4 w-4" />
                     <span>{{ t('backup.exportButton') }}</span>
+                  </button>
+
+                  <button
+                    v-if="store.storageUsageStats.receiptImageCount > 0"
+                    type="button"
+                    class="flex w-full items-center justify-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50/70 px-3 py-2 text-xs font-bold text-emerald-800 transition hover:bg-emerald-100 dark:border-emerald-800/70 dark:bg-emerald-950/40 dark:text-emerald-300"
+                    @click="handleExportLocalJson(true)"
+                  >
+                    <Download class="h-3.5 w-3.5" />
+                    <span>{{ t('backup.exportLiteButton') }}</span>
                   </button>
 
                   <label

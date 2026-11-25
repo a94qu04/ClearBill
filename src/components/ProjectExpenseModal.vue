@@ -408,6 +408,7 @@ async function handleSubmit() {
             enable-expression
             show-math-toolbar
             show-service-fee-button
+            show-fx-fee-button
             size="lg"
             autofocus
             placeholder="0"

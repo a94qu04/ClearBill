@@ -48,8 +48,12 @@ export function buildProjectSettlementShareText(
   options: ShareSummaryOptions = {},
 ): string {
   const memberNameMap = new Map<string, string>()
+  const memberPaymentMap = new Map<string, string>()
   for (const member of project.members) {
     memberNameMap.set(member.id, member.name)
+    if (member.paymentInfo?.trim()) {
+      memberPaymentMap.set(member.id, member.paymentInfo.trim())
+    }
   }
   const targetCurrency = settleUp.currency || project.baseCurrency
   const nameOf = (id: string) => memberNameMap.get(id) ?? id
@@ -86,6 +90,10 @@ export function buildProjectSettlementShareText(
           fmt(transfer.amount, transfer.currency),
         )}`,
       )
+      const recipientPayment = memberPaymentMap.get(transfer.toMemberId)
+      if (recipientPayment) {
+        lines.push(`  ↳ ${recipientPayment}`)
+      }
     }
   }
 

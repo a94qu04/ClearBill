@@ -46,6 +46,7 @@ import {
   publishProjectToFirestore,
   pushProjectUpdateToFirestore,
   pushTransactionToFirestore,
+  rotateProjectAccessKeyOnFirestore,
   subscribeSharedProject,
 } from '@/services/firestoreSyncService'
 import {
@@ -208,6 +209,7 @@ function createDefaultUserProfile(): UserProfile {
     displayName: '',
     avatarColor: AVATAR_PALETTE[0],
     avatarImage: undefined,
+    paymentInfo: undefined,
   }
 }
 
@@ -306,6 +308,11 @@ function loadUserPrefs(): PersistedUserPrefsV2 {
                 typeof rawProfile.avatarImage === 'string' &&
                 rawProfile.avatarImage.startsWith('data:image/')
                   ? rawProfile.avatarImage
+                  : undefined,
+              paymentInfo:
+                typeof rawProfile.paymentInfo === 'string' &&
+                rawProfile.paymentInfo.trim()
+                  ? rawProfile.paymentInfo.trim().slice(0, 120)
                   : undefined,
               updatedAt:
                 typeof rawProfile.updatedAt === 'number' &&
@@ -483,9 +490,17 @@ export const useLedgerStore = defineStore('ledger', () => {
       displayName?: string
       avatarColor?: string
       avatarImage?: string | null
+      paymentInfo?: string | null
     },
     options?: { applyToExistingProjects?: boolean },
   ): Promise<number> {
+    const nextPaymentInfo =
+      patch.paymentInfo === null
+        ? undefined
+        : patch.paymentInfo !== undefined
+          ? patch.paymentInfo.trim().slice(0, 120) || undefined
+          : userProfile.value.paymentInfo
+
     const next: UserProfile = {
       displayName:
         patch.displayName !== undefined
@@ -501,6 +516,7 @@ export const useLedgerStore = defineStore('ledger', () => {
           : patch.avatarImage !== undefined
             ? patch.avatarImage
             : userProfile.value.avatarImage,
+      paymentInfo: nextPaymentInfo,
       updatedAt: Date.now(),
     }
     userProfile.value = next
@@ -522,6 +538,7 @@ export const useLedgerStore = defineStore('ledger', () => {
           name: next.displayName || targetMember.name,
           avatarColor: next.avatarColor,
           avatarImage: next.avatarImage ?? null,
+          paymentInfo: next.paymentInfo ?? null,
         })
         updatedProjectsCount += 1
       }
@@ -1607,6 +1624,9 @@ export const useLedgerStore = defineStore('ledger', () => {
         ...(userProfile.value.avatarImage
           ? { avatarImage: userProfile.value.avatarImage }
           : {}),
+        ...(userProfile.value.paymentInfo
+          ? { paymentInfo: userProfile.value.paymentInfo }
+          : {}),
       }
       members = [...members, createdMember]
       claimedMemberId = createdMember.id
@@ -1614,7 +1634,10 @@ export const useLedgerStore = defineStore('ledger', () => {
     } else if (claimedMemberId && params.applyMyProfile) {
       const profile = userProfile.value
       const hasProfileCustom = Boolean(
-        profile.displayName || profile.avatarImage || profile.avatarColor,
+        profile.displayName ||
+          profile.avatarImage ||
+          profile.avatarColor ||
+          profile.paymentInfo,
       )
       if (hasProfileCustom) {
         members = members.map((m) => {
@@ -1625,6 +1648,9 @@ export const useLedgerStore = defineStore('ledger', () => {
             avatarColor: profile.avatarColor || m.avatarColor,
             ...(profile.avatarImage
               ? { avatarImage: profile.avatarImage }
+              : {}),
+            ...(profile.paymentInfo
+              ? { paymentInfo: profile.paymentInfo }
               : {}),
           }
         })
@@ -1708,6 +1734,29 @@ export const useLedgerStore = defineStore('ledger', () => {
     projects.value = projects.value.map((p) => (p.id === projectId ? saved : p))
   }
 
+  async function rotateProjectInviteLink(
+    projectId: string,
+  ): Promise<{ shareId: string; accessKey: string } | null> {
+    const existing = projects.value.find((p) => p.id === projectId && !p.isDeleted)
+    const shareId = existing?.syncMeta?.shareId
+    if (!existing || existing.syncMeta?.mode !== 'firestore' || !shareId) {
+      return null
+    }
+    const nextAccessKey = await rotateProjectAccessKeyOnFirestore(shareId)
+    const updated: Project = {
+      ...existing,
+      syncMeta: {
+        ...existing.syncMeta,
+        accessKey: nextAccessKey,
+        lastSyncedAt: Date.now(),
+      },
+      members: existing.members.map((m) => ({ ...m })),
+    }
+    const saved = await saveProjectToNormalVault(updated)
+    projects.value = projects.value.map((p) => (p.id === projectId ? saved : p))
+    return { shareId, accessKey: nextAccessKey }
+  }
+
   async function stopProjectRealtimeSync(projectId: string): Promise<void> {
     unsubscribeProjectRealtime(projectId)
     await clearProjectSyncOutbox(projectId)
@@ -1777,6 +1826,9 @@ export const useLedgerStore = defineStore('ledger', () => {
               : AVATAR_PALETTE[idx % AVATAR_PALETTE.length],
           ...(isFirstSelf && profile.avatarImage
             ? { avatarImage: profile.avatarImage }
+            : {}),
+          ...(isFirstSelf && profile.paymentInfo
+            ? { paymentInfo: profile.paymentInfo }
             : {}),
         }
       })
@@ -1888,7 +1940,12 @@ export const useLedgerStore = defineStore('ledger', () => {
   async function updateProjectMember(
     projectId: string,
     memberId: string,
-    patch: { name?: string; avatarColor?: string; avatarImage?: string | null },
+    patch: {
+      name?: string
+      avatarColor?: string
+      avatarImage?: string | null
+      paymentInfo?: string | null
+    },
   ): Promise<Project | null> {
     const existing = projects.value.find((p) => p.id === projectId && !p.isDeleted)
     if (!existing) return null
@@ -1901,11 +1958,18 @@ export const useLedgerStore = defineStore('ledger', () => {
           : patch.avatarImage !== undefined
             ? patch.avatarImage
             : m.avatarImage
+      const nextPaymentInfo =
+        patch.paymentInfo === null
+          ? undefined
+          : patch.paymentInfo !== undefined
+            ? patch.paymentInfo.trim().slice(0, 120) || undefined
+            : m.paymentInfo
       return {
         ...m,
         name: patch.name !== undefined ? patch.name.trim() || m.name : m.name,
         avatarColor: patch.avatarColor ?? m.avatarColor,
         ...(nextAvatarImage ? { avatarImage: nextAvatarImage } : { avatarImage: undefined }),
+        ...(nextPaymentInfo ? { paymentInfo: nextPaymentInfo } : { paymentInfo: undefined }),
       }
     })
 
@@ -2183,6 +2247,19 @@ export const useLedgerStore = defineStore('ledger', () => {
     persistActiveProjectId(projectId)
   }
 
+  function resolveCurrentEditorName(projectId?: string): string | undefined {
+    if (projectId) {
+      const proj = projects.value.find((p) => p.id === projectId)
+      const myId = proj?.syncMeta?.myMemberId || proj?.defaultPayerId
+      const memberName = myId
+        ? proj?.members.find((m) => m.id === myId)?.name?.trim()
+        : undefined
+      if (memberName) return memberName.slice(0, 50)
+    }
+    const profileName = userProfile.value.displayName.trim()
+    return profileName ? profileName.slice(0, 50) : undefined
+  }
+
   async function addTransaction(
     payload: CreateTransactionPayload,
   ): Promise<Transaction> {
@@ -2195,6 +2272,7 @@ export const useLedgerStore = defineStore('ledger', () => {
       payload.receiptImages && payload.receiptImages.length > 0
         ? payload.receiptImages.slice(0, 3)
         : undefined
+    const editorName = resolveCurrentEditorName(payload.projectId)
 
     const tx: Transaction = {
       id: generateUuid(),
@@ -2213,6 +2291,7 @@ export const useLedgerStore = defineStore('ledger', () => {
       links: cleanLinks,
       receiptImages: cleanImages,
       isReimbursable: payload.isReimbursable,
+      ...(editorName ? { lastEditedBy: editorName } : {}),
       splitConfig: payload.splitConfig,
     }
 
@@ -2282,6 +2361,8 @@ export const useLedgerStore = defineStore('ledger', () => {
         ? payload.receiptImages.slice(0, 3)
         : undefined
 
+    const editorName = resolveCurrentEditorName(payload.projectId ?? existing.projectId)
+
     const updated: Transaction = {
       ...existing,
       schemaVersion: CURRENT_SCHEMA_VERSION,
@@ -2299,6 +2380,7 @@ export const useLedgerStore = defineStore('ledger', () => {
       links: cleanLinks,
       receiptImages: cleanImages,
       isReimbursable: payload.isReimbursable,
+      lastEditedBy: editorName ?? existing.lastEditedBy,
       splitConfig: payload.splitConfig,
     }
 
@@ -2416,10 +2498,62 @@ export const useLedgerStore = defineStore('ledger', () => {
     return toPlainClone(list)
   }
 
-  function exportLedgerBackup(): LedgerBackup {
+  /** 本機儲存空間與圖片體積概覽（協助使用者掌握備份體積與圖片占用） */
+  const storageUsageStats = computed(() => {
+    let receiptImageCount = 0
+    let receiptBytes = 0
+    let avatarAndCoverCount = 0
+    let avatarAndCoverBytes = 0
+
+    for (const tx of transactions.value) {
+      if (tx.receiptImages) {
+        for (const img of tx.receiptImages) {
+          receiptImageCount += 1
+          receiptBytes += img.length
+        }
+      }
+    }
+    for (const proj of projects.value) {
+      if (proj.cardCoverImage) {
+        avatarAndCoverCount += 1
+        avatarAndCoverBytes += proj.cardCoverImage.length
+      }
+      for (const m of proj.members) {
+        if (m.avatarImage) {
+          avatarAndCoverCount += 1
+          avatarAndCoverBytes += m.avatarImage.length
+        }
+      }
+    }
+    if (userProfile.value.avatarImage) {
+      avatarAndCoverCount += 1
+      avatarAndCoverBytes += userProfile.value.avatarImage.length
+    }
+
+    const totalImageBytes = receiptBytes + avatarAndCoverBytes
+    return {
+      projectCount: allNonDeletedProjects.value.length,
+      transactionCount: visibleTransactions.value.length,
+      receiptImageCount,
+      receiptBytes,
+      avatarAndCoverCount,
+      avatarAndCoverBytes,
+      totalImageCount: receiptImageCount + avatarAndCoverCount,
+      totalImageBytes,
+    }
+  })
+
+  function exportLedgerBackup(options?: { omitReceiptImages?: boolean }): LedgerBackup {
+    const clonedTxs = cloneTransactionsForBackup(transactions.value).map((tx) => {
+      if (options?.omitReceiptImages && tx.receiptImages) {
+        const { receiptImages: _ignored, ...rest } = tx
+        return rest
+      }
+      return tx
+    })
     return createLedgerBackupPayload(
       cloneProjectsForBackup(projects.value),
-      cloneTransactionsForBackup(transactions.value),
+      clonedTxs,
       Date.now(),
       toPlainClone(categories.value),
       toPlainClone(userProfile.value),
@@ -2580,6 +2714,7 @@ export const useLedgerStore = defineStore('ledger', () => {
     restoreTransaction,
     permanentlyDeleteTransaction,
     emptyTrash,
+    storageUsageStats,
     exportLedgerBackup,
     exportProjectBackup,
     importAndMergeLedgerBackup,
@@ -2587,6 +2722,7 @@ export const useLedgerStore = defineStore('ledger', () => {
     fetchSharedProjectForJoin,
     finalizeJoinSharedProject,
     setMyMemberForProject,
+    rotateProjectInviteLink,
     stopProjectRealtimeSync,
     startProjectRealtimeListener,
     startAllSharedProjectListeners,

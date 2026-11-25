@@ -25,6 +25,36 @@ export function getSuggestedExchangeRate(from: string, to: string): number {
   return 1
 }
 
+/**
+ * 依據原價套用選填之服務費 % 與刷卡手續費 %（兩者可獨立套用或依序疊加），
+ * 並按目標幣別小數位數四捨五入，確保反覆切換 % 數時永遠從原價精準重算。
+ */
+export function applyPercentFees(
+  baseAmount: number,
+  serviceFeePercent: number | null,
+  fxFeePercent: number | null,
+  decimals = 0,
+): number {
+  if (!Number.isFinite(baseAmount) || baseAmount <= 0) return 0
+  let total = baseAmount
+  if (
+    typeof serviceFeePercent === 'number' &&
+    Number.isFinite(serviceFeePercent) &&
+    serviceFeePercent > 0
+  ) {
+    total *= 1 + serviceFeePercent / 100
+  }
+  if (
+    typeof fxFeePercent === 'number' &&
+    Number.isFinite(fxFeePercent) &&
+    fxFeePercent > 0
+  ) {
+    total *= 1 + fxFeePercent / 100
+  }
+  const factor = 10 ** Math.max(0, decimals)
+  return Math.round(total * factor) / factor
+}
+
 export function getTodayIso(): string {
   const now = new Date()
   const y = now.getFullYear()

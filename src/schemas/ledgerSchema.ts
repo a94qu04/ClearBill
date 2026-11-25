@@ -17,8 +17,13 @@ export const TransactionTypeSchema = z.enum([
 ])
 export type TransactionType = z.infer<typeof TransactionTypeSchema>
 
-/** 拆帳模式：equal（全員均攤）| custom_plus_equal（指定金額外其餘均攤） */
-export const SplitModeSchema = z.enum(['equal', 'custom_plus_equal'])
+/** 拆帳模式：equal（全員均攤）| custom_plus_equal（指定金額外其餘均攤）| weight（份數比例）| percentage（百分比） */
+export const SplitModeSchema = z.enum([
+  'equal',
+  'custom_plus_equal',
+  'weight',
+  'percentage',
+])
 export type SplitMode = z.infer<typeof SplitModeSchema>
 
 /** ISO 4217 三碼大寫幣別代碼（如 TWD、JPY、USD、KRW） */
@@ -44,6 +49,10 @@ export const MemberSplitInputSchema = z.object({
   memberId: z.string().trim().min(1, '成員 ID 不可為空'),
   customAmount: z.number().finite().min(0, '指定金額不可為負數').default(0),
   isIncludedInRemainder: z.boolean().default(true),
+  /** 選填：份數比例模式權重（如 1、2、0.5、0） */
+  weight: z.number().finite().min(0, '份數權重不可為負數').optional(),
+  /** 選填：百分比模式比例（0 ~ 100） */
+  percent: z.number().finite().min(0, '百分比不可為負數').max(100, '百分比不可超過 100').optional(),
 })
 export type MemberSplitInput = z.input<typeof MemberSplitInputSchema>
 export type NormalizedMemberSplitInput = z.output<typeof MemberSplitInputSchema>
@@ -61,6 +70,8 @@ export const SplitShareSchema = z.object({
   finalAmount: z.number().finite().min(0),
   customAmount: z.number().finite().min(0).optional(),
   isIncludedInRemainder: z.boolean().optional(),
+  weight: z.number().finite().min(0).optional(),
+  percent: z.number().finite().min(0).max(100).optional(),
 })
 export type SplitShare = z.infer<typeof SplitShareSchema>
 
@@ -110,6 +121,8 @@ export const TransactionSchema = z.object({
   links: ExternalLinksSchema.optional(),
   receiptImages: z.array(z.string().min(1)).max(3).optional(),
   isReimbursable: z.boolean().optional(),
+  /** 選填：最後新增或編輯此筆帳目之成員名稱（供多人協作稽核對帳） */
+  lastEditedBy: z.string().trim().max(50).optional(),
   splitConfig: SplitConfigSchema.optional(),
 })
 export type Transaction = z.infer<typeof TransactionSchema>
@@ -121,14 +134,18 @@ export const ProjectMemberSchema = z.object({
   avatarColor: z.string().trim().max(32).optional(),
   /** 選填：正方形裁切壓縮後之大頭貼 Data URL（輕量小圖，完全向下相容） */
   avatarImage: z.string().max(180_000).optional(),
+  /** 選填：收款帳號或轉帳資訊（如銀行代碼＋帳號、LINE Pay 連結），供結算頁一鍵複製 */
+  paymentInfo: z.string().trim().max(120).optional(),
 })
 export type ProjectMember = z.infer<typeof ProjectMemberSchema>
 
-/** 使用者個人成員檔案（用於預設成員名稱與大頭貼顯示，支援跨裝置同步） */
+/** 使用者個人成員檔案（用於預設成員名稱、大頭貼與收款帳號，支援跨裝置同步） */
 export const UserProfileSchema = z.object({
   displayName: z.string().trim().max(50).default(''),
   avatarColor: z.string().trim().max(32).default('#10b981'),
   avatarImage: z.string().max(180_000).optional(),
+  /** 選填：個人收款帳號或轉帳資訊 */
+  paymentInfo: z.string().trim().max(120).optional(),
   updatedAt: z.number().int().nonnegative().optional(),
 })
 export type UserProfile = z.infer<typeof UserProfileSchema>

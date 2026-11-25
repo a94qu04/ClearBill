@@ -26,10 +26,17 @@ service cloud.firestore {
         && request.auth.uid in resource.data.memberUids;
 
       // 更新共享專案：
-      // 1) 已加入成員可更新專案資訊（但不得竄改 ownerUid 或 accessKey）
-      // 2) 新旅伴持有正確 accessKey 時，僅允許將自己的 UID 加入 memberUids 完成入團授權
+      // 1) 團主可更新專案資訊或重設邀請金鑰（accessKey，使舊邀請連結失效）
+      // 2) 已加入成員可更新專案資訊（但不得竄改 ownerUid 或 accessKey）
+      // 3) 新旅伴持有正確 accessKey 時，僅允許將自己的 UID 加入 memberUids 完成入團授權
       allow update: if request.auth != null && (
         (
+          request.auth.uid == resource.data.ownerUid
+          && request.resource.data.ownerUid == resource.data.ownerUid
+          && request.resource.data.accessKey is string
+          && request.resource.data.accessKey.size() >= 16
+        )
+        || (
           request.auth.uid in resource.data.memberUids
           && request.resource.data.ownerUid == resource.data.ownerUid
           && request.resource.data.accessKey == resource.data.accessKey

@@ -217,4 +217,73 @@ describe('splitCalculator - 雙模式拆帳計算機', () => {
       }),
     ).toThrowError(/ERR_DUPLICATE_MEMBER/)
   })
+
+  it('weight 模式：按份數比例（含小數 0.5 與 0 份）採最大餘數法精準分配且無誤差', () => {
+    // 總額 1000 TWD：Alice 2 份、Bob 1.5 份、Charlie 0.5 份、Dave 0 份 -> 共 4 份
+    // Alice = 500, Bob = 375, Charlie = 125, Dave = 0
+    const exact = calculateSplit({
+      totalAmount: 1000,
+      currency: 'TWD',
+      mode: 'weight',
+      members: [
+        { memberId: 'alice', weight: 2 },
+        { memberId: 'bob', weight: 1.5 },
+        { memberId: 'charlie', weight: 0.5 },
+        { memberId: 'dave', weight: 0 },
+      ],
+    })
+    expect(exact.totalWeight).toBe(4)
+    expect(exact.shares.map((s) => s.finalAmount)).toEqual([500, 375, 125, 0])
+
+    // 含尾差：1000 / (1+1+1) = 334, 333, 333，總和嚴格等於 1000
+    const withRemainder = calculateSplit({
+      totalAmount: 1000,
+      currency: 'TWD',
+      mode: 'weight',
+      members: [
+        { memberId: 'a', weight: 1 },
+        { memberId: 'b', weight: 1 },
+        { memberId: 'c', weight: 1 },
+      ],
+    })
+    expect(withRemainder.shares.reduce((sum, s) => sum + s.finalAmount, 0)).toBe(1000)
+
+    expect(() =>
+      calculateSplit({
+        totalAmount: 500,
+        currency: 'TWD',
+        mode: 'weight',
+        members: [
+          { memberId: 'a', weight: 0 },
+          { memberId: 'b', weight: 0 },
+        ],
+      }),
+    ).toThrowError(/ERR_INVALID_WEIGHTS/)
+  })
+
+  it('percentage 模式：依百分比精準分配且攔截總和非 100% 錯誤', () => {
+    const result = calculateSplit({
+      totalAmount: 100,
+      currency: 'USD',
+      mode: 'percentage',
+      members: [
+        { memberId: 'alice', percent: 55.5 },
+        { memberId: 'bob', percent: 44.5 },
+      ],
+    })
+    expect(result.totalPercent).toBe(100)
+    expect(result.shares.map((s) => s.finalAmount)).toEqual([55.5, 44.5])
+
+    expect(() =>
+      calculateSplit({
+        totalAmount: 1000,
+        currency: 'TWD',
+        mode: 'percentage',
+        members: [
+          { memberId: 'alice', percent: 60 },
+          { memberId: 'bob', percent: 30 },
+        ],
+      }),
+    ).toThrowError(/ERR_PERCENT_TOTAL_INVALID/)
+  })
 })

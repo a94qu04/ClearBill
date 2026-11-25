@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   Archive,
@@ -7,6 +7,8 @@ import {
   Check,
   Cloud,
   CloudOff,
+  Copy,
+  ExternalLink,
   GripVertical,
   ImagePlus,
   LayoutGrid,
@@ -27,6 +29,7 @@ import {
 import { formatCurrencyAmount } from '@/core/currency'
 import { parseGoogleConnectHash } from '@/core/googleConnectLink'
 import { compressCoverImageFileToDataUrl } from '@/core/imageCompressor'
+import { detectInAppBrowser } from '@/core/inAppBrowser'
 import { parseShareInviteHash } from '@/core/realtimeSyncEngine'
 import { LIVE_RATES_CACHE_TTL_MS } from '@/services/exchangeRateService'
 import {
@@ -42,18 +45,34 @@ import type {
   SplitMode,
   Transaction,
 } from '@/schemas/ledgerSchema'
-import AllProjectsModal from '@/components/AllProjectsModal.vue'
-import JoinSharedProjectModal from '@/components/JoinSharedProjectModal.vue'
+import type { SettingsTab } from '@/components/SettingsModal.vue'
+import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import MemberAvatar from '@/components/MemberAvatar.vue'
-import PhotoLightboxModal from '@/components/PhotoLightboxModal.vue'
 import ProjectExpenseModal from '@/components/ProjectExpenseModal.vue'
 import ProjectSettleTab from '@/components/ProjectSettleTab.vue'
 import ProjectSettingsTab from '@/components/ProjectSettingsTab.vue'
-import ProjectShareModal from '@/components/ProjectShareModal.vue'
-import SettingsModal, { type SettingsTab } from '@/components/SettingsModal.vue'
 import SettlementPaymentModal from '@/components/SettlementPaymentModal.vue'
-import SyncDeletionGuardModal from '@/components/SyncDeletionGuardModal.vue'
 import TransactionListSection from '@/components/TransactionListSection.vue'
+
+// 懶載入大型彈窗與輔助抽屜，大幅縮小首屏初始載入體積
+const AllProjectsModal = defineAsyncComponent(
+  () => import('@/components/AllProjectsModal.vue'),
+)
+const JoinSharedProjectModal = defineAsyncComponent(
+  () => import('@/components/JoinSharedProjectModal.vue'),
+)
+const PhotoLightboxModal = defineAsyncComponent(
+  () => import('@/components/PhotoLightboxModal.vue'),
+)
+const ProjectShareModal = defineAsyncComponent(
+  () => import('@/components/ProjectShareModal.vue'),
+)
+const SettingsModal = defineAsyncComponent(
+  () => import('@/components/SettingsModal.vue'),
+)
+const SyncDeletionGuardModal = defineAsyncComponent(
+  () => import('@/components/SyncDeletionGuardModal.vue'),
+)
 
 type ActiveView = 'home' | 'project_create' | 'project_workspace'
 type ProjectTab = 'expenses' | 'settle' | 'settings'
@@ -71,9 +90,38 @@ const shareModalOpen = ref(false)
 const pendingJoinInvite = ref<ShareInviteParams | null>(null)
 const isDark = ref(false)
 const isTouchDevice = ref(false)
+const inAppBrowser = ref(detectInAppBrowser())
+const inAppBannerDismissed = ref(false)
 const previewPhotos = ref<string[]>([])
 const previewPhotoIndex = ref(0)
 let hourlyRatesTimer: ReturnType<typeof setInterval> | null = null
+
+async function handleCopyCurrentPageUrl() {
+  if (typeof window === 'undefined') return
+  const url = window.location.href
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(url)
+      showToast(t('inApp.copiedUrlToast'))
+      return
+    }
+  } catch {
+    // 降級複製
+  }
+  try {
+    const ta = document.createElement('textarea')
+    ta.value = url
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    document.execCommand('copy')
+    document.body.removeChild(ta)
+    showToast(t('inApp.copiedUrlToast'))
+  } catch {
+    showToast(t('share.failedToast'))
+  }
+}
 
 function openSettingsModal(tab: SettingsTab = 'profile') {
   settingsInitialTab.value = tab
@@ -653,11 +701,11 @@ onBeforeUnmount(() => {
 
 <template>
   <div
-    class="min-h-screen bg-slate-50 pb-24 text-slate-900 transition-colors duration-200 dark:bg-slate-950 dark:text-slate-100"
+    class="safe-bottom-page min-h-screen bg-slate-50 text-slate-900 transition-colors duration-200 dark:bg-slate-950 dark:text-slate-100"
   >
-    <!-- 極簡 App 頂部導覽列（左上小收據 Icon 回首頁，右上同水平線放明確設定齒輪） -->
+    <!-- 極簡 App 頂部導覽列（支援 iOS Safe Area、左上小收據 Icon 回首頁、右上設定齒輪） -->
     <header
-      class="sticky top-0 z-30 border-b border-slate-200/80 bg-white/90 backdrop-blur-md transition-colors dark:border-slate-800/80 dark:bg-slate-950/90"
+      class="safe-top sticky top-0 z-30 border-b border-slate-200/80 bg-white/90 backdrop-blur-md transition-colors dark:border-slate-800/80 dark:bg-slate-950/90"
     >
       <div class="mx-auto flex h-13 max-w-xl items-center justify-between gap-2 px-4 py-2">
         <div class="flex min-w-0 items-center gap-2">
@@ -772,7 +820,7 @@ onBeforeUnmount(() => {
     >
       <div
         v-if="toastMessage"
-        class="fixed bottom-20 left-1/2 z-50 flex -translate-x-1/2 items-center gap-2.5 whitespace-nowrap rounded-full bg-slate-900 px-4 py-2 text-xs font-semibold text-white shadow-xl dark:bg-slate-100 dark:text-slate-950"
+        class="safe-toast-bottom fixed left-1/2 z-50 flex -translate-x-1/2 items-center gap-2.5 whitespace-nowrap rounded-full bg-slate-900 px-4 py-2 text-xs font-semibold text-white shadow-xl dark:bg-slate-100 dark:text-slate-950"
       >
         <Check class="h-3.5 w-3.5 text-emerald-400 dark:text-emerald-600" />
         <span>{{ toastMessage }}</span>
@@ -789,6 +837,38 @@ onBeforeUnmount(() => {
     </Transition>
 
     <main class="mx-auto max-w-xl px-4 pt-5">
+      <!-- LINE / FB / IG / WeChat 內建瀏覽器偵測提醒橫幅 -->
+      <div
+        v-if="inAppBrowser.isInApp && !inAppBannerDismissed"
+        class="mb-4 flex items-start justify-between gap-2.5 rounded-2xl border border-amber-300/80 bg-amber-50/90 px-3.5 py-2.5 text-xs text-amber-950 shadow-sm dark:border-amber-800/70 dark:bg-amber-950/50 dark:text-amber-100"
+      >
+        <div class="min-w-0 flex-1 space-y-1">
+          <div class="flex items-center gap-1.5 font-bold">
+            <ExternalLink class="h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+            <span>{{ t('inApp.title', { app: inAppBrowser.appName }) }}</span>
+          </div>
+          <p class="text-[11px] leading-relaxed opacity-90">
+            {{ t('inApp.desc') }}
+          </p>
+          <button
+            type="button"
+            class="mt-1 inline-flex items-center gap-1 rounded-lg bg-amber-600 px-2.5 py-1 text-[11px] font-bold text-white transition hover:bg-amber-700"
+            @click="handleCopyCurrentPageUrl"
+          >
+            <Copy class="h-3 w-3" />
+            <span>{{ t('inApp.copyUrlButton') }}</span>
+          </button>
+        </div>
+        <button
+          type="button"
+          :aria-label="t('settings.close')"
+          class="rounded-lg p-1 text-amber-700/70 hover:bg-amber-200/50 dark:text-amber-300"
+          @click="inAppBannerDismissed = true"
+        >
+          <X class="h-4 w-4" />
+        </button>
+      </div>
+
       <!-- ==================== 視圖 1：極簡首頁 ==================== -->
       <div v-if="activeView === 'home'" class="space-y-5">
         <!-- 分帳專案區（依裝置調整排序提示，提供「全部 (N)」開啟上移/下移與拖曳排序） -->
@@ -1040,6 +1120,8 @@ onBeforeUnmount(() => {
                 >
                   <option value="equal">{{ t('split.tabEqual') }}</option>
                   <option value="custom_plus_equal">{{ t('split.tabCustomPlusEqual') }}</option>
+                  <option value="weight">{{ t('split.tabWeight') }}</option>
+                  <option value="percentage">{{ t('split.tabPercent') }}</option>
                 </select>
               </div>
             </div>
@@ -1414,11 +1496,11 @@ onBeforeUnmount(() => {
           @toast="showToast($event)"
         />
 
-        <!-- 浮動「+ 記一筆」按鈕 -->
+        <!-- 浮動「+ 記一筆」按鈕（含底部 Safe Area 避讓） -->
         <button
           v-if="projectTab !== 'settings'"
           type="button"
-          class="fixed bottom-6 right-6 z-40 inline-flex items-center gap-2 rounded-full bg-emerald-600 px-5 py-3.5 text-sm font-bold text-white shadow-xl transition hover:scale-105 active:scale-95 dark:bg-emerald-500 dark:text-slate-950"
+          class="safe-fab-bottom fixed right-6 z-40 inline-flex items-center gap-2 rounded-full bg-emerald-600 px-5 py-3.5 text-sm font-bold text-white shadow-xl transition hover:scale-105 active:scale-95 dark:bg-emerald-500 dark:text-slate-950"
           @click="openAddProjectExpenseSheet"
         >
           <Plus class="h-5 w-5" />
@@ -1499,5 +1581,8 @@ onBeforeUnmount(() => {
 
     <!-- 異常大量遠端刪除熔斷保護視窗 -->
     <SyncDeletionGuardModal @toast="showToast($event)" />
+
+    <!-- 全域自製確認對話框（完全取代原生 window.confirm） -->
+    <ConfirmDialog />
   </div>
 </template>

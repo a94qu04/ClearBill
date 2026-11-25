@@ -20,6 +20,23 @@
   }
 }
 
+/* iOS / Android PWA 瀏海與底部指示條 Safe Area 避讓 */
+.safe-top {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+.safe-bottom-page {
+  padding-bottom: calc(6rem + env(safe-area-inset-bottom, 0px));
+}
+
+.safe-fab-bottom {
+  bottom: calc(1.5rem + env(safe-area-inset-bottom, 0px));
+}
+
+.safe-toast-bottom {
+  bottom: calc(5rem + env(safe-area-inset-bottom, 0px));
+}
+
 /* 防止 iOS Safari / PWA 聚焦字體小於 16px 的表單欄位時觸發自動放大 */
 @supports (-webkit-touch-callout: none) {
   input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='file']):not([type='color']):not(.text-lg):not(.text-xl):not(.text-2xl):not(.text-3xl),

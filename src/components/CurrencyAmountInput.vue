@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { Check, RotateCcw } from 'lucide-vue-next'
 import {
   formatGroupedNumberInput,
   getCurrencyDecimals,
@@ -10,6 +11,49 @@ import {
   evaluateAmountExpression,
   hasMathExpression,
 } from '@/core/expressionEvaluator'
+import { applyPercentFees } from '@/core/ledgerHelpers'
+
+const FEE_RATES_STORAGE_KEY = 'clearbill_custom_fee_rates_v1'
+
+function loadSavedFeeRates(): { service: number; fx: number } {
+  const defaults = { service: 10, fx: 1.5 }
+  if (typeof window === 'undefined') return defaults
+  try {
+    const raw = window.localStorage.getItem(FEE_RATES_STORAGE_KEY)
+    if (!raw) return defaults
+    const parsed = JSON.parse(raw) as Partial<{ service: number; fx: number }>
+    return {
+      service:
+        typeof parsed.service === 'number' &&
+        Number.isFinite(parsed.service) &&
+        parsed.service > 0 &&
+        parsed.service <= 100
+          ? parsed.service
+          : 10,
+      fx:
+        typeof parsed.fx === 'number' &&
+        Number.isFinite(parsed.fx) &&
+        parsed.fx > 0 &&
+        parsed.fx <= 100
+          ? parsed.fx
+          : 1.5,
+    }
+  } catch {
+    return defaults
+  }
+}
+
+function persistFeeRates(service: number, fx: number): void {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(
+      FEE_RATES_STORAGE_KEY,
+      JSON.stringify({ service, fx }),
+    )
+  } catch {
+    // 忽略受限儲存環境
+  }
+}
 
 interface Props {
   modelValue: number | null
@@ -19,6 +63,7 @@ interface Props {
   allowDecimals?: boolean
   enableExpression?: boolean
   showServiceFeeButton?: boolean
+  showFxFeeButton?: boolean
   showMathToolbar?: boolean
   placeholder?: string
   size?: 'sm' | 'md' | 'lg'
@@ -33,6 +78,7 @@ const props = withDefaults(defineProps<Props>(), {
   allowDecimals: undefined,
   enableExpression: false,
   showServiceFeeButton: false,
+  showFxFeeButton: false,
   showMathToolbar: false,
   placeholder: '0',
   size: 'md',
@@ -47,10 +93,26 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 
+const savedRates = loadSavedFeeRates()
 const inputElRef = ref<HTMLInputElement | null>(null)
 const isFocused = ref(false)
-/** 可反悔的 +10% 服務費原始基數：非 null 代表目前已套用 +10%，再點一次還原原價 */
-const serviceFeeBase = ref<number | null>(null)
+
+/** 可反悔的加成原價基數與各自獨立的開關／自訂百分比（可分開或同時疊加套用） */
+const feeBase = ref<number | null>(null)
+const serviceFeeEnabled = ref(false)
+const fxFeeEnabled = ref(false)
+const serviceFeePercentInput = ref<string>(String(savedRates.service))
+const fxFeePercentInput = ref<string>(String(savedRates.fx))
+
+const parsedServiceFeePercent = computed<number>(() => {
+  const n = Number(serviceFeePercentInput.value)
+  return Number.isFinite(n) && n > 0 && n <= 100 ? n : 0
+})
+
+const parsedFxFeePercent = computed<number>(() => {
+  const n = Number(fxFeePercentInput.value)
+  return Number.isFinite(n) && n > 0 && n <= 100 ? n : 0
+})
 
 const effectiveAllowDecimals = computed(() => {
   if (props.allowDecimals !== undefined) return props.allowDecimals
@@ -84,21 +146,71 @@ const formattedExpressionPreview = computed(() => {
   )
 })
 
-const formattedServiceFeeBase = computed(() => {
-  if (serviceFeeBase.value === null) return ''
-  return formatGroupedNumberInput(
-    serviceFeeBase.value,
-    effectiveAllowDecimals.value,
-  )
+const formattedFeeBase = computed(() => {
+  if (feeBase.value === null) return ''
+  return formatGroupedNumberInput(feeBase.value, effectiveAllowDecimals.value)
 })
 
-const isServiceFeeApplied = computed(() => serviceFeeBase.value !== null)
+const isAnyFeeApplied = computed(
+  () => feeBase.value !== null && (serviceFeeEnabled.value || fxFeeEnabled.value),
+)
+
+const hasPositiveInput = computed(() => {
+  if (isAnyFeeApplied.value) return true
+  const val = isExpressionInput.value
+    ? evaluatedExpressionValue.value
+    : parseGroupedNumberInput(displayValue.value)
+  return val !== null && val > 0
+})
+
+const appliedFeeSummary = computed(() => {
+  const parts: string[] = []
+  if (serviceFeeEnabled.value && parsedServiceFeePercent.value > 0) {
+    parts.push(`${t('project.serviceFeeShort')} +${parsedServiceFeePercent.value}%`)
+  }
+  if (fxFeeEnabled.value && parsedFxFeePercent.value > 0) {
+    parts.push(`${t('project.fxFeeShort')} +${parsedFxFeePercent.value}%`)
+  }
+  return parts.join('、')
+})
+
+function resetFeeState() {
+  feeBase.value = null
+  serviceFeeEnabled.value = false
+  fxFeeEnabled.value = false
+}
+
+function recalculateWithCurrentFees() {
+  if (feeBase.value === null) return
+  if (!serviceFeeEnabled.value && !fxFeeEnabled.value) {
+    const original = feeBase.value
+    feeBase.value = null
+    displayValue.value = formatGroupedNumberInput(
+      original,
+      effectiveAllowDecimals.value,
+    )
+    emit('update:modelValue', original)
+    return
+  }
+
+  const nextVal = applyPercentFees(
+    feeBase.value,
+    serviceFeeEnabled.value ? parsedServiceFeePercent.value : null,
+    fxFeeEnabled.value ? parsedFxFeePercent.value : null,
+    targetDecimals.value,
+  )
+  displayValue.value = formatGroupedNumberInput(
+    nextVal,
+    effectiveAllowDecimals.value,
+  )
+  emit('update:modelValue', nextVal)
+}
 
 watch(
   () => [props.modelValue, effectiveAllowDecimals.value] as const,
   ([nextVal, allowDec]) => {
     if (nextVal === null || nextVal === undefined) {
-      serviceFeeBase.value = null
+      resetFeeState()
       if (displayValue.value !== '') {
         displayValue.value = ''
       }
@@ -108,7 +220,7 @@ watch(
       ? evaluatedExpressionValue.value
       : parseGroupedNumberInput(displayValue.value)
     if (currentParsed !== nextVal) {
-      serviceFeeBase.value = null
+      resetFeeState()
       displayValue.value = formatGroupedNumberInput(nextVal, allowDec)
     }
   },
@@ -117,8 +229,8 @@ watch(
 function handleInput(event: Event) {
   const target = event.target as HTMLInputElement
   const raw = target.value
-  // 手動修改數值時自動解除 +10% 狀態鎖定，避免原價基準與當前數字脫鉤
-  serviceFeeBase.value = null
+  // 手動修改主金額時自動解除加成鎖定，避免原價基準與當前數字脫鉤
+  resetFeeState()
 
   if (props.enableExpression && hasMathExpression(raw)) {
     const sanitized = raw.replace(/[^\d.,+\-*/()%×÷＋－（）％xX\s]/g, '')
@@ -166,7 +278,7 @@ function handleKeydown(event: KeyboardEvent) {
 
 function appendOperator(op: '+' | '-' | '×' | '÷') {
   if (!props.enableExpression) return
-  serviceFeeBase.value = null
+  resetFeeState()
   const current = displayValue.value.trim()
   if (!current) return
 
@@ -183,32 +295,83 @@ function appendOperator(op: '+' | '-' | '×' | '÷') {
   inputElRef.value?.focus()
 }
 
-function toggleServiceFeeTenPercent() {
-  // 若已套用 +10%，再點一次直接還原原價（防誤觸連點變 +21%）
-  if (serviceFeeBase.value !== null) {
-    const original = serviceFeeBase.value
-    serviceFeeBase.value = null
-    displayValue.value = formatGroupedNumberInput(
-      original,
-      effectiveAllowDecimals.value,
-    )
-    emit('update:modelValue', original)
-    return
-  }
-
-  const baseVal = isExpressionInput.value
+function ensureFeeBase(): boolean {
+  if (feeBase.value !== null) return true
+  const currentVal = isExpressionInput.value
     ? evaluatedExpressionValue.value
     : parseGroupedNumberInput(displayValue.value)
-  if (baseVal === null || baseVal <= 0) return
+  if (currentVal === null || currentVal <= 0) return false
+  feeBase.value = currentVal
+  return true
+}
 
-  serviceFeeBase.value = baseVal
-  const factor = 10 ** targetDecimals.value
-  const withFee = Math.round(baseVal * 1.1 * factor) / factor
-  displayValue.value = formatGroupedNumberInput(
-    withFee,
-    effectiveAllowDecimals.value,
+function toggleServiceFee() {
+  if (serviceFeeEnabled.value) {
+    serviceFeeEnabled.value = false
+    recalculateWithCurrentFees()
+    return
+  }
+  if (parsedServiceFeePercent.value <= 0) return
+  if (!ensureFeeBase()) return
+  serviceFeeEnabled.value = true
+  persistFeeRates(
+    parsedServiceFeePercent.value || savedRates.service,
+    parsedFxFeePercent.value || savedRates.fx,
   )
-  emit('update:modelValue', withFee)
+  recalculateWithCurrentFees()
+}
+
+function toggleFxFee() {
+  if (fxFeeEnabled.value) {
+    fxFeeEnabled.value = false
+    recalculateWithCurrentFees()
+    return
+  }
+  if (parsedFxFeePercent.value <= 0) return
+  if (!ensureFeeBase()) return
+  fxFeeEnabled.value = true
+  persistFeeRates(
+    parsedServiceFeePercent.value || savedRates.service,
+    parsedFxFeePercent.value || savedRates.fx,
+  )
+  recalculateWithCurrentFees()
+}
+
+function handleServiceFeeRateChange() {
+  if (parsedServiceFeePercent.value > 0) {
+    persistFeeRates(
+      parsedServiceFeePercent.value,
+      parsedFxFeePercent.value || savedRates.fx,
+    )
+  }
+  if (serviceFeeEnabled.value) {
+    if (parsedServiceFeePercent.value <= 0) {
+      serviceFeeEnabled.value = false
+    }
+    recalculateWithCurrentFees()
+  }
+}
+
+function handleFxFeeRateChange() {
+  if (parsedFxFeePercent.value > 0) {
+    persistFeeRates(
+      parsedServiceFeePercent.value || savedRates.service,
+      parsedFxFeePercent.value,
+    )
+  }
+  if (fxFeeEnabled.value) {
+    if (parsedFxFeePercent.value <= 0) {
+      fxFeeEnabled.value = false
+    }
+    recalculateWithCurrentFees()
+  }
+}
+
+function cancelAllFees() {
+  if (feeBase.value === null) return
+  serviceFeeEnabled.value = false
+  fxFeeEnabled.value = false
+  recalculateWithCurrentFees()
 }
 
 function handleCurrencyChange(event: Event) {
@@ -222,7 +385,6 @@ const sizeClasses = computed(() => {
       wrapper: 'rounded-2xl',
       select: 'w-[72px] py-3 pl-2.5 pr-1 text-xs font-bold',
       input: 'px-3.5 py-3 text-xl font-bold',
-      feeBtn: 'px-2.5 text-xs',
     }
   }
   if (props.size === 'sm') {
@@ -230,20 +392,18 @@ const sizeClasses = computed(() => {
       wrapper: 'rounded-lg',
       select: 'w-[62px] py-1.5 pl-2 pr-1 text-[11px] font-bold',
       input: 'px-2.5 py-1.5 text-sm font-medium',
-      feeBtn: 'px-1.5 text-[10px]',
     }
   }
   return {
     wrapper: 'rounded-xl',
     select: 'w-[68px] py-2.5 pl-2 pr-1 text-xs font-bold',
     input: 'px-3 py-2.5 text-base font-bold',
-    feeBtn: 'px-2 text-[11px]',
   }
 })
 </script>
 
 <template>
-  <div class="space-y-1.5">
+  <div class="space-y-2">
     <div
       class="flex items-stretch overflow-hidden border border-slate-200 bg-slate-50 transition focus-within:border-emerald-500 focus-within:bg-white focus-within:ring-2 focus-within:ring-emerald-500/20 dark:border-slate-700 dark:bg-slate-800 dark:focus-within:bg-slate-950"
       :class="sizeClasses.wrapper"
@@ -279,30 +439,6 @@ const sizeClasses = computed(() => {
         @blur="handleBlur"
         @keydown="handleKeydown"
       />
-
-      <!-- 可反悔之 +10% 服務費開關（已套用時高亮，再點一下還原原價） -->
-      <button
-        v-if="showServiceFeeButton"
-        type="button"
-        :disabled="!isServiceFeeApplied && (modelValue ?? 0) <= 0"
-        :aria-pressed="isServiceFeeApplied"
-        :title="
-          isServiceFeeApplied
-            ? t('project.serviceFeeUndoTitle')
-            : t('project.serviceFeeTitle')
-        "
-        class="shrink-0 border-l border-slate-200 font-bold transition active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700"
-        :class="[
-          sizeClasses.feeBtn,
-          isServiceFeeApplied
-            ? 'bg-emerald-600 text-white hover:bg-emerald-700 dark:bg-emerald-500 dark:text-slate-950'
-            : 'bg-emerald-50/80 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-950/50 dark:text-emerald-300 dark:hover:bg-emerald-950/80',
-        ]"
-        @mousedown.prevent
-        @click="toggleServiceFeeTenPercent"
-      >
-        {{ isServiceFeeApplied ? '+10% ✓' : '+10%' }}
-      </button>
     </div>
 
     <!-- 手機友善迷你運算按鈕列（不犧牲數字鍵盤，也能一指點加減乘除） -->
@@ -310,7 +446,7 @@ const sizeClasses = computed(() => {
       v-if="enableExpression && (showMathToolbar || isFocused || isExpressionInput)"
       class="flex flex-wrap items-center justify-between gap-1.5 px-0.5"
     >
-      <div class="flex items-center gap-1">
+      <div class="flex flex-wrap items-center gap-1">
         <button
           v-for="op in (['+', '-', '×', '÷'] as const)"
           :key="op"
@@ -345,21 +481,140 @@ const sizeClasses = computed(() => {
         >
           {{ t('project.expressionIncomplete') }}
         </span>
-        <span
-          v-else-if="isServiceFeeApplied"
-          class="font-semibold text-emerald-700 dark:text-emerald-400"
-        >
-          {{ t('project.serviceFeeAppliedHint', { base: formattedServiceFeeBase }) }}
-        </span>
       </div>
     </div>
 
-    <!-- 若未顯示運算列但已套用 +10% 服務費，仍顯示可還原提示 -->
+    <!-- 數字下方：可自訂 % 數之「服務費」與「刷卡手續費」互動開關列（點一下確認套用／再點取消） -->
     <div
-      v-else-if="isServiceFeeApplied"
-      class="px-1 text-right text-[11px] font-semibold text-emerald-700 dark:text-emerald-400"
+      v-if="showServiceFeeButton || showFxFeeButton"
+      class="space-y-1.5"
     >
-      {{ t('project.serviceFeeAppliedHint', { base: formattedServiceFeeBase }) }}
+      <div
+        class="grid gap-1.5"
+        :class="showServiceFeeButton && showFxFeeButton ? 'grid-cols-2' : 'grid-cols-1'"
+      >
+        <!-- 服務費自訂 % 與確認／取消鈕 -->
+        <div
+          v-if="showServiceFeeButton"
+          class="flex items-center justify-between gap-1 rounded-xl border px-2 py-1.5 transition"
+          :class="
+            serviceFeeEnabled
+              ? 'border-emerald-500 bg-emerald-50 text-emerald-900 dark:border-emerald-500/80 dark:bg-emerald-950/50 dark:text-emerald-200'
+              : 'border-slate-200 bg-slate-50/80 text-slate-700 dark:border-slate-700 dark:bg-slate-800/70 dark:text-slate-200'
+          "
+        >
+          <button
+            type="button"
+            :disabled="!serviceFeeEnabled && (!hasPositiveInput || parsedServiceFeePercent <= 0)"
+            :aria-pressed="serviceFeeEnabled"
+            class="flex min-w-0 flex-1 items-center gap-1 text-left text-[11px] font-bold transition disabled:cursor-not-allowed disabled:opacity-45"
+            @mousedown.prevent
+            @click="toggleServiceFee"
+          >
+            <span
+              class="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-md border transition"
+              :class="
+                serviceFeeEnabled
+                  ? 'border-emerald-600 bg-emerald-600 text-white dark:border-emerald-400 dark:bg-emerald-400 dark:text-slate-950'
+                  : 'border-slate-300 bg-white dark:border-slate-600 dark:bg-slate-900'
+              "
+            >
+              <Check v-if="serviceFeeEnabled" class="h-3 w-3" />
+            </span>
+            <span class="truncate">{{ t('project.serviceFeeShort') }}</span>
+          </button>
+
+          <div
+            class="flex shrink-0 items-center rounded-lg border border-slate-200 bg-white px-1.5 py-0.5 dark:border-slate-700 dark:bg-slate-900"
+          >
+            <input
+              v-model="serviceFeePercentInput"
+              type="number"
+              min="0"
+              max="100"
+              step="any"
+              inputmode="decimal"
+              :aria-label="t('project.serviceFeeShort')"
+              class="w-10 bg-transparent text-right text-[11px] font-bold tabular-nums text-slate-900 focus:outline-none dark:text-white"
+              @input="handleServiceFeeRateChange"
+              @keyup.enter.prevent="!serviceFeeEnabled && toggleServiceFee()"
+            />
+            <span class="ml-0.5 text-[10px] font-bold text-slate-400">%</span>
+          </div>
+        </div>
+
+        <!-- 刷卡手續費自訂 % 與確認／取消鈕 -->
+        <div
+          v-if="showFxFeeButton"
+          class="flex items-center justify-between gap-1 rounded-xl border px-2 py-1.5 transition"
+          :class="
+            fxFeeEnabled
+              ? 'border-amber-500 bg-amber-50 text-amber-950 dark:border-amber-500/80 dark:bg-amber-950/50 dark:text-amber-200'
+              : 'border-slate-200 bg-slate-50/80 text-slate-700 dark:border-slate-700 dark:bg-slate-800/70 dark:text-slate-200'
+          "
+        >
+          <button
+            type="button"
+            :disabled="!fxFeeEnabled && (!hasPositiveInput || parsedFxFeePercent <= 0)"
+            :aria-pressed="fxFeeEnabled"
+            class="flex min-w-0 flex-1 items-center gap-1 text-left text-[11px] font-bold transition disabled:cursor-not-allowed disabled:opacity-45"
+            @mousedown.prevent
+            @click="toggleFxFee"
+          >
+            <span
+              class="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-md border transition"
+              :class="
+                fxFeeEnabled
+                  ? 'border-amber-500 bg-amber-500 text-slate-950'
+                  : 'border-slate-300 bg-white dark:border-slate-600 dark:bg-slate-900'
+              "
+            >
+              <Check v-if="fxFeeEnabled" class="h-3 w-3" />
+            </span>
+            <span class="truncate">{{ t('project.fxFeeShort') }}</span>
+          </button>
+
+          <div
+            class="flex shrink-0 items-center rounded-lg border border-slate-200 bg-white px-1.5 py-0.5 dark:border-slate-700 dark:bg-slate-900"
+          >
+            <input
+              v-model="fxFeePercentInput"
+              type="number"
+              min="0"
+              max="100"
+              step="any"
+              inputmode="decimal"
+              :aria-label="t('project.fxFeeShort')"
+              class="w-10 bg-transparent text-right text-[11px] font-bold tabular-nums text-slate-900 focus:outline-none dark:text-white"
+              @input="handleFxFeeRateChange"
+              @keyup.enter.prevent="!fxFeeEnabled && toggleFxFee()"
+            />
+            <span class="ml-0.5 text-[10px] font-bold text-slate-400">%</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 已套用費用時顯示於下方的「點一下取消還原」按鈕條 -->
+      <button
+        v-if="isAnyFeeApplied"
+        type="button"
+        class="flex w-full items-center justify-between gap-2 rounded-xl border border-emerald-200/80 bg-emerald-50/70 px-3 py-1.5 text-[11px] font-semibold text-emerald-800 transition hover:bg-emerald-100/80 active:scale-[0.99] dark:border-emerald-800/70 dark:bg-emerald-950/40 dark:text-emerald-200"
+        @mousedown.prevent
+        @click="cancelAllFees"
+      >
+        <span class="truncate">
+          {{
+            t('project.feeAppliedTapToCancel', {
+              base: formattedFeeBase,
+              summary: appliedFeeSummary,
+            })
+          }}
+        </span>
+        <span class="inline-flex shrink-0 items-center gap-1 font-bold text-rose-600 dark:text-rose-400">
+          <RotateCcw class="h-3 w-3" />
+          <span>{{ t('project.feeCancelShort') }}</span>
+        </span>
+      </button>
     </div>
   </div>
 </template>

@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n'
 import {
   ArrowLeftRight,
   Coins,
+  Copy,
   FileSpreadsheet,
   ImageDown,
   Loader2,
@@ -19,8 +20,6 @@ import {
 } from '@/core/settleUpEngine'
 import { formatCurrencyAmount } from '@/core/currency'
 import { buildProjectSettlementShareText } from '@/core/shareFormatter'
-import { buildProjectExcelBytes } from '@/core/excelExporter'
-import { generateProjectReportPngBlob } from '@/core/reportImageGenerator'
 import {
   getTodayIso,
   sanitizeExportFilename,
@@ -215,6 +214,40 @@ function getMemberColor(memberId: string): string {
   )
 }
 
+function getMemberPaymentInfo(memberId: string): string {
+  return (
+    props.project.members.find((m) => m.id === memberId)?.paymentInfo?.trim() ??
+    ''
+  )
+}
+
+async function copyPaymentInfo(memberId: string) {
+  const info = getMemberPaymentInfo(memberId)
+  if (!info) return
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(info)
+      emit('toast', t('profile.paymentInfoCopiedToast'))
+      return
+    }
+  } catch {
+    // 降級複製
+  }
+  try {
+    const ta = document.createElement('textarea')
+    ta.value = info
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    document.execCommand('copy')
+    document.body.removeChild(ta)
+    emit('toast', t('profile.paymentInfoCopiedToast'))
+  } catch {
+    emit('toast', t('share.failedToast'))
+  }
+}
+
 function resolveCategoryLabel(cat: ManagedCategory): string {
   if (cat.customLabel) return cat.customLabel
   const translated = t(`categories.${cat.key}`)
@@ -313,7 +346,8 @@ function getCategoryColor(key: string): string {
   return store.categories.find((c) => c.key === key)?.color ?? '#64748b'
 }
 
-function handleExportExcel() {
+async function handleExportExcel() {
+  const { buildProjectExcelBytes } = await import('@/core/excelExporter')
   const { settlementCurrency: targetCur, options } =
     store.getProjectSettlementOptions(props.project, [
       ...props.expenses,
@@ -384,6 +418,9 @@ async function handleExportLongImage() {
   if (isGeneratingImage.value) return
   isGeneratingImage.value = true
   try {
+    const { generateProjectReportPngBlob } = await import(
+      '@/core/reportImageGenerator'
+    )
     const blob = await generateProjectReportPngBlob(
       props.project,
       props.settleUp,
@@ -784,6 +821,15 @@ async function handleExportLongImage() {
             <div class="mt-0.5 text-sm font-extrabold tabular-nums text-emerald-700 dark:text-emerald-400">
               {{ fmt(transfer.amount, transfer.currency) }}
             </div>
+            <button
+              v-if="getMemberPaymentInfo(transfer.toMemberId)"
+              type="button"
+              class="mt-1 inline-flex max-w-full items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-600 transition hover:border-emerald-400 hover:text-emerald-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
+              @click="copyPaymentInfo(transfer.toMemberId)"
+            >
+              <Copy class="h-2.5 w-2.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+              <span class="truncate">{{ getMemberPaymentInfo(transfer.toMemberId) }}</span>
+            </button>
           </div>
           <button
             type="button"

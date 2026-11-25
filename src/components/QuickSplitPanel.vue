@@ -58,9 +58,21 @@ const multiPayerAmounts = reactive<Record<string, number | null>>({})
 interface MemberRowState {
   customAmount: number | null
   isIncludedInRemainder: boolean
+  weight: number
+  percent: number | null
 }
 
 const memberStateMap = reactive<Record<string, MemberRowState>>({})
+
+function initEqualPercents(): number[] {
+  const n = props.members.length
+  if (n <= 0) return []
+  const base = Math.floor((10000 / n)) / 100
+  const list = new Array<number>(n).fill(base)
+  const sumOthers = Number((base * (n - 1)).toFixed(2))
+  list[0] = Number((100 - sumOthers).toFixed(2))
+  return list
+}
 
 function applyPresetFromConfig(config: SplitConfig | null | undefined) {
   const validIds = new Set(props.members.map((m) => m.id))
@@ -78,6 +90,8 @@ function applyPresetFromConfig(config: SplitConfig | null | undefined) {
   for (const member of props.members) {
     multiPayerAmounts[member.id] = null
   }
+
+  const defaultPercents = initEqualPercents()
 
   if (config) {
     mode.value = config.mode
@@ -104,14 +118,46 @@ function applyPresetFromConfig(config: SplitConfig | null | undefined) {
 
     const shareMap = new Map(config.shares.map((s) => [s.memberId, s]))
 
-    for (const member of props.members) {
+    props.members.forEach((member, idx) => {
       const savedShare = shareMap.get(member.id)
       if (!savedShare) {
         memberStateMap[member.id] = {
           customAmount: null,
           isIncludedInRemainder: false,
+          weight: 0,
+          percent: 0,
         }
-        continue
+        return
+      }
+
+      if (config.mode === 'weight') {
+        const w =
+          savedShare.weight !== undefined
+            ? savedShare.weight
+            : savedShare.finalAmount > 0
+              ? 1
+              : 0
+        memberStateMap[member.id] = {
+          customAmount: null,
+          isIncludedInRemainder: w > 0,
+          weight: w,
+          percent: defaultPercents[idx] ?? 0,
+        }
+        return
+      }
+
+      if (config.mode === 'percentage') {
+        const pct =
+          savedShare.percent !== undefined
+            ? savedShare.percent
+            : defaultPercents[idx] ?? 0
+        memberStateMap[member.id] = {
+          customAmount: null,
+          isIncludedInRemainder: pct > 0,
+          weight: pct > 0 ? 1 : 0,
+          percent: pct,
+        }
+        return
       }
 
       // 優先使用保存下來的原始輸入狀態，100% 精準還原修改前資料
@@ -125,19 +171,25 @@ function applyPresetFromConfig(config: SplitConfig | null | undefined) {
               ? savedShare.customAmount
               : null,
           isIncludedInRemainder: savedShare.isIncludedInRemainder ?? false,
+          weight: savedShare.isIncludedInRemainder ? 1 : 0,
+          percent: defaultPercents[idx] ?? 0,
         }
       } else if (config.mode === 'custom_plus_equal') {
         memberStateMap[member.id] = {
           customAmount: savedShare.finalAmount > 0 ? savedShare.finalAmount : null,
           isIncludedInRemainder: false,
+          weight: savedShare.finalAmount > 0 ? 1 : 0,
+          percent: defaultPercents[idx] ?? 0,
         }
       } else {
         memberStateMap[member.id] = {
           customAmount: null,
           isIncludedInRemainder: savedShare.finalAmount > 0,
+          weight: savedShare.finalAmount > 0 ? 1 : 0,
+          percent: defaultPercents[idx] ?? 0,
         }
       }
-    }
+    })
     return
   }
 
@@ -148,12 +200,14 @@ function applyPresetFromConfig(config: SplitConfig | null | undefined) {
       ? props.defaultPayerId
       : props.members[0]?.id) ?? ''
 
-  for (const member of props.members) {
+  props.members.forEach((member, idx) => {
     memberStateMap[member.id] = {
       customAmount: null,
       isIncludedInRemainder: true,
+      weight: 1,
+      percent: defaultPercents[idx] ?? 0,
     }
-  }
+  })
 }
 
 watch(
@@ -207,12 +261,23 @@ function fillRemainingToPayer(memberId: string) {
 }
 
 function resetAllSharesToEqual() {
-  for (const member of props.members) {
+  const eqPercents = initEqualPercents()
+  props.members.forEach((member, idx) => {
     memberStateMap[member.id] = {
       customAmount: null,
       isIncludedInRemainder: true,
+      weight: 1,
+      percent: eqPercents[idx] ?? 0,
     }
-  }
+  })
+}
+
+function stepMemberWeight(memberId: string, delta: number) {
+  const state = memberStateMap[memberId]
+  if (!state) return
+  const next = Math.max(0, Number(((state.weight ?? 0) + delta).toFixed(2)))
+  state.weight = next
+  state.isIncludedInRemainder = next > 0
 }
 
 function handleSwitchMode(nextMode: SplitMode) {
@@ -227,6 +292,32 @@ function handleSwitchMode(nextMode: SplitMode) {
           memberStateMap[member.id].isIncludedInRemainder = true
         }
       }
+    }
+  } else if (nextMode === 'weight') {
+    const totalW = props.members.reduce(
+      (sum, m) => sum + (memberStateMap[m.id]?.weight ?? 0),
+      0,
+    )
+    if (totalW <= 0) {
+      for (const member of props.members) {
+        if (memberStateMap[member.id]) {
+          memberStateMap[member.id].weight = 1
+          memberStateMap[member.id].isIncludedInRemainder = true
+        }
+      }
+    }
+  } else if (nextMode === 'percentage') {
+    const totalPct = props.members.reduce(
+      (sum, m) => sum + (memberStateMap[m.id]?.percent ?? 0),
+      0,
+    )
+    if (totalPct <= 0) {
+      const eqPercents = initEqualPercents()
+      props.members.forEach((member, idx) => {
+        if (memberStateMap[member.id]) {
+          memberStateMap[member.id].percent = eqPercents[idx] ?? 0
+        }
+      })
     }
   }
 }
@@ -281,6 +372,8 @@ const evaluation = computed<EvaluationState>(() => {
     const state = memberStateMap[member.id] ?? {
       customAmount: null,
       isIncludedInRemainder: true,
+      weight: 1,
+      percent: 0,
     }
     return {
       memberId: member.id,
@@ -289,6 +382,11 @@ const evaluation = computed<EvaluationState>(() => {
           ? state.customAmount
           : 0,
       isIncludedInRemainder: state.isIncludedInRemainder,
+      weight: Number.isFinite(state.weight) && state.weight >= 0 ? state.weight : 0,
+      percent:
+        state.percent !== null && Number.isFinite(state.percent) && state.percent >= 0
+          ? state.percent
+          : 0,
     }
   })
 
@@ -319,6 +417,14 @@ const evaluation = computed<EvaluationState>(() => {
     }
   }
 })
+
+const currentPercentTotal = computed(() =>
+  Number(
+    props.members
+      .reduce((acc, m) => acc + Math.max(0, Number(memberStateMap[m.id]?.percent ?? 0)), 0)
+      .toFixed(2),
+  ),
+)
 
 const shareByMemberId = computed<Record<string, number>>(() => {
   const map: Record<string, number> = {}
@@ -377,6 +483,20 @@ const dynamicHint = computed<{
     }
   }
 
+  if (evaluation.value.errorCode === 'ERR_INVALID_WEIGHTS') {
+    return {
+      tone: 'error',
+      text: t('split.errInvalidWeights'),
+    }
+  }
+
+  if (evaluation.value.errorCode === 'ERR_PERCENT_TOTAL_INVALID') {
+    return {
+      tone: 'error',
+      text: t('split.errPercentTotal', { total: currentPercentTotal.value }),
+    }
+  }
+
   if (evaluation.value.errorCode) {
     return {
       tone: 'error',
@@ -396,6 +516,26 @@ const dynamicHint = computed<{
         total: fmt(res.totalAmount),
         count: res.remainderMemberCount,
         perPerson: fmt(res.remainderBasePerMember),
+      }),
+    }
+  }
+
+  if (res.mode === 'weight') {
+    return {
+      tone: 'success',
+      text: t('split.hintWeight', {
+        total: fmt(res.totalAmount),
+        totalWeight: res.totalWeight ?? 0,
+        perWeight: fmt(res.remainderBasePerMember),
+      }),
+    }
+  }
+
+  if (res.mode === 'percentage') {
+    return {
+      tone: 'success',
+      text: t('split.hintPercent', {
+        total: fmt(res.totalAmount),
       }),
     }
   }
@@ -447,6 +587,8 @@ watch(
         finalAmount: share.finalAmount,
         customAmount: share.customAmount,
         isIncludedInRemainder: share.isIncludedInRemainder,
+        ...(share.weight !== undefined ? { weight: share.weight } : {}),
+        ...(share.percent !== undefined ? { percent: share.percent } : {}),
       })),
     }
     emit('update:splitConfig', config)
@@ -557,17 +699,17 @@ watch(
       </div>
     </div>
 
-    <!-- 雙頁籤切換：全部均攤 / 指定金額外均攤 -->
-    <div class="mb-3 flex items-center gap-2">
+    <!-- 四模式頁籤切換：均攤 / 指定+均攤 / 份數比例 / 百分比 -->
+    <div class="mb-3 flex items-center gap-1.5">
       <div
         role="tablist"
-        class="grid flex-1 grid-cols-2 rounded-xl bg-slate-100 p-1 dark:bg-slate-800"
+        class="grid flex-1 grid-cols-4 gap-0.5 rounded-xl bg-slate-100 p-1 dark:bg-slate-800"
       >
         <button
           type="button"
           role="tab"
           :aria-selected="mode === 'equal'"
-          class="rounded-lg px-2.5 py-1.5 text-xs font-semibold transition"
+          class="truncate rounded-lg px-1.5 py-1.5 text-[11px] font-semibold transition"
           :class="
             mode === 'equal'
               ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-950 dark:text-white'
@@ -575,13 +717,13 @@ watch(
           "
           @click="handleSwitchMode('equal')"
         >
-          {{ t('split.tabEqual') }}
+          {{ t('split.tabEqualShort') }}
         </button>
         <button
           type="button"
           role="tab"
           :aria-selected="mode === 'custom_plus_equal'"
-          class="rounded-lg px-2.5 py-1.5 text-xs font-semibold transition"
+          class="truncate rounded-lg px-1.5 py-1.5 text-[11px] font-semibold transition"
           :class="
             mode === 'custom_plus_equal'
               ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-950 dark:text-white'
@@ -589,15 +731,43 @@ watch(
           "
           @click="handleSwitchMode('custom_plus_equal')"
         >
-          {{ t('split.tabCustomPlusEqual') }}
+          {{ t('split.tabCustomShort') }}
+        </button>
+        <button
+          type="button"
+          role="tab"
+          :aria-selected="mode === 'weight'"
+          class="truncate rounded-lg px-1.5 py-1.5 text-[11px] font-semibold transition"
+          :class="
+            mode === 'weight'
+              ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-950 dark:text-white'
+              : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'
+          "
+          @click="handleSwitchMode('weight')"
+        >
+          {{ t('split.tabWeightShort') }}
+        </button>
+        <button
+          type="button"
+          role="tab"
+          :aria-selected="mode === 'percentage'"
+          class="truncate rounded-lg px-1.5 py-1.5 text-[11px] font-semibold transition"
+          :class="
+            mode === 'percentage'
+              ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-950 dark:text-white'
+              : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'
+          "
+          @click="handleSwitchMode('percentage')"
+        >
+          {{ t('split.tabPercentShort') }}
         </button>
       </div>
 
       <button
-        v-if="mode === 'custom_plus_equal'"
+        v-if="mode !== 'equal'"
         type="button"
         :title="t('split.resetShares')"
-        class="inline-flex shrink-0 items-center gap-1 rounded-xl border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+        class="inline-flex shrink-0 items-center gap-1 rounded-xl border border-slate-200 px-2 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
         @click="resetAllSharesToEqual"
       >
         <RotateCcw class="h-3.5 w-3.5" />
@@ -651,6 +821,7 @@ watch(
         </div>
 
         <div class="flex flex-1 flex-wrap items-center justify-end gap-2">
+          <!-- 指定金額外均攤模式 -->
           <CurrencyAmountInput
             v-if="mode === 'custom_plus_equal'"
             v-model="memberStateMap[member.id].customAmount"
@@ -661,7 +832,54 @@ watch(
             class="w-24 sm:w-28"
           />
 
+          <!-- 份數比例模式（可按 - / + 步進 0.5 或直接輸入份數） -->
+          <div
+            v-else-if="mode === 'weight'"
+            class="inline-flex items-center overflow-hidden rounded-lg border border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800"
+          >
+            <button
+              type="button"
+              class="px-2 py-1 text-xs font-bold text-slate-600 hover:bg-slate-200 dark:text-slate-300 dark:hover:bg-slate-700"
+              @click="stepMemberWeight(member.id, -0.5)"
+            >
+              −
+            </button>
+            <input
+              v-model.number="memberStateMap[member.id].weight"
+              type="number"
+              min="0"
+              step="0.5"
+              inputmode="decimal"
+              class="w-12 bg-white py-1 text-center text-xs font-bold tabular-nums text-slate-900 focus:outline-none dark:bg-slate-900 dark:text-white"
+            />
+            <button
+              type="button"
+              class="px-2 py-1 text-xs font-bold text-slate-600 hover:bg-slate-200 dark:text-slate-300 dark:hover:bg-slate-700"
+              @click="stepMemberWeight(member.id, 0.5)"
+            >
+              +
+            </button>
+          </div>
+
+          <!-- 百分比模式 -->
+          <div
+            v-else-if="mode === 'percentage'"
+            class="inline-flex items-center overflow-hidden rounded-lg border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900"
+          >
+            <input
+              v-model.number="memberStateMap[member.id].percent"
+              type="number"
+              min="0"
+              max="100"
+              step="any"
+              inputmode="decimal"
+              class="w-16 bg-transparent px-2 py-1 text-right text-xs font-bold tabular-nums text-slate-900 focus:outline-none dark:text-white"
+            />
+            <span class="pr-2 text-[11px] font-bold text-slate-400">%</span>
+          </div>
+
           <label
+            v-if="mode === 'equal' || mode === 'custom_plus_equal'"
             class="inline-flex cursor-pointer select-none items-center gap-1.5 rounded-lg border px-2 py-1 text-xs font-medium transition"
             :class="
               memberStateMap[member.id].isIncludedInRemainder

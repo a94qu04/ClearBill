@@ -19,6 +19,7 @@ import {
 } from 'lucide-vue-next'
 import type { Project } from '@/schemas/ledgerSchema'
 import { useLedgerStore } from '@/stores/ledgerStore'
+import { askConfirm } from '@/composables/useConfirm'
 import MemberAvatar from '@/components/MemberAvatar.vue'
 import { buildShareInviteUrl } from '@/core/realtimeSyncEngine'
 import {
@@ -232,14 +233,35 @@ async function handleRetrySync() {
   }
 }
 
+async function handleRotateInviteLink() {
+  if (!props.project || isBusy.value) return
+  const ok = await askConfirm({
+    title: t('realtime.rotateLinkButton'),
+    message: t('realtime.rotateLinkConfirm'),
+    confirmText: t('realtime.rotateLinkButton'),
+    tone: 'danger',
+  })
+  if (!ok) return
+  isBusy.value = true
+  try {
+    await store.rotateProjectInviteLink(props.project.id)
+    emit('toast', t('realtime.rotateLinkSuccessToast'))
+  } catch (err) {
+    emit('toast', resolveSyncError(err))
+  } finally {
+    isBusy.value = false
+  }
+}
+
 async function handleStopSync() {
   if (!props.project) return
-  if (
-    typeof window !== 'undefined' &&
-    !window.confirm(t('realtime.stopSyncConfirm'))
-  ) {
-    return
-  }
+  const ok = await askConfirm({
+    title: t('realtime.stopSyncButton'),
+    message: t('realtime.stopSyncConfirm'),
+    confirmText: t('confirm.confirmButton'),
+    tone: 'danger',
+  })
+  if (!ok) return
   await store.stopProjectRealtimeSync(props.project.id)
   emit('toast', t('realtime.stoppedToast'))
 }
@@ -475,6 +497,20 @@ async function handleStopSync() {
               <Share2 class="h-3.5 w-3.5" />
               <span>{{ t('realtime.shareInviteButton') }}</span>
             </button>
+            <div
+              v-if="project.syncMeta?.role === 'owner'"
+              class="pt-1 text-right"
+            >
+              <button
+                type="button"
+                :disabled="isBusy"
+                class="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-600 hover:underline disabled:opacity-40 dark:text-amber-400"
+                @click="handleRotateInviteLink"
+              >
+                <RefreshCw class="h-3 w-3" />
+                <span>{{ t('realtime.rotateLinkButton') }}</span>
+              </button>
+            </div>
           </div>
 
           <!-- 切換本機認領成員身分 -->

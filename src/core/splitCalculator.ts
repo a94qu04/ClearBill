@@ -13,6 +13,8 @@ export type SplitErrorCode =
   | 'ERR_DUPLICATE_MEMBER'
   | 'ERR_CUSTOM_EXCEEDS_TOTAL'
   | 'ERR_UNALLOCATED_REMAINDER'
+  | 'ERR_INVALID_WEIGHTS'
+  | 'ERR_PERCENT_TOTAL_INVALID'
 
 export class SplitCalculationError extends Error {
   public readonly code: SplitErrorCode
@@ -37,6 +39,8 @@ export interface ComputedMemberShare {
   remainderShare: number
   finalAmount: number
   isIncludedInRemainder: boolean
+  weight?: number
+  percent?: number
 }
 
 export interface SplitCalculationResult {
@@ -47,15 +51,61 @@ export interface SplitCalculationResult {
   remainderPool: number
   remainderMemberCount: number
   remainderBasePerMember: number
+  totalWeight?: number
+  totalPercent?: number
   shares: ComputedMemberShare[]
 }
 
 /**
- * 雙模式拆帳計算機（純 TypeScript 函式）
+ * 最大餘數法（Largest Remainder Method）：依各成員正權重將 totalUnits 精準分配為整數單位，
+ * 確保所有成員總和 100% 等於 totalUnits，無浮點誤差。
+ */
+function allocateUnitsByWeights(totalUnits: number, weights: number[]): number[] {
+  const result = new Array<number>(weights.length).fill(0)
+  if (totalUnits <= 0) return result
+  const sum = weights.reduce((acc, w) => acc + w, 0)
+  if (sum <= 0) return result
+
+  const remainders: Array<{ idx: number; frac: number }> = []
+  let allocated = 0
+
+  for (let i = 0; i < weights.length; i += 1) {
+    const w = weights[i]
+    if (w <= 0) {
+      remainders.push({ idx: i, frac: -1 })
+      continue
+    }
+    const exact = (totalUnits * w) / sum
+    const floored = Math.floor(exact)
+    result[i] = floored
+    allocated += floored
+    remainders.push({ idx: i, frac: exact - floored })
+  }
+
+  let leftover = totalUnits - allocated
+  if (leftover > 0) {
+    remainders.sort((a, b) => {
+      if (b.frac !== a.frac) return b.frac - a.frac
+      return a.idx - b.idx
+    })
+    for (const entry of remainders) {
+      if (leftover <= 0) break
+      if (entry.frac < 0) continue
+      result[entry.idx] += 1
+      leftover -= 1
+    }
+  }
+
+  return result
+}
+
+/**
+ * 四模式拆帳計算機（純 TypeScript 函式）
  * - equal：全員（或勾選參與者）均攤總金額
  * - custom_plus_equal：先扣除各成員指定金額，剩餘池由勾選「均攤剩餘」的成員平分
- * - 除法尾差依幣別最小精度（TWD/JPY/KRW 為 1，其餘為 0.01）依序分給前 N 位參與均攤者，
- *   確保所有分攤總和 100% 等於 totalAmount。
+ * - weight：依各成員份數權重（如 1、2、0.5）按最大餘數法比例分配
+ * - percentage：依各成員百分比（總和須為 100%）按最大餘數法比例分配
+ * - 除法尾差依幣別最小精度（TWD/JPY/KRW 為 1，其餘為 0.01）分配，確保總和 100% 等於 totalAmount。
  */
 export function calculateSplit(input: SplitCalculationInput): SplitCalculationResult {
   const { totalAmount, members } = input
@@ -89,6 +139,96 @@ export function calculateSplit(input: SplitCalculationInput): SplitCalculationRe
   })
 
   const totalUnits = toMinorUnits(totalAmount, currency)
+
+  // 模式 3：份數比例（weight）
+  if (mode === 'weight') {
+    const weights = normalizedMembers.map((m) =>
+      typeof m.weight === 'number' && Number.isFinite(m.weight) && m.weight >= 0
+        ? m.weight
+        : m.isIncludedInRemainder
+          ? 1
+          : 0,
+    )
+    const totalWeight = Number(weights.reduce((acc, w) => acc + w, 0).toFixed(4))
+    if (totalUnits > 0 && totalWeight <= 0) {
+      throw new SplitCalculationError(
+        'ERR_INVALID_WEIGHTS',
+        '所有成員份數總和必須大於 0',
+      )
+    }
+    const allocatedUnits = allocateUnitsByWeights(totalUnits, weights)
+    const activeCount = weights.filter((w) => w > 0).length
+    const perUnitBase =
+      totalWeight > 0 ? Math.floor(totalUnits / totalWeight) : 0
+
+    const shares: ComputedMemberShare[] = normalizedMembers.map((member, index) => {
+      const units = allocatedUnits[index]
+      const w = weights[index]
+      return {
+        memberId: member.memberId,
+        customAmount: 0,
+        remainderShare: fromMinorUnits(units, currency),
+        finalAmount: fromMinorUnits(units, currency),
+        isIncludedInRemainder: w > 0,
+        weight: w,
+      }
+    })
+
+    return {
+      mode,
+      currency,
+      totalAmount: fromMinorUnits(totalUnits, currency),
+      customTotal: 0,
+      remainderPool: fromMinorUnits(totalUnits, currency),
+      remainderMemberCount: activeCount,
+      remainderBasePerMember: fromMinorUnits(perUnitBase, currency),
+      totalWeight,
+      shares,
+    }
+  }
+
+  // 模式 4：百分比（percentage）
+  if (mode === 'percentage') {
+    const percents = normalizedMembers.map((m) =>
+      typeof m.percent === 'number' && Number.isFinite(m.percent) && m.percent >= 0
+        ? m.percent
+        : 0,
+    )
+    const totalPercent = Number(percents.reduce((acc, p) => acc + p, 0).toFixed(2))
+    if (totalUnits > 0 && Math.abs(totalPercent - 100) > 0.01) {
+      throw new SplitCalculationError(
+        'ERR_PERCENT_TOTAL_INVALID',
+        `百分比總和須為 100%（目前為 ${totalPercent}%）`,
+      )
+    }
+    const allocatedUnits = allocateUnitsByWeights(totalUnits, percents)
+    const activeCount = percents.filter((p) => p > 0).length
+
+    const shares: ComputedMemberShare[] = normalizedMembers.map((member, index) => {
+      const units = allocatedUnits[index]
+      const pct = percents[index]
+      return {
+        memberId: member.memberId,
+        customAmount: 0,
+        remainderShare: fromMinorUnits(units, currency),
+        finalAmount: fromMinorUnits(units, currency),
+        isIncludedInRemainder: pct > 0,
+        percent: pct,
+      }
+    })
+
+    return {
+      mode,
+      currency,
+      totalAmount: fromMinorUnits(totalUnits, currency),
+      customTotal: 0,
+      remainderPool: fromMinorUnits(totalUnits, currency),
+      remainderMemberCount: activeCount,
+      remainderBasePerMember: 0,
+      totalPercent,
+      shares,
+    }
+  }
 
   // 計算各成員的指定金額（equal 模式下一律為 0）
   const customUnitsList = normalizedMembers.map((member) =>

@@ -31,8 +31,7 @@ import {
   applySettlementRatesToTransactions,
   calculateSettleUp,
 } from '@/core/settleUpEngine'
-import { buildProjectExcelBytes } from '@/core/excelExporter'
-import { generateProjectReportPngBlob } from '@/core/reportImageGenerator'
+import { askConfirm } from '@/composables/useConfirm'
 import {
   getTodayIso,
   sanitizeExportFilename,
@@ -73,6 +72,7 @@ const editingMemberId = ref<string | null>(null)
 const editingMemberName = ref('')
 const editingMemberColor = ref<string>(AVATAR_PALETTE[0])
 const editingMemberAvatarImage = ref<string | undefined>(undefined)
+const editingMemberPaymentInfo = ref('')
 
 watch(
   () => props.project,
@@ -127,20 +127,20 @@ async function handleSaveProjectSettings() {
     props.project.baseCurrency.trim().toUpperCase()
   const existingTxCount = store.getProjectTransactionCount(props.project.id)
 
-  if (
-    currencyChanged &&
-    existingTxCount > 0 &&
-    typeof window !== 'undefined' &&
-    !window.confirm(
-      t('project.changeCurrencyConfirm', {
+  if (currencyChanged && existingTxCount > 0) {
+    const confirmed = await askConfirm({
+      title: t('project.currencyLabel'),
+      message: t('project.changeCurrencyConfirm', {
         from: props.project.baseCurrency,
         to: editProjectCurrency.value,
         count: existingTxCount,
       }),
-    )
-  ) {
-    editProjectCurrency.value = props.project.baseCurrency
-    return
+      tone: 'primary',
+    })
+    if (!confirmed) {
+      editProjectCurrency.value = props.project.baseCurrency
+      return
+    }
   }
 
   try {
@@ -177,6 +177,7 @@ function startEditMember(member: ProjectMember) {
   editingMemberName.value = member.name
   editingMemberColor.value = member.avatarColor || AVATAR_PALETTE[0]
   editingMemberAvatarImage.value = member.avatarImage
+  editingMemberPaymentInfo.value = member.paymentInfo ?? ''
 }
 
 async function handleMemberAvatarUpload(event: Event) {
@@ -203,6 +204,9 @@ function handleApplyMyProfileToEditingMember() {
   editingMemberColor.value =
     store.userProfile.avatarColor || editingMemberColor.value
   editingMemberAvatarImage.value = store.userProfile.avatarImage
+  if (store.userProfile.paymentInfo !== undefined) {
+    editingMemberPaymentInfo.value = store.userProfile.paymentInfo
+  }
 }
 
 async function handleSaveMemberEdit() {
@@ -213,6 +217,7 @@ async function handleSaveMemberEdit() {
     name: trimmed,
     avatarColor: editingMemberColor.value,
     avatarImage: editingMemberAvatarImage.value ?? null,
+    paymentInfo: editingMemberPaymentInfo.value.trim() || null,
   })
   editingMemberId.value = null
   emit('toast', t('project.memberUpdatedToast'))
@@ -245,14 +250,13 @@ async function handleToggleArchive() {
 }
 
 async function handleDeleteProject() {
-  if (
-    typeof window !== 'undefined' &&
-    !window.confirm(
-      t('project.deleteProjectConfirm', { name: props.project.name }),
-    )
-  ) {
-    return
-  }
+  const confirmed = await askConfirm({
+    title: t('project.deleteProject'),
+    message: t('project.deleteProjectConfirm', { name: props.project.name }),
+    confirmText: t('home.deleteTx'),
+    tone: 'danger',
+  })
+  if (!confirmed) return
   await store.softDeleteProject(props.project.id)
   emit('toast', t('project.projectDeletedToast'))
   emit('projectDeleted')
@@ -275,7 +279,8 @@ function getCategoryColor(key: string): string {
   return store.categories.find((c) => c.key === key)?.color ?? '#64748b'
 }
 
-function handleExportProjectExcel() {
+async function handleExportProjectExcel() {
+  const { buildProjectExcelBytes } = await import('@/core/excelExporter')
   const rawProjectTxs = store.visibleTransactions.filter(
     (tx) => tx.projectId === props.project.id,
   )
@@ -366,6 +371,9 @@ async function handleExportProjectLongImage() {
       projectTxs,
       settlementCurrency,
       props.project.members.map((m) => m.id),
+    )
+    const { generateProjectReportPngBlob } = await import(
+      '@/core/reportImageGenerator'
     )
     const blob = await generateProjectReportPngBlob(
       props.project,
@@ -501,7 +509,11 @@ function handleExportProjectJson() {
               </div>
               <div class="flex items-center gap-2 text-[11px] font-semibold">
                 <button
-                  v-if="store.userProfile.displayName || store.userProfile.avatarImage"
+                  v-if="
+                    store.userProfile.displayName ||
+                    store.userProfile.avatarImage ||
+                    store.userProfile.paymentInfo
+                  "
                   type="button"
                   class="text-emerald-600 hover:underline dark:text-emerald-400"
                   @click="handleApplyMyProfileToEditingMember"
@@ -518,19 +530,35 @@ function handleExportProjectJson() {
                 </button>
               </div>
             </div>
+            <input
+              v-model="editingMemberPaymentInfo"
+              type="text"
+              maxlength="120"
+              :placeholder="t('profile.paymentInfoPlaceholder')"
+              class="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] text-slate-800 focus:border-emerald-500 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+              @keyup.enter="handleSaveMemberEdit"
+            />
           </div>
 
           <div v-else class="flex items-center justify-between gap-2">
-            <div class="flex items-center gap-2.5">
+            <div class="flex min-w-0 items-center gap-2.5">
               <MemberAvatar
                 :name="member.name"
                 :color="member.avatarColor"
                 :image="member.avatarImage"
                 size="md"
               />
-              <span class="text-sm font-medium text-slate-800 dark:text-slate-100">
-                {{ member.name }}
-              </span>
+              <div class="min-w-0">
+                <div class="truncate text-sm font-medium text-slate-800 dark:text-slate-100">
+                  {{ member.name }}
+                </div>
+                <div
+                  v-if="member.paymentInfo"
+                  class="truncate text-[10px] text-slate-400 dark:text-slate-500"
+                >
+                  {{ member.paymentInfo }}
+                </div>
+              </div>
             </div>
             <div class="flex items-center gap-1">
               <button
@@ -640,6 +668,8 @@ function handleExportProjectJson() {
           >
             <option value="equal">{{ t('split.tabEqual') }}</option>
             <option value="custom_plus_equal">{{ t('split.tabCustomPlusEqual') }}</option>
+            <option value="weight">{{ t('split.tabWeight') }}</option>
+            <option value="percentage">{{ t('split.tabPercent') }}</option>
           </select>
         </div>
 
