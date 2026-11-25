@@ -19,6 +19,7 @@ import {
   Sparkles,
   Undo2,
   Users,
+  Wallet,
   X,
 } from 'lucide-vue-next'
 import {
@@ -93,6 +94,7 @@ const settingsInitialTab = ref<SettingsTab>('profile')
 const allProjectsSheetOpen = ref(false)
 const shareModalOpen = ref(false)
 const poolCollectModalOpen = ref(false)
+const editingPoolTx = ref<Transaction | null>(null)
 const pendingJoinInvite = ref<ShareInviteParams | null>(null)
 const isDark = ref(false)
 const isTouchDevice = ref(false)
@@ -484,6 +486,43 @@ const activeProjectMyMemberId = computed<string | undefined>(() => {
   return proj.syncMeta?.myMemberId || proj.defaultPayerId || undefined
 })
 
+/** 當前專案公費袋餘額摘要（常駐顯示於專案頂部主卡，即使尚未收公費或餘額為 0 元亦明確顯示） */
+const activeProjectPoolSummary = computed<{
+  poolMemberId: string
+  netAmount: number
+  currency: string
+  preferPoolPayer: boolean
+} | null>(() => {
+  const proj = store.activeProject
+  if (!proj) return null
+  const baseSettle = store.activeProjectBaseSettleUp
+  const poolMember = proj.members.find((m) => m.isPool)
+  const poolBal = baseSettle?.balances.find(
+    (b) => (poolMember && b.memberId === poolMember.id) || b.memberId.startsWith('pool_'),
+  )
+  const resolvedId = poolMember?.id || poolBal?.memberId || ''
+  return {
+    poolMemberId: resolvedId,
+    netAmount: poolBal?.netAmount ?? 0,
+    currency: proj.baseCurrency,
+    preferPoolPayer: Boolean(resolvedId && proj.defaultPayerId === resolvedId),
+  }
+})
+
+async function handleTogglePreferPoolPayer() {
+  if (!store.activeProject) return
+  const res = await store.togglePreferPoolPayer(
+    store.activeProject.id,
+    t('pool.defaultName'),
+  )
+  if (!res) return
+  showToast(
+    res.enabled
+      ? t('pool.preferPayEnabledToast')
+      : t('pool.preferPayDisabledToast'),
+  )
+}
+
 const topBarTitle = computed(() => {
   if (activeView.value === 'project_create') return t('project.createTitle')
   if (activeView.value === 'project_workspace' && store.activeProject) {
@@ -613,7 +652,24 @@ function onProjectDragEnd() {
 }
 
 // ==================== 支出／還款新增、修改、刪除與復原 ====================
+const expenseModalFromHome = ref(false)
+
+function openHomeQuickAddExpense() {
+  const targetProject = store.getLastExpenseProject()
+  if (!targetProject) {
+    openCreateProjectView()
+    return
+  }
+  store.selectProject(targetProject.id)
+  expenseModalFromHome.value = true
+  editingExpenseTx.value = null
+  duplicateExpenseTx.value = null
+  quickIntakePrefill.value = null
+  projExpenseSheetOpen.value = true
+}
+
 function openAddProjectExpenseSheet() {
+  expenseModalFromHome.value = false
   editingExpenseTx.value = null
   duplicateExpenseTx.value = null
   quickIntakePrefill.value = null
@@ -622,6 +678,7 @@ function openAddProjectExpenseSheet() {
 
 function closeProjectExpenseSheet() {
   projExpenseSheetOpen.value = false
+  expenseModalFromHome.value = false
   editingExpenseTx.value = null
   duplicateExpenseTx.value = null
   quickIntakePrefill.value = null
@@ -658,6 +715,11 @@ function startEditTransaction(tx: Transaction) {
   quickIntakePrefill.value = null
 
   if (originalTx.type === 'transfer') {
+    if (store.isPoolCollectionTransaction(originalTx, targetProject)) {
+      editingPoolTx.value = originalTx
+      poolCollectModalOpen.value = true
+      return
+    }
     editingSettleTx.value = originalTx
     settleInitialFromId.value = ''
     settleInitialToId.value = ''
@@ -1269,6 +1331,23 @@ onBeforeUnmount(() => {
           @preview-photos="openPhotoLightbox"
           @toast="showToast($event)"
         />
+
+        <!-- 首頁浮動「+ 記一筆」按鈕（自動帶入最後一筆之專案、幣別與分攤明細） -->
+        <div
+          v-if="store.activeProjects.length > 0"
+          class="safe-fab-bottom pointer-events-none fixed inset-x-0 z-40"
+        >
+          <div class="mx-auto flex max-w-xl justify-end px-4 md:max-w-3xl lg:max-w-5xl">
+            <button
+              type="button"
+              class="pointer-events-auto inline-flex items-center gap-2 rounded-full bg-emerald-600 px-5 py-3.5 text-sm font-bold text-white shadow-xl transition hover:scale-105 active:scale-95 dark:bg-emerald-500 dark:text-slate-950"
+              @click="openHomeQuickAddExpense"
+            >
+              <Plus class="h-5 w-5" />
+              <span>{{ t('project.fabAdd') }}</span>
+            </button>
+          </div>
+        </div>
       </div>
 
       <!-- ==================== 視圖 2：建立旅遊 / 分帳專案 ==================== -->
@@ -1574,79 +1653,145 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <!-- 多人即時協作共享狀態與邀請入口 -->
-          <div class="relative z-10 flex items-center justify-between gap-2 border-t border-white/15 pt-2.5">
-            <button
-              type="button"
-              class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-bold transition"
-              :class="
-                store.activeProject.syncMeta?.mode === 'firestore'
-                  ? 'bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30'
-                  : 'bg-white/10 text-slate-200 hover:bg-white/20'
-              "
-              @click="shareModalOpen = true"
-            >
-              <template v-if="store.activeProject.syncMeta?.mode === 'firestore'">
-                <CloudOff
-                  v-if="store.syncStatusByProject[store.activeProject.id] === 'offline'"
-                  class="h-3.5 w-3.5 text-amber-300"
+          <!-- 多人即時協作共享狀態（靠左）＋ 公費餘額／優先支出合併膠囊（靠右） -->
+          <div class="relative z-10 flex flex-wrap items-center justify-between gap-2 border-t border-white/15 pt-2.5">
+            <div class="flex min-w-0 flex-wrap items-center gap-2">
+              <button
+                type="button"
+                class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-bold transition"
+                :class="
+                  store.activeProject.syncMeta?.mode === 'firestore'
+                    ? 'bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30'
+                    : 'bg-white/10 text-slate-200 hover:bg-white/20'
+                "
+                @click="shareModalOpen = true"
+              >
+                <template v-if="store.activeProject.syncMeta?.mode === 'firestore'">
+                  <CloudOff
+                    v-if="store.syncStatusByProject[store.activeProject.id] === 'offline'"
+                    class="h-3.5 w-3.5 text-amber-300"
+                  />
+                  <span
+                    v-else
+                    class="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.9)]"
+                  />
+                  <span>
+                    {{
+                      (store.outboxCountByProject[store.activeProject.id] ?? 0) > 0
+                        ? t('realtime.entryOfflineBadge', {
+                            count: store.outboxCountByProject[store.activeProject.id],
+                          })
+                        : t('realtime.entrySyncedBadge')
+                    }}
+                  </span>
+                </template>
+                <template v-else>
+                  <Users class="h-3.5 w-3.5 text-emerald-400" />
+                  <span>{{ t('realtime.entryInviteButton') }}</span>
+                </template>
+              </button>
+
+              <span
+                v-if="
+                  store.activeProject.syncMeta?.mode === 'firestore' &&
+                  store.activeProject.syncMeta.myMemberId &&
+                  store.activeProject.members.find(
+                    (m) => m.id === store.activeProject?.syncMeta?.myMemberId,
+                  )
+                "
+                class="inline-flex max-w-[120px] items-center gap-1.5 truncate text-[11px] text-slate-300"
+              >
+                <MemberAvatar
+                  :name="
+                    store.activeProject.members.find(
+                      (m) => m.id === store.activeProject?.syncMeta?.myMemberId,
+                    )!.name
+                  "
+                  :color="
+                    store.activeProject.members.find(
+                      (m) => m.id === store.activeProject?.syncMeta?.myMemberId,
+                    )?.avatarColor
+                  "
+                  :image="
+                    store.activeProject.members.find(
+                      (m) => m.id === store.activeProject?.syncMeta?.myMemberId,
+                    )?.avatarImage
+                  "
+                  size="xxs"
                 />
-                <span
-                  v-else
-                  class="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.9)]"
+                <span class="truncate">
+                  {{
+                    store.activeProject.members.find(
+                      (m) => m.id === store.activeProject?.syncMeta?.myMemberId,
+                    )?.name
+                  }}
+                </span>
+              </span>
+            </div>
+
+            <!-- 公費餘額 ＋ 優先支出單一合併膠囊（0 元一樣顯示，整體靠右對齊） -->
+            <div
+              v-if="activeProjectPoolSummary"
+              class="ml-auto inline-flex items-center gap-1 rounded-full p-0.5 text-[11px] font-bold transition"
+              :class="
+                activeProjectPoolSummary.netAmount > 0
+                  ? 'bg-rose-500/20 ring-1 ring-rose-400/40'
+                  : activeProjectPoolSummary.netAmount < 0
+                    ? 'bg-teal-500/20 ring-1 ring-teal-400/35'
+                    : 'bg-white/10 ring-1 ring-white/20'
+              "
+            >
+              <button
+                type="button"
+                class="inline-flex items-center gap-1.5 rounded-full py-1 pl-2.5 pr-1.5 transition hover:bg-white/10"
+                :class="
+                  activeProjectPoolSummary.netAmount > 0
+                    ? 'text-rose-200'
+                    : 'text-teal-200'
+                "
+                @click="editingPoolTx = null; poolCollectModalOpen = true"
+              >
+                <Wallet class="h-3.5 w-3.5 shrink-0" />
+                <span>{{ t('pool.balanceShort') }}</span>
+                <span class="tabular-nums">
+                  {{
+                    activeProjectPoolSummary.netAmount > 0
+                      ? `-${fmt(
+                          activeProjectPoolSummary.netAmount,
+                          activeProjectPoolSummary.currency,
+                        )}`
+                      : fmt(
+                          Math.abs(activeProjectPoolSummary.netAmount),
+                          activeProjectPoolSummary.currency,
+                        )
+                  }}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                :aria-pressed="activeProjectPoolSummary.preferPoolPayer"
+                class="inline-flex cursor-pointer items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-bold transition active:scale-95"
+                :class="
+                  activeProjectPoolSummary.preferPoolPayer
+                    ? 'bg-teal-800 text-white shadow-inner ring-1 ring-teal-300/60 hover:bg-teal-700'
+                    : 'bg-slate-100 text-slate-700 shadow-sm hover:bg-white'
+                "
+                @click="handleTogglePreferPoolPayer"
+              >
+                <Check
+                  v-if="activeProjectPoolSummary.preferPoolPayer"
+                  class="h-3 w-3 shrink-0"
                 />
                 <span>
                   {{
-                    (store.outboxCountByProject[store.activeProject.id] ?? 0) > 0
-                      ? t('realtime.entryOfflineBadge', {
-                          count: store.outboxCountByProject[store.activeProject.id],
-                        })
-                      : t('realtime.entrySyncedBadge')
+                    activeProjectPoolSummary.preferPoolPayer
+                      ? t('pool.preferPayActive')
+                      : t('pool.preferPayInactive')
                   }}
                 </span>
-              </template>
-              <template v-else>
-                <Users class="h-3.5 w-3.5 text-emerald-400" />
-                <span>{{ t('realtime.entryInviteButton') }}</span>
-              </template>
-            </button>
-
-            <span
-              v-if="
-                store.activeProject.syncMeta?.mode === 'firestore' &&
-                store.activeProject.syncMeta.myMemberId &&
-                store.activeProject.members.find(
-                  (m) => m.id === store.activeProject?.syncMeta?.myMemberId,
-                )
-              "
-              class="inline-flex max-w-[140px] items-center gap-1.5 truncate text-[11px] text-slate-300"
-            >
-              <MemberAvatar
-                :name="
-                  store.activeProject.members.find(
-                    (m) => m.id === store.activeProject?.syncMeta?.myMemberId,
-                  )!.name
-                "
-                :color="
-                  store.activeProject.members.find(
-                    (m) => m.id === store.activeProject?.syncMeta?.myMemberId,
-                  )?.avatarColor
-                "
-                :image="
-                  store.activeProject.members.find(
-                    (m) => m.id === store.activeProject?.syncMeta?.myMemberId,
-                  )?.avatarImage
-                "
-                size="xxs"
-              />
-              <span class="truncate">
-                {{
-                  store.activeProject.members.find(
-                    (m) => m.id === store.activeProject?.syncMeta?.myMemberId,
-                  )?.name
-                }}
-              </span>
-            </span>
+              </button>
+            </div>
           </div>
         </section>
 
@@ -1675,12 +1820,12 @@ onBeforeUnmount(() => {
           </button>
         </nav>
 
-        <!-- 分頁 A：專案明細 -->
+        <!-- 分頁 A：專案明細（含消費、退款與統一收斂之繳公費帳目） -->
         <TransactionListSection
           v-if="projectTab === 'expenses'"
           ref="projectTxListRef"
           context="project"
-          :transactions="store.activeProjectExpenses"
+          :transactions="store.activeProjectEntriesWithPool"
           :empty-text="t('project.noProjectTransactions')"
           :project-base-currency="store.activeProject.baseCurrency"
           :project-members="store.activeProject.members"
@@ -1703,7 +1848,7 @@ onBeforeUnmount(() => {
           :settlements="store.activeProjectSettlements"
           :my-member-id="activeProjectMyMemberId"
           @record-payment="openRecordSettlementModal"
-          @open-pool-collect="poolCollectModalOpen = true"
+          @open-pool-collect="editingPoolTx = null; poolCollectModalOpen = true"
           @edit-settlement="startEditTransaction"
           @edit-expense="startEditTransaction"
           @inspect-member="handleInspectMemberInExpenses"
@@ -1768,10 +1913,12 @@ onBeforeUnmount(() => {
       :editing-tx="editingExpenseTx"
       :duplicate-tx="duplicateExpenseTx"
       :prefill="quickIntakePrefill"
+      :allow-project-switch="expenseModalFromHome"
       @close="closeProjectExpenseSheet"
       @saved="showToast($event)"
       @preview-photos="openPhotoLightbox"
       @toast="showToast($event)"
+      @switch-project="store.selectProject($event)"
     />
 
     <!-- 還款記錄／修改彈窗 -->
@@ -1787,11 +1934,12 @@ onBeforeUnmount(() => {
       @saved="showToast($event)"
     />
 
-    <!-- 大團公費袋／批次收公費彈窗 -->
+    <!-- 大團公費袋／批次收公費彈窗（支援新增與編輯單筆合併公費帳目） -->
     <PoolCollectModal
       :open="poolCollectModalOpen"
       :project="store.activeProject"
-      @close="poolCollectModalOpen = false"
+      :editing-tx="editingPoolTx"
+      @close="poolCollectModalOpen = false; editingPoolTx = null"
       @saved="showToast($event)"
     />
 

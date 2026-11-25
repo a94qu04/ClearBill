@@ -12,6 +12,7 @@ import {
   RefreshCw,
   RotateCcw,
   Users,
+  Wallet,
   X,
 } from 'lucide-vue-next'
 import { useLedgerStore, type ManagedCategory } from '@/stores/ledgerStore'
@@ -25,10 +26,16 @@ import {
   getTodayIso,
 } from '@/core/ledgerHelpers'
 import type { ParsedQuickIntakeResult } from '@/core/quickIntakeParser'
-import type { Project, SplitConfig, Transaction } from '@/schemas/ledgerSchema'
+import type {
+  Project,
+  ProjectMember,
+  SplitConfig,
+  Transaction,
+} from '@/schemas/ledgerSchema'
 import CategoryIconBadge from '@/components/CategoryIconBadge.vue'
 import CurrencyAmountInput from '@/components/CurrencyAmountInput.vue'
 import CurrencyQuickAddPicker from '@/components/CurrencyQuickAddPicker.vue'
+import MemberAvatar from '@/components/MemberAvatar.vue'
 import QuickSplitPanel from '@/components/QuickSplitPanel.vue'
 
 interface Props {
@@ -37,11 +44,13 @@ interface Props {
   editingTx: Transaction | null
   duplicateTx?: Transaction | null
   prefill?: ParsedQuickIntakeResult | null
+  allowProjectSwitch?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
   duplicateTx: null,
   prefill: null,
+  allowProjectSwitch: false,
 })
 
 const emit = defineEmits<{
@@ -49,6 +58,7 @@ const emit = defineEmits<{
   (e: 'saved', message: string): void
   (e: 'previewPhotos', payload: { photos: string[]; index: number }): void
   (e: 'toast', message: string): void
+  (e: 'switchProject', projectId: string): void
 }>()
 
 const { t, locale } = useI18n()
@@ -56,6 +66,7 @@ const store = useLedgerStore()
 
 const txType = ref<'expense' | 'refund'>('expense')
 const splitPreset = ref<SplitConfig | null>(null)
+const splitDraftPreview = ref<SplitConfig | null>(null)
 const splitResetKey = ref(0)
 const amount = ref<number | null>(null)
 const currency = ref('TWD')
@@ -164,30 +175,65 @@ const splitPanelExpanded = ref(false)
 const initialSnapshot = ref('')
 const snapshotReady = ref(false)
 
-/** 收合拆帳面板時顯示的一句話精簡摘要（例如：我先付 · 3 人均攤） */
-const splitCompactSummary = computed(() => {
-  if (!props.project) return ''
-  const cfg = splitConfig.value
-  const payerName = cfg
-    ? (cfg.payers && cfg.payers.length > 1
-        ? t('project.multiPayerBadge', { count: cfg.payers.length })
-        : t('project.paidByLabel', {
-            name:
-              props.project.members.find((m) => m.id === cfg.payerId)?.name ??
-              props.project.members[0]?.name ??
-              '',
-          }))
-    : t('project.paidByLabel', {
-        name:
-          props.project.members.find((m) => m.id === props.project?.defaultPayerId)?.name ??
-          props.project.members[0]?.name ??
-          '',
-      })
+/** 收合拆帳面板時顯示的結構化摘要（墊付者小圈圈＋墊付文案＋拆帳模式＋分攤成員小圈圈） */
+const splitSummaryMeta = computed(() => {
+  if (!props.project) {
+    return {
+      payers: [] as ProjectMember[],
+      payerLabel: '',
+      modeLabel: '',
+      shareMembers: [] as ProjectMember[],
+    }
+  }
+  const members = props.project.members
+  const memberById = new Map(members.map((m) => [m.id, m]))
+  const cfg = splitConfig.value ?? splitDraftPreview.value ?? splitPreset.value
 
-  const activeShares = cfg
-    ? cfg.shares.filter((s) => s.finalAmount > 0)
-    : props.project.members.filter((m) => !m.isPool)
-  const shareCount = activeShares.length || props.project.members.length
+  let payers: ProjectMember[] = []
+  if (cfg?.payers && cfg.payers.length > 0) {
+    const activePayers = cfg.payers.filter((p) => p.amount > 0)
+    const sourcePayers = activePayers.length > 0 ? activePayers : cfg.payers
+    payers = sourcePayers
+      .map((p) => memberById.get(p.memberId))
+      .filter((m): m is ProjectMember => Boolean(m))
+  }
+  if (payers.length === 0) {
+    const singlePayer =
+      (cfg ? memberById.get(cfg.payerId) : undefined) ??
+      (props.project.defaultPayerId
+        ? memberById.get(props.project.defaultPayerId)
+        : undefined) ??
+      members[0]
+    if (singlePayer) payers = [singlePayer]
+  }
+
+  const payerLabel =
+    payers.length > 1
+      ? t('project.multiPayerBadge', { count: payers.length })
+      : t('project.paidByLabel', { name: payers[0]?.name ?? '' })
+
+  let shareMembers: ProjectMember[] = []
+  if (cfg) {
+    const positiveShares = cfg.shares.filter((s) => s.finalAmount > 0)
+    const activeShares =
+      positiveShares.length > 0
+        ? positiveShares
+        : cfg.shares.filter((s) => {
+            if (cfg.mode === 'weight') return (s.weight ?? 0) > 0
+            if (cfg.mode === 'percentage') return (s.percent ?? 0) > 0
+            return (
+              (s.customAmount ?? 0) > 0 || s.isIncludedInRemainder === true
+            )
+          })
+    shareMembers = activeShares
+      .map((s) => memberById.get(s.memberId))
+      .filter((m): m is ProjectMember => Boolean(m))
+  }
+  if (shareMembers.length === 0) {
+    const nonPool = members.filter((m) => !m.isPool)
+    shareMembers = nonPool.length > 0 ? nonPool : members
+  }
+
   const modeLabel =
     cfg?.mode === 'custom_plus_equal'
       ? t('split.tabCustomShort')
@@ -197,7 +243,12 @@ const splitCompactSummary = computed(() => {
           ? t('split.tabPercentShort')
           : t('split.tabEqualShort')
 
-  return `${payerName} · ${modeLabel} (${shareCount})`
+  return {
+    payers,
+    payerLabel,
+    modeLabel,
+    shareMembers,
+  }
 })
 
 const quickRatePresets = computed(() => {
@@ -509,7 +560,11 @@ function hydrateForm() {
     time.value = ''
     links.value = []
     receiptImages.value = []
-    splitPreset.value = null
+    splitDraftPreview.value = null
+    // 按專案自動帶入上一筆記憶之分攤明細（墊付人、拆帳模式與分攤成員）
+    splitPreset.value = cloneSplitConfig(
+      store.getProjectLastSplitConfig(props.project.id) ?? undefined,
+    )
   }
 
   snapshotReady.value = false
@@ -676,7 +731,9 @@ async function handleSubmit(continueAdding = false) {
   }
 
   try {
+    store.rememberLastExpenseProject(props.project.id)
     store.rememberProjectLastCurrency(props.project.id, currency.value)
+    store.rememberProjectLastSplitConfig(props.project.id, splitConfig.value)
     if (needsExchangeRate.value && rate > 0) {
       store.rememberExchangeRate(currency.value, props.project.baseCurrency, rate)
     }
@@ -688,13 +745,16 @@ async function handleSubmit(continueAdding = false) {
     }
     await store.addTransaction(payload)
     if (continueAdding) {
-      // 存並續記：保留幣別、匯率、分類與日期，清空金額、備註與收據立刻記下一筆
+      // 存並續記：保留幣別、匯率、分類、日期與分攤明細，清空金額、備註與收據立刻記下一筆
       amount.value = null
       note.value = ''
       time.value = ''
       links.value = []
       receiptImages.value = []
-      splitPreset.value = null
+      splitDraftPreview.value = null
+      splitPreset.value = cloneSplitConfig(
+        store.getProjectLastSplitConfig(props.project.id) ?? undefined,
+      )
       snapshotReady.value = false
       splitResetKey.value += 1
       void nextTick(() => {
@@ -772,6 +832,29 @@ async function handleSubmit(continueAdding = false) {
             class="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3.5"
             @submit.prevent="handleSubmit(false)"
           >
+            <!-- 首頁快速記一筆時顯示目標專案並支援即時切換（自動帶入該專案上次幣別與分攤明細） -->
+            <div
+              v-if="allowProjectSwitch && !editingTx && store.activeProjects.length > 0"
+              class="flex items-center justify-between gap-2 rounded-2xl bg-white px-3.5 py-2.5 shadow-sm dark:bg-[#1C1C1E]"
+            >
+              <span class="shrink-0 text-xs font-semibold text-slate-500 dark:text-slate-400">
+                {{ t('project.targetProjectLabel') }}
+              </span>
+              <select
+                :value="project.id"
+                class="min-w-0 max-w-[230px] truncate rounded-xl bg-slate-100 px-2.5 py-1.5 text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/40 dark:bg-[#2C2C2E] dark:text-white"
+                @change="emit('switchProject', ($event.target as HTMLSelectElement).value)"
+              >
+                <option
+                  v-for="p in store.activeProjects"
+                  :key="p.id"
+                  :value="p.id"
+                >
+                  {{ p.name }} ({{ p.baseCurrency }})
+                </option>
+              </select>
+            </div>
+
             <!-- 分組 1：金額英雄卡 ＋ 幣別快速新增 ＋ 單行可展開匯率 -->
             <div class="space-y-2.5 rounded-2xl bg-white p-3.5 shadow-sm dark:bg-[#1C1C1E]">
               <div class="flex items-start gap-2">
@@ -1179,30 +1262,97 @@ async function handleSubmit(continueAdding = false) {
               </div>
             </div>
 
-            <!-- 分組 3：誰先付與拆帳（預設精簡為 1 行摘要列，點「調整」才展開四模式面板，用 v-show 維持即時試算） -->
-            <div class="overflow-hidden rounded-2xl bg-white shadow-sm dark:bg-[#1C1C1E]">
+            <!-- 分組 3：誰先付與拆帳（預設精簡為 1 行視覺化摘要列，點「調整」才展開四模式面板，用 v-show 維持即時試算） -->
+            <div
+              class="overflow-hidden rounded-2xl border bg-white shadow-sm transition dark:bg-[#1C1C1E]"
+              :class="
+                splitPanelExpanded
+                  ? 'border-emerald-500/40 dark:border-emerald-400/35'
+                  : 'border-slate-200/80 dark:border-white/15'
+              "
+            >
               <button
                 type="button"
-                class="flex w-full items-center justify-between gap-2 px-4 py-3 text-left transition hover:bg-slate-50 dark:hover:bg-[#2C2C2E]"
+                class="flex w-full items-center justify-between gap-2.5 px-3.5 py-3 text-left transition hover:bg-slate-50 dark:hover:bg-[#2C2C2E]"
                 @click="splitPanelExpanded = !splitPanelExpanded"
               >
-                <div class="flex min-w-0 items-center gap-2.5">
-                  <span class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
+                <div class="flex min-w-0 flex-1 items-center gap-2.5">
+                  <span class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
                     <Users class="h-4 w-4" />
                   </span>
-                  <div class="min-w-0">
-                    <div class="text-xs font-semibold text-slate-900 dark:text-white">
+                  <div class="min-w-0 flex-1">
+                    <div class="text-xs font-bold text-slate-900 dark:text-white">
                       {{ t('project.splitBreakdownLabel') }}
                     </div>
-                    <div class="truncate text-[11px] text-slate-500 dark:text-slate-400">
-                      {{ splitCompactSummary }}
+                    <div class="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px]">
+                      <!-- 墊付者小圈圈＋先付文案 -->
+                      <span
+                        class="inline-flex items-center gap-1 rounded-full bg-slate-100 py-0.5 pl-1 pr-2 font-semibold text-slate-800 dark:bg-white/10 dark:text-slate-100"
+                      >
+                        <span class="inline-flex items-center -space-x-1">
+                          <template
+                            v-for="payer in splitSummaryMeta.payers.slice(0, 3)"
+                            :key="payer.id"
+                          >
+                            <span
+                              v-if="payer.isPool"
+                              class="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-teal-600 text-white ring-1 ring-white dark:ring-[#1C1C1E]"
+                            >
+                              <Wallet class="h-2.5 w-2.5" />
+                            </span>
+                            <MemberAvatar
+                              v-else
+                              :name="payer.name"
+                              :color="payer.avatarColor"
+                              :image="payer.avatarImage"
+                              size="xs"
+                              ring
+                            />
+                          </template>
+                        </span>
+                        <span class="truncate">{{ splitSummaryMeta.payerLabel }}</span>
+                      </span>
+
+                      <span class="text-slate-300 dark:text-slate-600">·</span>
+
+                      <!-- 分攤方式＋均攤／分攤成員小圈圈放後面 -->
+                      <span class="inline-flex items-center gap-1.5 font-medium text-slate-600 dark:text-slate-300">
+                        <span>{{ splitSummaryMeta.modeLabel }}</span>
+                        <span class="inline-flex items-center -space-x-1">
+                          <template
+                            v-for="member in splitSummaryMeta.shareMembers.slice(0, 5)"
+                            :key="member.id"
+                          >
+                            <span
+                              v-if="member.isPool"
+                              class="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-teal-600 text-white ring-1 ring-white dark:ring-[#1C1C1E]"
+                            >
+                              <Wallet class="h-2.5 w-2.5" />
+                            </span>
+                            <MemberAvatar
+                              v-else
+                              :name="member.name"
+                              :color="member.avatarColor"
+                              :image="member.avatarImage"
+                              size="xs"
+                              ring
+                            />
+                          </template>
+                          <span
+                            v-if="splitSummaryMeta.shareMembers.length > 5"
+                            class="inline-flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-slate-200 px-1 text-[9px] font-bold text-slate-700 ring-1 ring-white dark:bg-slate-700 dark:text-slate-200 dark:ring-[#1C1C1E]"
+                          >
+                            +{{ splitSummaryMeta.shareMembers.length - 5 }}
+                          </span>
+                        </span>
+                      </span>
                     </div>
                   </div>
                 </div>
-                <span class="inline-flex shrink-0 items-center gap-0.5 text-xs font-semibold text-emerald-600 dark:text-emerald-400">
+                <span class="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-emerald-500/12 px-2.5 py-1 text-xs font-semibold text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-400">
                   <span>{{ splitPanelExpanded ? t('home.showLess') : t('project.adjustShort') }}</span>
                   <ChevronRight
-                    class="h-4 w-4 transition-transform"
+                    class="h-3.5 w-3.5 transition-transform"
                     :class="splitPanelExpanded ? 'rotate-90' : ''"
                   />
                 </span>
@@ -1222,6 +1372,7 @@ async function handleSubmit(continueAdding = false) {
                   :initial-split-config="splitPreset"
                   :reset-key="splitResetKey"
                   @update:split-config="splitConfig = $event"
+                  @update:split-preview="splitDraftPreview = $event"
                   @validity-change="splitValid = $event"
                   @error-change="splitErrorText = $event"
                   @save-split-group="handleSaveSplitGroup"

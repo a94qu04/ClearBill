@@ -520,4 +520,63 @@ describe('settleUpEngine - 多人債務最小化結算演算法', () => {
       { fromMemberId: 'bob', toMemberId: 'alice', amount: 300, currency: 'TWD' },
     ])
   })
+
+  it('單筆合併之多人繳公費 transfer 應精準計入各繳款人與公費袋餘額，且不重複灌水專案總支出', () => {
+    const txs: Transaction[] = [
+      // 3 人各繳 1000 進公費袋（單筆統一帳目，共 3000）
+      createExpenseTx({
+        id: '40000000-0000-4000-8000-000000000001',
+        type: 'transfer',
+        amount: 3000,
+        currency: 'TWD',
+        exchangeRateToBase: 1,
+        categoryKey: 'cat_settlement',
+        splitConfig: {
+          payerId: 'alice',
+          payers: [
+            { memberId: 'alice', amount: 1000 },
+            { memberId: 'bob', amount: 1000 },
+            { memberId: 'carol', amount: 1000 },
+          ],
+          mode: 'custom_plus_equal',
+          shares: [{ memberId: 'pool_1', finalAmount: 3000 }],
+        },
+      }),
+      // 公費袋實際支出 1800（三人均攤各 600）
+      createExpenseTx({
+        id: '40000000-0000-4000-8000-000000000002',
+        type: 'expense',
+        amount: 1800,
+        currency: 'TWD',
+        exchangeRateToBase: 1,
+        splitConfig: {
+          payerId: 'pool_1',
+          mode: 'equal',
+          shares: [
+            { memberId: 'alice', finalAmount: 600 },
+            { memberId: 'bob', finalAmount: 600 },
+            { memberId: 'carol', finalAmount: 600 },
+          ],
+        },
+      }),
+    ]
+
+    const result = calculateSettleUp(txs, 'TWD', ['alice', 'bob', 'carol', 'pool_1'])
+    expect(result.totalProjectExpense).toBe(1800)
+    expect(result.balances.find((b) => b.memberId === 'pool_1')).toEqual({
+      memberId: 'pool_1',
+      totalExpense: 0,
+      totalPaid: 1800,
+      netAmount: -1200,
+    })
+    for (const id of ['alice', 'bob', 'carol']) {
+      expect(result.balances.find((b) => b.memberId === id)).toEqual({
+        memberId: id,
+        totalExpense: 600,
+        totalPaid: 0,
+        netAmount: 400,
+      })
+    }
+    expect(result.balances.reduce((acc, b) => acc + b.netAmount, 0)).toBe(0)
+  })
 })

@@ -52,6 +52,7 @@ const props = withDefaults(defineProps<Props>(), {
 
 const emit = defineEmits<{
   (e: 'update:splitConfig', value: SplitConfig | null): void
+  (e: 'update:splitPreview', value: SplitConfig | null): void
   (e: 'validityChange', isValid: boolean): void
   (e: 'errorChange', message: string | null): void
   (e: 'saveSplitGroup', payload: { name: string; memberIds: string[] }): void
@@ -729,6 +730,37 @@ watch(
     )
 
     if (!res || !payerReady || normalizedTotal.value <= 0) {
+      const draftPrimaryPayerId = isMultiPayer.value
+        ? multiPayerCheck.value.payers[0]?.memberId || payerId.value
+        : payerId.value
+      const draftConfig: SplitConfig | null =
+        props.members.length > 0 && draftPrimaryPayerId
+          ? {
+              payerId: draftPrimaryPayerId,
+              payers:
+                isMultiPayer.value && multiPayerCheck.value.payers.length > 0
+                  ? multiPayerCheck.value.payers
+                  : undefined,
+              mode: mode.value,
+              shares: props.members.map((member) => {
+                const st = memberStateMap[member.id]
+                return {
+                  memberId: member.id,
+                  finalAmount: 0,
+                  customAmount:
+                    st?.customAmount && st.customAmount > 0 ? st.customAmount : 0,
+                  isIncludedInRemainder: st?.isIncludedInRemainder ?? false,
+                  ...(mode.value === 'weight'
+                    ? { weight: st?.weight ?? 0 }
+                    : {}),
+                  ...(mode.value === 'percentage'
+                    ? { percent: st?.percent ?? 0 }
+                    : {}),
+                }
+              }),
+            }
+          : null
+      emit('update:splitPreview', draftConfig)
       emit('update:splitConfig', null)
       emit('validityChange', false)
       return
@@ -751,6 +783,7 @@ watch(
         ...(share.percent !== undefined ? { percent: share.percent } : {}),
       })),
     }
+    emit('update:splitPreview', config)
     emit('update:splitConfig', config)
     emit('validityChange', true)
   },

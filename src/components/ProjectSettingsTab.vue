@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   Archive,
@@ -7,6 +7,7 @@ import {
   Camera,
   FileJson,
   ImagePlus,
+  Info,
   Pencil,
   Trash2,
   UserPlus,
@@ -142,9 +143,34 @@ function getPreviewCardStyle(): Record<string, string> | undefined {
   return undefined
 }
 
+/** 偵測是否正從「公費優先墊付」切換為指定真人成員 */
+const switchingFromPoolPayer = computed<ProjectMember | null>(() => {
+  const currentDefault = props.project.members.find(
+    (m) => m.id === props.project.defaultPayerId,
+  )
+  if (!currentDefault?.isPool) return null
+  const nextSelected = props.project.members.find(
+    (m) => m.id === editProjectDefaultPayerId.value,
+  )
+  if (!nextSelected || nextSelected.isPool) return null
+  return nextSelected
+})
+
+function handleDefaultPayerSelectChange() {
+  if (switchingFromPoolPayer.value) {
+    emit(
+      'toast',
+      t('pool.switchedFromPoolToast', {
+        name: switchingFromPoolPayer.value.name,
+      }),
+    )
+  }
+}
+
 async function handleSaveProjectSettings() {
   if (!editProjectName.value.trim()) return
 
+  const switchedToMember = switchingFromPoolPayer.value
   const currencyChanged =
     editProjectCurrency.value.trim().toUpperCase() !==
     props.project.baseCurrency.trim().toUpperCase()
@@ -183,7 +209,12 @@ async function handleSaveProjectSettings() {
     if (saved) {
       hydrateSettingsFromProject(saved)
     }
-    emit('toast', t('project.projectUpdatedToast'))
+    emit(
+      'toast',
+      switchedToMember
+        ? t('pool.switchedFromPoolToast', { name: switchedToMember.name })
+        : t('project.projectUpdatedToast'),
+    )
   } catch {
     emit('toast', t('home.saveFailed'))
   }
@@ -552,6 +583,7 @@ function handleExportProjectJson() {
             <select
               v-model="editProjectDefaultPayerId"
               class="w-full rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2 text-xs font-semibold text-slate-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+              @change="handleDefaultPayerSelectChange"
             >
               <option
                 v-for="m in project.members"
@@ -562,6 +594,17 @@ function handleExportProjectJson() {
               </option>
             </select>
           </div>
+        </div>
+
+        <div
+          v-if="switchingFromPoolPayer"
+          role="status"
+          class="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] font-semibold text-amber-800 dark:border-amber-500/30 dark:bg-amber-950/40 dark:text-amber-200"
+        >
+          <Info class="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+          <span>
+            {{ t('pool.switchedFromPoolNotice', { name: switchingFromPoolPayer.name }) }}
+          </span>
         </div>
 
         <div>

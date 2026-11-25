@@ -3,6 +3,7 @@ import { defineStore } from 'pinia'
 import {
   CURRENT_SCHEMA_VERSION,
   CurrencyCodeSchema,
+  SplitConfigSchema,
   type LedgerBackup,
   type Project,
   type ProjectMember,
@@ -27,6 +28,7 @@ import {
   calculateSettleUp,
   type SettleUpOptions,
 } from '@/core/settleUpEngine'
+import { fromMinorUnits, toMinorUnits } from '@/core/currency'
 import { getSuggestedExchangeRate } from '@/core/ledgerHelpers'
 import {
   isValidCategoryIconKey,
@@ -235,7 +237,9 @@ interface PersistedUserPrefsV2 {
   projectOrderUpdatedAt?: number
   exchangeRates?: Record<string, number>
   quickExchangeRates?: Record<string, QuickExchangeRatePresets>
+  lastExpenseProjectId?: string
   lastCurrencyByProject?: Record<string, string>
+  lastSplitByProject?: Record<string, SplitConfig>
   settlementViewByProject?: Record<string, LocalSettlementViewPrefs>
   userProfile?: UserProfile
 }
@@ -355,6 +359,12 @@ function loadUserPrefs(): PersistedUserPrefsV2 {
         }
       }
 
+      const lastExpenseProjectId =
+        typeof parsed.lastExpenseProjectId === 'string' &&
+        parsed.lastExpenseProjectId.trim()
+          ? parsed.lastExpenseProjectId.trim()
+          : ''
+
       const lastCurrencyByProject: Record<string, string> = {}
       if (
         parsed.lastCurrencyByProject &&
@@ -368,6 +378,20 @@ function loadUserPrefs(): PersistedUserPrefsV2 {
             /^[A-Z]{3}$/.test(cur.trim().toUpperCase())
           ) {
             lastCurrencyByProject[projId] = cur.trim().toUpperCase()
+          }
+        }
+      }
+
+      const lastSplitByProject: Record<string, SplitConfig> = {}
+      if (
+        parsed.lastSplitByProject &&
+        typeof parsed.lastSplitByProject === 'object'
+      ) {
+        for (const [projId, rawSplit] of Object.entries(parsed.lastSplitByProject)) {
+          if (typeof projId !== 'string' || !projId.trim()) continue
+          const parsedSplit = SplitConfigSchema.safeParse(rawSplit)
+          if (parsedSplit.success) {
+            lastSplitByProject[projId] = parsedSplit.data
           }
         }
       }
@@ -479,7 +503,9 @@ function loadUserPrefs(): PersistedUserPrefsV2 {
         projectOrderUpdatedAt,
         exchangeRates,
         quickExchangeRates,
+        lastExpenseProjectId,
         lastCurrencyByProject,
+        lastSplitByProject,
         settlementViewByProject,
         userProfile,
       }
@@ -584,8 +610,14 @@ export const useLedgerStore = defineStore('ledger', () => {
   const quickExchangeRates = ref<Record<string, QuickExchangeRatePresets>>(
     initialPrefs.quickExchangeRates ?? {},
   )
+  const lastExpenseProjectId = ref<string>(
+    initialPrefs.lastExpenseProjectId ?? '',
+  )
   const lastCurrencyByProject = ref<Record<string, string>>(
     initialPrefs.lastCurrencyByProject ?? {},
+  )
+  const lastSplitByProject = ref<Record<string, SplitConfig>>(
+    initialPrefs.lastSplitByProject ?? {},
   )
   const settlementViewByProject = ref<Record<string, LocalSettlementViewPrefs>>(
     initialPrefs.settlementViewByProject ?? {},
@@ -639,7 +671,9 @@ export const useLedgerStore = defineStore('ledger', () => {
         projectOrderUpdatedAt: projectOrderUpdatedAt.value || undefined,
         exchangeRates: rememberedExchangeRates.value,
         quickExchangeRates: quickExchangeRates.value,
+        lastExpenseProjectId: lastExpenseProjectId.value || undefined,
         lastCurrencyByProject: lastCurrencyByProject.value,
+        lastSplitByProject: lastSplitByProject.value,
         settlementViewByProject: settlementViewByProject.value,
         userProfile: userProfile.value,
       }
@@ -772,10 +806,115 @@ export const useLedgerStore = defineStore('ledger', () => {
     saveUserPrefs()
   }
 
+  /** 將消費拆帳結果正規化為可重用記憶模板（保留墊付人、拆帳模式與分攤名單／比例，不帶入舊帳單固定金額避免阻擋下筆） */
+  function sanitizeSplitConfigForMemory(config: SplitConfig): SplitConfig {
+    const primaryPayerId =
+      config.payers && config.payers.length > 0
+        ? [...config.payers].sort((a, b) => b.amount - a.amount)[0].memberId
+        : config.payerId
+    return {
+      payerId: primaryPayerId,
+      mode: config.mode,
+      shares: config.shares.map((s) => {
+        if (config.mode === 'weight') {
+          const weight =
+            s.weight !== undefined ? s.weight : s.finalAmount > 0 ? 1 : 0
+          return {
+            memberId: s.memberId,
+            finalAmount: 0,
+            isIncludedInRemainder: weight > 0,
+            weight,
+          }
+        }
+        if (config.mode === 'percentage') {
+          const percent = s.percent ?? 0
+          return {
+            memberId: s.memberId,
+            finalAmount: 0,
+            isIncludedInRemainder: percent > 0,
+            percent,
+          }
+        }
+        if (config.mode === 'custom_plus_equal') {
+          const included = Boolean(
+            s.isIncludedInRemainder ||
+              (s.customAmount ?? 0) > 0 ||
+              s.finalAmount > 0,
+          )
+          return {
+            memberId: s.memberId,
+            finalAmount: 0,
+            customAmount: 0,
+            isIncludedInRemainder: included,
+          }
+        }
+        const included =
+          s.isIncludedInRemainder !== undefined
+            ? s.isIncludedInRemainder
+            : s.finalAmount > 0
+        return {
+          memberId: s.memberId,
+          finalAmount: 0,
+          isIncludedInRemainder: included,
+        }
+      }),
+    }
+  }
+
+  function getLatestExpenseTx(projectId?: string): Transaction | null {
+    const activeSet = new Set(activeProjects.value.map((p) => p.id))
+    let best: Transaction | null = null
+    for (const tx of transactions.value) {
+      if (tx.isDeleted || tx.type === 'transfer' || !tx.projectId) continue
+      if (projectId) {
+        if (tx.projectId !== projectId) continue
+      } else if (!activeSet.has(tx.projectId)) {
+        continue
+      }
+      if (
+        !best ||
+        tx.updatedAt > best.updatedAt ||
+        (tx.updatedAt === best.updatedAt && tx.date > best.date)
+      ) {
+        best = tx
+      }
+    }
+    return best
+  }
+
+  function rememberLastExpenseProject(projectId: string): void {
+    const id = projectId.trim()
+    if (!id || lastExpenseProjectId.value === id) return
+    lastExpenseProjectId.value = id
+    saveUserPrefs()
+  }
+
+  function getLastExpenseProject(): Project | null {
+    const list = activeProjects.value
+    if (list.length === 0) return null
+    if (lastExpenseProjectId.value) {
+      const remembered = list.find((p) => p.id === lastExpenseProjectId.value)
+      if (remembered) return remembered
+    }
+    const latestTx = getLatestExpenseTx()
+    if (latestTx) {
+      const fromTx = list.find((p) => p.id === latestTx.projectId)
+      if (fromTx) return fromTx
+    }
+    if (activeProject.value && list.some((p) => p.id === activeProject.value?.id)) {
+      return activeProject.value
+    }
+    return list[0] ?? null
+  }
+
   function getProjectLastCurrency(projectId: string, fallbackCurrency: string): string {
     const remembered = lastCurrencyByProject.value[projectId]
     if (remembered && /^[A-Z]{3}$/.test(remembered)) {
       return remembered
+    }
+    const latestTx = getLatestExpenseTx(projectId)
+    if (latestTx && /^[A-Z]{3}$/.test(latestTx.currency.trim().toUpperCase())) {
+      return latestTx.currency.trim().toUpperCase()
     }
     return fallbackCurrency.trim().toUpperCase()
   }
@@ -787,6 +926,64 @@ export const useLedgerStore = defineStore('ledger', () => {
     lastCurrencyByProject.value = {
       ...lastCurrencyByProject.value,
       [projectId]: code,
+    }
+    saveUserPrefs()
+  }
+
+  function rememberProjectLastSplitConfig(
+    projectId: string,
+    config: SplitConfig,
+  ): void {
+    if (!projectId || !config) return
+    const sanitized = sanitizeSplitConfigForMemory(config)
+    lastSplitByProject.value = {
+      ...lastSplitByProject.value,
+      [projectId]: sanitized,
+    }
+    saveUserPrefs()
+  }
+
+  function getProjectLastSplitConfig(projectId: string): SplitConfig | null {
+    const proj = projects.value.find((p) => p.id === projectId && !p.isDeleted)
+    if (!proj) return null
+    const raw =
+      lastSplitByProject.value[projectId] ??
+      (getLatestExpenseTx(projectId)?.splitConfig
+        ? sanitizeSplitConfigForMemory(
+            getLatestExpenseTx(projectId)!.splitConfig!,
+          )
+        : null)
+    if (!raw) return null
+    const memberIds = new Set(proj.members.map((m) => m.id))
+    const validShares = raw.shares.filter((s) => memberIds.has(s.memberId))
+    if (validShares.length === 0) return null
+    const resolvedPayerId = memberIds.has(raw.payerId)
+      ? raw.payerId
+      : proj.defaultPayerId && memberIds.has(proj.defaultPayerId)
+        ? proj.defaultPayerId
+        : proj.members[0]?.id ?? raw.payerId
+    return {
+      payerId: resolvedPayerId,
+      mode: raw.mode,
+      shares: validShares.map((s) => ({ ...s })),
+    }
+  }
+
+  /** 當使用者主動切換「公費優先墊付」或在設定頁改「預設墊付人」時，同步更新該專案記憶之墊付人 */
+  function syncRememberedPayerForProject(
+    projectId: string,
+    nextPayerId: string | undefined,
+  ): void {
+    if (!projectId || !nextPayerId) return
+    const base = getProjectLastSplitConfig(projectId)
+    if (!base) return
+    if (lastSplitByProject.value[projectId]?.payerId === nextPayerId) return
+    lastSplitByProject.value = {
+      ...lastSplitByProject.value,
+      [projectId]: {
+        ...base,
+        payerId: nextPayerId,
+      },
     }
     saveUserPrefs()
   }
@@ -1160,9 +1357,30 @@ export const useLedgerStore = defineStore('ledger', () => {
     )
   })
 
-  /** 專案內消費/退款支出（不含還款 transfer，避免累計總支出重複計算） */
+  /** 判斷該筆交易是否為「繳公費」轉帳（收款對象為公費袋，或多人共同繳交之公費紀錄） */
+  function isPoolCollectionTransaction(tx: Transaction, project?: Project | null): boolean {
+    if (tx.type !== 'transfer' || !tx.splitConfig) return false
+    const activePayers = (tx.splitConfig.payers ?? []).filter((p) => p.amount > 0)
+    if (activePayers.length > 1) return true
+    const toId = tx.splitConfig.shares[0]?.memberId
+    if (!toId) return false
+    if (toId.startsWith('pool_')) return true
+    const proj = project ?? projects.value.find((p) => p.id === tx.projectId)
+    return Boolean(proj?.members.some((m) => m.id === toId && m.isPool))
+  }
+
+  /** 專案內消費/退款支出（不含還款與繳公費 transfer，避免累計總支出與圓餅圖重複計算） */
   const activeProjectExpenses = computed(() =>
     activeProjectTransactions.value.filter((tx) => tx.type !== 'transfer'),
+  )
+
+  /** 專案「明細」分頁顯示清單：含所有消費／退款與繳公費紀錄（不含單純個人間還款） */
+  const activeProjectEntriesWithPool = computed(() =>
+    activeProjectTransactions.value.filter(
+      (tx) =>
+        tx.type !== 'transfer' ||
+        isPoolCollectionTransaction(tx, activeProject.value),
+    ),
   )
 
   /** 專案內已記錄的還款轉帳明細（type === 'transfer'） */
@@ -2253,6 +2471,9 @@ export const useLedgerStore = defineStore('ledger', () => {
 
     const saved = await saveProjectToNormalVault(updated)
     projects.value = projects.value.map((p) => (p.id === projectId ? saved : p))
+    if (patch.defaultPayerId && patch.defaultPayerId !== existing.defaultPayerId) {
+      syncRememberedPayerForProject(projectId, patch.defaultPayerId)
+    }
 
     // 變更專案記帳主幣別時，自動依舊主幣別➔新主幣別匯率重算既有交易之 exchangeRateToBase（保留原幣金額不毀帳）
     if (baseCurrencyChanged) {
@@ -2875,6 +3096,64 @@ export const useLedgerStore = defineStore('ledger', () => {
     return null
   }
 
+  /** 記住切換「公費袋優先支出」前原本的真人預設墊付人，方便取消時無縫切回 */
+  const previousHumanPayerByProject = ref<Record<string, string>>({})
+
+  async function togglePreferPoolPayer(
+    projectId: string,
+    defaultPoolName = 'Pool',
+  ): Promise<{ enabled: boolean } | null> {
+    const existing = projects.value.find((p) => p.id === projectId && !p.isDeleted)
+    if (!existing) return null
+
+    let poolMember = existing.members.find((m) => m.isPool) ?? null
+    if (!poolMember) {
+      poolMember = await ensureProjectPoolMember(projectId, defaultPoolName)
+    }
+    const latest = projects.value.find((p) => p.id === projectId && !p.isDeleted)
+    if (!latest || !poolMember) return null
+
+    const currentlyEnabled = latest.defaultPayerId === poolMember.id
+    let nextDefaultPayerId: string | undefined
+
+    if (!currentlyEnabled) {
+      if (latest.defaultPayerId && latest.defaultPayerId !== poolMember.id) {
+        previousHumanPayerByProject.value = {
+          ...previousHumanPayerByProject.value,
+          [projectId]: latest.defaultPayerId,
+        }
+      }
+      nextDefaultPayerId = poolMember.id
+    } else {
+      const remembered = previousHumanPayerByProject.value[projectId]
+      const fallbackHuman =
+        (remembered &&
+        latest.members.some((m) => m.id === remembered && !m.isPool)
+          ? remembered
+          : undefined) ||
+        (latest.syncMeta?.myMemberId &&
+        latest.members.some(
+          (m) => m.id === latest.syncMeta?.myMemberId && !m.isPool,
+        )
+          ? latest.syncMeta.myMemberId
+          : undefined) ||
+        latest.members.find((m) => !m.isPool)?.id ||
+        latest.members[0]?.id
+      nextDefaultPayerId = fallbackHuman
+    }
+
+    const baseLatest = toPlainClone(latest)
+    const updated: Project = {
+      ...baseLatest,
+      defaultPayerId: nextDefaultPayerId,
+      members: baseLatest.members.map((m) => ({ ...m })),
+    }
+    const saved = await saveProjectToNormalVault(updated)
+    projects.value = projects.value.map((p) => (p.id === projectId ? saved : p))
+    syncRememberedPayerForProject(projectId, nextDefaultPayerId)
+    return { enabled: !currentlyEnabled }
+  }
+
   async function ensureProjectPoolMember(
     projectId: string,
     poolName: string,
@@ -2920,6 +3199,7 @@ export const useLedgerStore = defineStore('ledger', () => {
     exchangeRateToBase?: number
     date: string
     note?: string
+    editingTxId?: string
   }): Promise<number> {
     const validContributors = Array.from(
       new Set(
@@ -2930,21 +3210,58 @@ export const useLedgerStore = defineStore('ledger', () => {
     )
     if (validContributors.length === 0 || params.amountPerMember <= 0) return 0
 
-    let count = 0
-    for (const memberId of validContributors) {
-      await recordSettlementPayment({
-        projectId: params.projectId,
-        fromMemberId: memberId,
-        toMemberId: params.collectorMemberId,
-        amount: params.amountPerMember,
-        currency: params.currency,
-        exchangeRateToBase: params.exchangeRateToBase,
-        date: params.date,
-        note: params.note,
-      })
-      count += 1
+    const proj = projects.value.find((p) => p.id === params.projectId)
+    const payCurrency = params.currency.trim().toUpperCase()
+    const baseCurrency = proj?.baseCurrency.trim().toUpperCase() ?? payCurrency
+    const effectiveRate =
+      params.exchangeRateToBase && params.exchangeRateToBase > 0
+        ? params.exchangeRateToBase
+        : payCurrency === baseCurrency
+          ? 1
+          : getEffectiveExchangeRate(payCurrency, baseCurrency)
+
+    // 統一收斂為單筆多人繳交之公費帳目，避免一次收公費產生大量零散紀錄
+    const perMemberUnits = toMinorUnits(params.amountPerMember, payCurrency)
+    const normalizedPerMember = fromMinorUnits(perMemberUnits, payCurrency)
+    const totalAmount = fromMinorUnits(
+      perMemberUnits * validContributors.length,
+      payCurrency,
+    )
+
+    const payload: CreateTransactionPayload = {
+      projectId: params.projectId,
+      type: 'transfer',
+      amount: totalAmount,
+      currency: payCurrency,
+      exchangeRateToBase: effectiveRate,
+      categoryKey: 'cat_settlement',
+      date: params.date,
+      time: '00:00',
+      note: params.note,
+      splitConfig: {
+        payerId: validContributors[0],
+        payers: validContributors.map((memberId) => ({
+          memberId,
+          amount: normalizedPerMember,
+        })),
+        mode: 'custom_plus_equal',
+        shares: [
+          {
+            memberId: params.collectorMemberId,
+            finalAmount: totalAmount,
+            customAmount: totalAmount,
+            isIncludedInRemainder: false,
+          },
+        ],
+      },
     }
-    return count
+
+    if (params.editingTxId) {
+      await updateTransaction(params.editingTxId, payload)
+    } else {
+      await addTransaction(payload)
+    }
+    return validContributors.length
   }
 
   async function recordSettlementPayment(
@@ -3451,6 +3768,7 @@ export const useLedgerStore = defineStore('ledger', () => {
     dailyTransactions,
     activeProjectTransactions,
     activeProjectExpenses,
+    activeProjectEntriesWithPool,
     activeProjectEffectiveExpenses,
     activeProjectSettlements,
     activeProjectSettleUp,
@@ -3474,8 +3792,12 @@ export const useLedgerStore = defineStore('ledger', () => {
     clearRememberedExchangeRate,
     getQuickExchangeRatePresets,
     saveQuickExchangeRatePreset,
+    rememberLastExpenseProject,
+    getLastExpenseProject,
     getProjectLastCurrency,
     rememberProjectLastCurrency,
+    rememberProjectLastSplitConfig,
+    getProjectLastSplitConfig,
     getProjectSettlementRateOverrides,
     getProjectCustomRatesForTarget,
     updateProjectSettlementCurrency,
@@ -3505,7 +3827,9 @@ export const useLedgerStore = defineStore('ledger', () => {
     saveProjectSplitGroup,
     removeProjectSplitGroup,
     ensureProjectPoolMember,
+    togglePreferPoolPayer,
     batchCollectPoolFund,
+    isPoolCollectionTransaction,
     isMemberUsedInProjectTransactions,
     softDeleteProject,
     restoreProject,

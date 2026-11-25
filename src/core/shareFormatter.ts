@@ -181,16 +181,20 @@ export function buildProjectSettlementShareText(
     }
   }
 
-  // 已記錄之還款明細
+  // 已記錄之還款與公費收款明細
   if (settlements.length > 0) {
     lines.push('')
     lines.push(labels.historyTitle)
     for (const tx of settlements) {
-      const fromId = tx.splitConfig?.payerId ?? ''
+      const multiPayers = (tx.splitConfig?.payers ?? []).filter((p) => p.amount > 0)
+      const fromText =
+        multiPayers.length > 1
+          ? multiPayers.map((p) => nameOf(p.memberId)).join('、')
+          : nameOf(tx.splitConfig?.payerId ?? '')
       const toId = tx.splitConfig?.shares[0]?.memberId ?? ''
       lines.push(
         `• ${labels.paidHistoryLine(
-          nameOf(fromId),
+          fromText,
           nameOf(toId),
           fmt(tx.amount, tx.currency),
           tx.date,

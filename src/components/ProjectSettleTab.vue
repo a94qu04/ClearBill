@@ -114,11 +114,12 @@ const poolBalances = computed(() =>
   props.settleUp.balances.filter((b) => poolMemberIds.value.has(b.memberId)),
 )
 
-/** 辨識最近一次「批次收公費」的轉帳群組，方便打錯金額時一鍵整批撤銷 */
+/** 辨識最近一次「批次收公費」的轉帳（相容單筆合併多人公費帳目與舊版多筆同批帳目），方便打錯金額時一鍵撤銷 */
 const latestPoolCollectBatch = computed<{
   ids: string[]
   count: number
   amountPerPerson: number
+  totalAmount: number
   currency: string
   date: string
 } | null>(() => {
@@ -132,6 +133,19 @@ const latestPoolCollectBatch = computed<{
 
   const latest = poolDeposits[0]
   if (!latest) return null
+
+  const multiPayers = (latest.splitConfig?.payers ?? []).filter((p) => p.amount > 0)
+  if (multiPayers.length > 1) {
+    return {
+      ids: [latest.id],
+      count: multiPayers.length,
+      amountPerPerson: multiPayers[0].amount,
+      totalAmount: latest.amount,
+      currency: latest.currency,
+      date: latest.date,
+    }
+  }
+
   const targetPoolId = latest.splitConfig?.shares[0]?.memberId
   const latestNote = (latest.note ?? '').trim()
   const batch = poolDeposits.filter(
@@ -147,6 +161,7 @@ const latestPoolCollectBatch = computed<{
     ids: batch.map((tx) => tx.id),
     count: batch.length,
     amountPerPerson: latest.amount,
+    totalAmount: latest.amount * batch.length,
     currency: latest.currency,
     date: latest.date,
   }
@@ -160,13 +175,29 @@ async function handleUndoLatestPoolBatch() {
     message: t('pool.undoBatchConfirm', {
       count: batch.count,
       amount: fmt(batch.amountPerPerson, batch.currency),
-      total: fmt(batch.amountPerPerson * batch.count, batch.currency),
+      total: fmt(batch.totalAmount, batch.currency),
     }),
     confirmText: t('pool.undoBatchConfirmButton'),
     tone: 'danger',
   })
   if (!confirmed) return
   emit('deleteSettlementsBatch', batch.ids)
+}
+
+function getSettlementPayerIds(tx: Transaction): string[] {
+  const multi = (tx.splitConfig?.payers ?? []).filter((p) => p.amount > 0)
+  if (multi.length > 1) {
+    return multi.map((p) => p.memberId)
+  }
+  return tx.splitConfig?.payerId ? [tx.splitConfig.payerId] : []
+}
+
+function getSettlementFromLabel(tx: Transaction): string {
+  const payerIds = getSettlementPayerIds(tx)
+  if (payerIds.length <= 1) {
+    return getMemberName(payerIds[0] ?? '')
+  }
+  return payerIds.map((id) => getMemberName(id)).join('、')
 }
 
 const displayedMemberBalances = computed(() => {
@@ -236,7 +267,7 @@ function toggleMemberDetail(memberId: string) {
 }
 
 async function handleRequestDeleteSettlement(tx: Transaction) {
-  const fromName = getMemberName(tx.splitConfig?.payerId ?? '')
+  const fromName = getSettlementFromLabel(tx)
   const toName = getMemberName(tx.splitConfig?.shares[0]?.memberId ?? '')
   const confirmed = await askConfirm({
     title: t('settle.deletePaymentTitle'),
@@ -1138,11 +1169,94 @@ async function handleExportLongImage() {
       </div>
     </section>
 
-    <!-- 雙欄響應式主區：行動優先（待還款＋公費袋＋還款紀錄優先於手機頂部／桌機左欄） -->
+    <!-- 雙欄響應式主區：公費袋優先顯眼呈現，接續待還款與還款紀錄 -->
     <div class="space-y-4 lg:grid lg:grid-cols-12 lg:items-start lg:gap-5 lg:space-y-0">
-      <!-- 行動欄（手機置頂／桌機左欄 5 格）：待還款建議 ＋ 公費袋 ＋ 已記錄還款 -->
+      <!-- 行動欄（手機置頂／桌機左欄 5 格）：公費袋（啟用時置頂） ＋ 待還款建議 ＋ 已記錄還款 -->
       <div class="space-y-4 lg:col-span-5">
-        <!-- 1. 待還款結算（Action First） -->
+        <!-- 1. 公費袋專屬卡片（啟用時置頂於最醒目位置，青色微外框清楚區隔） -->
+        <section
+          v-if="poolBalances.length > 0"
+          class="space-y-3 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-teal-500/25 dark:bg-[#1C1C1E] dark:ring-teal-400/25"
+        >
+          <div class="flex items-center justify-between gap-2">
+            <div class="flex items-center gap-2 text-sm font-bold text-slate-900 dark:text-white">
+              <span class="inline-flex h-6 w-6 items-center justify-center rounded-lg bg-teal-500/15 text-teal-600 dark:text-teal-400">
+                <Wallet class="h-3.5 w-3.5" />
+              </span>
+              <span>{{ t('pool.cardTitle') }}</span>
+            </div>
+            <div class="flex items-center gap-1.5">
+              <button
+                v-if="latestPoolCollectBatch"
+                type="button"
+                class="inline-flex items-center gap-1 rounded-full bg-rose-500/10 px-2.5 py-1 text-[10px] font-semibold text-rose-600 transition hover:bg-rose-500/20 dark:bg-rose-500/15 dark:text-rose-400"
+                @click="handleUndoLatestPoolBatch"
+              >
+                <Undo2 class="h-3 w-3" />
+                <span>{{
+                  t('pool.undoLatestBatchShort', { count: latestPoolCollectBatch.count })
+                }}</span>
+              </button>
+              <button
+                type="button"
+                class="inline-flex items-center gap-1 rounded-full bg-teal-600 px-2.5 py-1 text-[11px] font-semibold text-white transition hover:bg-teal-700 dark:bg-teal-500 dark:text-slate-950"
+                @click="emit('openPoolCollect')"
+              >
+                <span>+ {{ t('pool.collectButtonShort') }}</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="divide-y divide-slate-100 dark:divide-white/10">
+            <div
+              v-for="pb in poolBalances"
+              :key="pb.memberId"
+              class="flex flex-wrap items-center justify-between gap-2 py-2.5 first:pt-0 last:pb-0"
+            >
+              <div class="min-w-0">
+                <div class="text-sm font-semibold text-slate-900 dark:text-white">
+                  {{ getMemberName(pb.memberId) }}
+                </div>
+                <div class="mt-0.5 text-[11px] text-slate-400 dark:text-slate-500">
+                  {{ t('pool.paidOutLabel') }} {{ fmt(pb.totalPaid, settlementCurrency) }}
+                  <span
+                    v-if="isCrossCurrencySettlement && getBaseBalance(pb.memberId)"
+                    class="ml-1"
+                  >
+                    ({{ fmt(getBaseBalance(pb.memberId)!.totalPaid, project.baseCurrency) }})
+                  </span>
+                </div>
+              </div>
+              <div class="text-right">
+                <div
+                  class="text-base font-bold tabular-nums"
+                  :class="
+                    pb.netAmount <= 0
+                      ? 'text-teal-600 dark:text-teal-400'
+                      : 'text-rose-600 dark:text-rose-400'
+                  "
+                >
+                  {{ fmt(Math.abs(pb.netAmount), settlementCurrency) }}
+                </div>
+                <div
+                  v-if="isCrossCurrencySettlement && getBaseBalance(pb.memberId)"
+                  class="text-[10px] font-medium tabular-nums text-slate-400 dark:text-slate-500"
+                >
+                  {{ fmt(Math.abs(getBaseBalance(pb.memberId)!.netAmount), project.baseCurrency) }}
+                </div>
+                <div class="text-[10px] font-medium text-slate-400">
+                  {{
+                    pb.netAmount > 0
+                      ? t('pool.overdrawnLabel')
+                      : t('pool.remainingCashLabel')
+                  }}
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 2. 待還款結算（Action First） -->
         <section
           class="space-y-3 rounded-2xl bg-white p-4 shadow-sm dark:bg-[#1C1C1E]"
         >
@@ -1308,91 +1422,6 @@ async function handleExportLongImage() {
           </ul>
         </section>
 
-        <!-- 2. 公費袋專屬卡片（純白卡片＋青色圖示徽章，取代大面積滿版底色） -->
-        <section
-          v-if="poolBalances.length > 0"
-          class="space-y-3 rounded-2xl bg-white p-4 shadow-sm dark:bg-[#1C1C1E]"
-        >
-          <div class="flex items-center justify-between gap-2">
-            <div class="flex items-center gap-2 text-sm font-bold text-slate-900 dark:text-white">
-              <span class="inline-flex h-6 w-6 items-center justify-center rounded-lg bg-teal-500/15 text-teal-600 dark:text-teal-400">
-                <Wallet class="h-3.5 w-3.5" />
-              </span>
-              <span>{{ t('pool.cardTitle') }}</span>
-            </div>
-            <div class="flex items-center gap-1.5">
-              <button
-                v-if="latestPoolCollectBatch"
-                type="button"
-                class="inline-flex items-center gap-1 rounded-full bg-rose-500/10 px-2.5 py-1 text-[10px] font-semibold text-rose-600 transition hover:bg-rose-500/20 dark:bg-rose-500/15 dark:text-rose-400"
-                @click="handleUndoLatestPoolBatch"
-              >
-                <Undo2 class="h-3 w-3" />
-                <span>{{
-                  t('pool.undoLatestBatchShort', { count: latestPoolCollectBatch.count })
-                }}</span>
-              </button>
-              <button
-                type="button"
-                class="inline-flex items-center gap-1 rounded-full bg-teal-600 px-2.5 py-1 text-[11px] font-semibold text-white transition hover:bg-teal-700 dark:bg-teal-500 dark:text-slate-950"
-                @click="emit('openPoolCollect')"
-              >
-                <span>+ {{ t('pool.collectButtonShort') }}</span>
-              </button>
-            </div>
-          </div>
-
-          <div class="divide-y divide-slate-100 dark:divide-white/10">
-            <div
-              v-for="pb in poolBalances"
-              :key="pb.memberId"
-              class="flex flex-wrap items-center justify-between gap-2 py-2.5 first:pt-0 last:pb-0"
-            >
-              <div class="min-w-0">
-                <div class="text-sm font-semibold text-slate-900 dark:text-white">
-                  {{ getMemberName(pb.memberId) }}
-                </div>
-                <div class="mt-0.5 text-[11px] text-slate-400 dark:text-slate-500">
-                  {{ t('pool.paidOutLabel') }} {{ fmt(pb.totalPaid, settlementCurrency) }}
-                  <span
-                    v-if="isCrossCurrencySettlement && getBaseBalance(pb.memberId)"
-                    class="ml-1"
-                  >
-                    ({{ fmt(getBaseBalance(pb.memberId)!.totalPaid, project.baseCurrency) }})
-                  </span>
-                </div>
-              </div>
-              <div class="text-right">
-                <div
-                  class="text-base font-bold tabular-nums"
-                  :class="
-                    pb.netAmount <= 0
-                      ? 'text-teal-600 dark:text-teal-400'
-                      : 'text-rose-600 dark:text-rose-400'
-                  "
-                >
-                  {{ fmt(Math.abs(pb.netAmount), settlementCurrency) }}
-                </div>
-                <div
-                  v-if="isCrossCurrencySettlement && getBaseBalance(pb.memberId)"
-                  class="text-[10px] font-medium tabular-nums text-slate-400 dark:text-slate-500"
-                >
-                  {{ fmt(Math.abs(getBaseBalance(pb.memberId)!.netAmount), project.baseCurrency) }}
-                </div>
-                <div class="text-[10px] font-medium text-slate-400">
-                  {{
-                    pb.netAmount < 0
-                      ? t('pool.remainingCashLabel')
-                      : pb.netAmount > 0
-                        ? t('pool.overdrawnLabel')
-                        : t('settle.settled')
-                  }}
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
-
         <!-- 3. 已記錄之還款明細（Inset Grouped List，無斑馬紋） -->
         <section
           class="rounded-2xl bg-white p-4 shadow-sm dark:bg-[#1C1C1E]"
@@ -1416,17 +1445,21 @@ async function handleExportLongImage() {
             >
               <div class="min-w-0">
                 <div class="flex flex-wrap items-center gap-1.5 text-xs font-semibold text-slate-800 dark:text-slate-100">
-                  <span class="inline-flex items-center gap-1.5">
-                    <span
-                      class="h-2 w-2 rounded-full"
-                      :style="{
-                        backgroundColor: getMemberColor(tx.splitConfig?.payerId ?? ''),
-                      }"
-                    />
-                    <span>{{ getMemberName(tx.splitConfig?.payerId ?? '') }}</span>
+                  <span class="inline-flex min-w-0 items-center gap-1.5">
+                    <span class="inline-flex shrink-0 items-center -space-x-1">
+                      <span
+                        v-for="pid in getSettlementPayerIds(tx).slice(0, 4)"
+                        :key="pid"
+                        class="h-2 w-2 rounded-full ring-1 ring-white dark:ring-[#1C1C1E]"
+                        :style="{
+                          backgroundColor: getMemberColor(pid),
+                        }"
+                      />
+                    </span>
+                    <span class="truncate">{{ getSettlementFromLabel(tx) }}</span>
                   </span>
                   <span class="text-slate-400">→</span>
-                  <span class="inline-flex items-center gap-1.5">
+                  <span class="inline-flex shrink-0 items-center gap-1.5">
                     <span
                       class="h-2 w-2 rounded-full"
                       :style="{

@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Check, Wallet, X } from 'lucide-vue-next'
-import type { Project } from '@/schemas/ledgerSchema'
+import type { Project, Transaction } from '@/schemas/ledgerSchema'
 import { useLedgerStore } from '@/stores/ledgerStore'
 import { useModalLayer } from '@/composables/useModalLayer'
 import { formatCurrencyAmount } from '@/core/currency'
@@ -13,9 +13,12 @@ import MemberAvatar from '@/components/MemberAvatar.vue'
 interface Props {
   open: boolean
   project: Project | null
+  editingTx?: Transaction | null
 }
 
-const props = defineProps<Props>()
+const props = withDefaults(defineProps<Props>(), {
+  editingTx: null,
+})
 
 const emit = defineEmits<{
   (e: 'close'): void
@@ -87,10 +90,60 @@ function syncDefaultContributors() {
 }
 
 watch(
-  () => [props.open, props.project?.id] as const,
+  () => [props.open, props.project?.id, props.editingTx?.id] as const,
   ([isOpen]) => {
     if (!isOpen || !props.project) return
     errorText.value = ''
+
+    const editTx = props.editingTx
+    if (editTx && editTx.splitConfig) {
+      const toId = editTx.splitConfig.shares[0]?.memberId ?? ''
+      const toMember = props.project.members.find((m) => m.id === toId)
+      const isPoolTarget = Boolean(toMember?.isPool || toId.startsWith('pool_'))
+      collectorMode.value = isPoolTarget ? 'pool' : 'member'
+      customPoolName.value =
+        (isPoolTarget ? toMember?.name : existingPoolMember.value?.name) ||
+        t('pool.defaultName')
+      selectedCollectorMemberId.value = isPoolTarget
+        ? props.project.syncMeta?.myMemberId ||
+          props.project.defaultPayerId ||
+          humanMembers.value[0]?.id ||
+          ''
+        : toId || humanMembers.value[0]?.id || ''
+
+      const activePayers = (editTx.splitConfig.payers ?? []).filter(
+        (p) => p.amount > 0,
+      )
+      const payerIds =
+        activePayers.length > 0
+          ? activePayers.map((p) => p.memberId)
+          : [editTx.splitConfig.payerId]
+      const validSet = new Set(eligibleContributors.value.map((m) => m.id))
+      const matchedIds = payerIds.filter((id) => validSet.has(id))
+      selectedContributorIds.value =
+        matchedIds.length > 0
+          ? matchedIds
+          : eligibleContributors.value.map((m) => m.id)
+
+      amountPerMember.value =
+        activePayers.length > 0
+          ? activePayers[0].amount
+          : editTx.amount / Math.max(1, selectedContributorIds.value.length)
+      currency.value = editTx.currency.trim().toUpperCase()
+      exchangeRate.value =
+        currency.value === props.project.baseCurrency.trim().toUpperCase()
+          ? 1
+          : editTx.exchangeRateToBase > 0
+            ? editTx.exchangeRateToBase
+            : store.getEffectiveExchangeRate(
+                currency.value,
+                props.project.baseCurrency,
+              )
+      date.value = editTx.date || getTodayIso()
+      note.value = editTx.note ?? t('pool.defaultNote')
+      return
+    }
+
     collectorMode.value = 'pool'
     customPoolName.value = existingPoolMember.value?.name || t('pool.defaultName')
     selectedCollectorMemberId.value =
@@ -186,10 +239,16 @@ async function handleSubmit() {
       exchangeRateToBase: rate,
       date: date.value || getTodayIso(),
       note: note.value.trim() || t('pool.defaultNote'),
+      editingTxId: props.editingTx?.id,
     })
 
     if (count > 0) {
-      emit('saved', t('pool.collectedToast', { count }))
+      emit(
+        'saved',
+        props.editingTx
+          ? t('daily.updatedToast')
+          : t('pool.collectedToast', { count }),
+      )
       emit('close')
     }
   } catch {

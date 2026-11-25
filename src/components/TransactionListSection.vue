@@ -166,10 +166,19 @@ function getPayerIndicatorMembers(
   }))
 }
 
+function isPoolDepositTx(tx: Transaction): boolean {
+  return store.isPoolCollectionTransaction(tx)
+}
+
 function getSplitIndicatorMembers(
   tx: Transaction,
 ): Array<{ memberId: string; name: string; color: string; image?: string }> {
-  if (tx.type === 'transfer' || !tx.splitConfig) return []
+  if (!tx.splitConfig) return []
+  // 繳公費單筆合併帳目：右側顯示繳交成員小圈圈，一眼看出誰有繳公費
+  if (isPoolDepositTx(tx)) {
+    return getPayerIndicatorMembers(tx)
+  }
+  if (tx.type === 'transfer') return []
   const activeShares = tx.splitConfig.shares.filter((s) => s.finalAmount > 0)
   if (activeShares.length === 0) return []
   return activeShares.map((s) => ({
@@ -192,6 +201,14 @@ function getSplitIndicatorTooltip(tx: Transaction): string {
 function getPayerBadgeText(tx: Transaction): string {
   if (!tx.splitConfig) return ''
   const multi = (tx.splitConfig.payers ?? []).filter((p) => p.amount > 0)
+  if (isPoolDepositTx(tx)) {
+    const toId = tx.splitConfig.shares[0]?.memberId ?? ''
+    const toName = getMemberName(toId, tx.projectId)
+    if (multi.length > 1) {
+      return `${t('project.memberCount', { count: multi.length })} → ${toName}`
+    }
+    return `${getMemberName(tx.splitConfig.payerId, tx.projectId)} → ${toName}`
+  }
   if (multi.length > 1) {
     return t('project.multiPayerBadge', { count: multi.length })
   }
@@ -857,6 +874,12 @@ defineExpose({ resetFilters, setMemberFilter })
                         +{{ tx.receiptImages.length - 1 }}
                       </span>
                     </button>
+                    <span
+                      v-else-if="isPoolDepositTx(tx)"
+                      class="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-teal-600 text-white shadow-xs"
+                    >
+                      <Wallet class="h-5 w-5" />
+                    </span>
                     <CategoryIconBadge
                       v-else
                       :icon="getCategoryIcon(tx.categoryKey)"
@@ -875,6 +898,12 @@ defineExpose({ resetFilters, setMemberFilter })
                           class="shrink-0 rounded-md bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 dark:text-emerald-300"
                         >
                           {{ t('project.refundBadge') }}
+                        </span>
+                        <span
+                          v-else-if="isPoolDepositTx(tx)"
+                          class="shrink-0 rounded-md bg-teal-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-teal-700 dark:text-teal-300"
+                        >
+                          {{ t('pool.badgeLabel') }}
                         </span>
                         <span
                           v-else-if="tx.type === 'transfer'"
@@ -939,9 +968,11 @@ defineExpose({ resetFilters, setMemberFilter })
                       <span
                         class="text-[15px] font-semibold tabular-nums leading-tight"
                         :class="
-                          tx.type === 'income' || tx.type === 'refund'
-                            ? 'text-emerald-600 dark:text-emerald-400'
-                            : 'text-slate-900 dark:text-white'
+                          isPoolDepositTx(tx)
+                            ? 'text-teal-600 dark:text-teal-400'
+                            : tx.type === 'income' || tx.type === 'refund'
+                              ? 'text-emerald-600 dark:text-emerald-400'
+                              : 'text-slate-900 dark:text-white'
                         "
                       >
                         {{
