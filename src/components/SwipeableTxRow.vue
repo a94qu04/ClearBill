@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Pencil, Trash2 } from 'lucide-vue-next'
 
@@ -10,10 +10,11 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 
-/** 左滑兩段式門檻（px）：取消右滑，僅保留左滑修改與深滑漸層刪除 */
-const LEFT_EDIT_THRESHOLD = -68
-const LEFT_DELETE_THRESHOLD = -145
-const MAX_LEFT_PULL = -215
+/** 雙向滑動門檻（px）：左滑修改、右滑刪除（刪除門檻稍深以防誤觸） */
+const LEFT_EDIT_THRESHOLD = -72
+const RIGHT_DELETE_THRESHOLD = 96
+const MAX_LEFT_PULL = -132
+const MAX_RIGHT_PULL = 152
 
 const offsetX = ref(0)
 const isDragging = ref(false)
@@ -27,40 +28,39 @@ let suppressNextClick = false
 type PendingAction = 'none' | 'edit' | 'delete'
 
 const pendingAction = computed<PendingAction>(() => {
-  if (offsetX.value <= LEFT_DELETE_THRESHOLD) return 'delete'
   if (offsetX.value <= LEFT_EDIT_THRESHOLD) return 'edit'
+  if (offsetX.value >= RIGHT_DELETE_THRESHOLD) return 'delete'
   return 'none'
 })
 
-/**
- * 深滑刪除漸層進度（0 = 剛進入修改區；0 -> 1 = 平滑從藍色漸層過渡到紅色刪除區）
- */
-const deleteGradientProgress = computed(() => {
-  const pull = Math.abs(offsetX.value)
-  const start = Math.abs(LEFT_EDIT_THRESHOLD)
-  const end = Math.abs(LEFT_DELETE_THRESHOLD)
-  if (pull <= start) return 0
-  return Math.min(1, (pull - start) / (end - start))
+function triggerHaptic(durationMs: number) {
+  if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+    try {
+      navigator.vibrate(durationMs)
+    } catch {
+      // 忽略不支援震動之瀏覽器環境
+    }
+  }
+}
+
+// 跨越修改或刪除門檻瞬間給予微震動手感回饋（不重複狂震）
+watch(pendingAction, (next, prev) => {
+  if (!isDragging.value || next === prev) return
+  if (next === 'edit') {
+    triggerHaptic(12)
+  } else if (next === 'delete') {
+    triggerHaptic(18)
+  }
 })
 
-const swipeBackgroundStyle = computed(() => {
-  const pull = Math.abs(offsetX.value)
-  if (pull === 0) return {}
+const editProgress = computed(() => {
+  if (offsetX.value >= 0) return 0
+  return Math.min(1, Math.abs(offsetX.value) / Math.abs(LEFT_EDIT_THRESHOLD))
+})
 
-  // 隨左滑深度從天藍平滑漸層至玫瑰紅，給予直覺的力道視覺回饋
-  const p = deleteGradientProgress.value
-  const r = Math.round(2 + (225 - 2) * p)
-  const g = Math.round(132 + (29 - 132) * p)
-  const b = Math.round(199 + (72 - 199) * p)
-  const rLight = Math.round(14 + (244 - 14) * p)
-  const gLight = Math.round(165 + (63 - 165) * p)
-  const bLight = Math.round(233 + (94 - 233) * p)
-
-  const alpha = Math.min(1, 0.25 + (pull / Math.abs(LEFT_EDIT_THRESHOLD)) * 0.75)
-
-  return {
-    background: `linear-gradient(90deg, rgba(${rLight}, ${gLight}, ${bLight}, ${alpha}) 0%, rgba(${r}, ${g}, ${b}, ${Math.min(1, alpha + 0.12)}) 100%)`,
-  }
+const deleteProgress = computed(() => {
+  if (offsetX.value <= 0) return 0
+  return Math.min(1, offsetX.value / RIGHT_DELETE_THRESHOLD)
 })
 
 function onPointerDown(event: PointerEvent) {
@@ -99,11 +99,10 @@ function onPointerMove(event: PointerEvent) {
 
   if (directionLocked !== 'horizontal') return
 
-  // 取消右滑：僅允許向左滑動（offsetX <= 0）
   if (Math.abs(dx) > 10) {
     suppressNextClick = true
   }
-  offsetX.value = Math.max(MAX_LEFT_PULL, Math.min(0, dx))
+  offsetX.value = Math.max(MAX_LEFT_PULL, Math.min(MAX_RIGHT_PULL, dx))
 }
 
 function onClickCapture(event: MouseEvent) {
@@ -151,32 +150,54 @@ function finishDrag() {
     @pointerup="finishDrag"
     @pointercancel="finishDrag"
   >
-    <!-- 左滑背景：輕滑天藍修改，深滑漸層過渡為玫瑰紅刪除 -->
+    <!-- 左滑右側背景：天藍修改 -->
     <div
       v-if="offsetX < 0"
       class="absolute inset-0 flex items-center justify-end px-4 text-white"
-      :style="swipeBackgroundStyle"
+      :style="{
+        background: `linear-gradient(90deg, rgba(14, 165, 233, ${0.3 + editProgress * 0.7}) 0%, rgba(2, 132, 199, ${0.4 + editProgress * 0.6}) 100%)`,
+      }"
     >
       <div class="flex items-center gap-1.5 text-xs font-bold">
-        <template v-if="pendingAction === 'delete'">
-          <Trash2 class="h-4 w-4 scale-110 transition-transform" />
-          <span>{{ t('swipe.releaseDelete') }}</span>
-        </template>
-        <template v-else>
-          <Pencil class="h-4 w-4 transition-transform" />
-          <span>{{
-            pendingAction === 'edit'
-              ? t('swipe.releaseEdit')
-              : t('home.editTx')
-          }}</span>
-        </template>
+        <Pencil
+          class="h-4 w-4 transition-transform"
+          :class="pendingAction === 'edit' ? 'scale-110' : ''"
+        />
+        <span>{{
+          pendingAction === 'edit' ? t('swipe.releaseEdit') : t('home.editTx')
+        }}</span>
+      </div>
+    </div>
+
+    <!-- 右滑左側背景：玫瑰紅刪除 -->
+    <div
+      v-if="offsetX > 0"
+      class="absolute inset-0 flex items-center justify-start px-4 text-white"
+      :style="{
+        background: `linear-gradient(90deg, rgba(225, 29, 72, ${0.4 + deleteProgress * 0.6}) 0%, rgba(244, 63, 94, ${0.28 + deleteProgress * 0.72}) 100%)`,
+      }"
+    >
+      <div class="flex items-center gap-1.5 text-xs font-bold">
+        <Trash2
+          class="h-4 w-4 transition-transform"
+          :class="pendingAction === 'delete' ? 'scale-110' : ''"
+        />
+        <span>{{
+          pendingAction === 'delete'
+            ? t('swipe.releaseDelete')
+            : t('home.deleteTx')
+        }}</span>
       </div>
     </div>
 
     <!-- 前景帳目卡片主體 -->
     <div
       class="relative bg-white dark:bg-slate-900"
-      :class="isDragging ? 'cursor-grabbing' : 'cursor-grab transition-transform duration-200 ease-out'"
+      :class="
+        isDragging
+          ? 'cursor-grabbing'
+          : 'cursor-grab transition-transform duration-200 ease-out'
+      "
       :style="{ transform: `translateX(${offsetX}px)` }"
     >
       <slot />

@@ -201,6 +201,7 @@ interface PersistedUserPrefsV2 {
   projectOrder?: string[]
   projectOrderUpdatedAt?: number
   exchangeRates?: Record<string, number>
+  lastCurrencyByProject?: Record<string, string>
   userProfile?: UserProfile
 }
 
@@ -291,6 +292,23 @@ function loadUserPrefs(): PersistedUserPrefsV2 {
         }
       }
 
+      const lastCurrencyByProject: Record<string, string> = {}
+      if (
+        parsed.lastCurrencyByProject &&
+        typeof parsed.lastCurrencyByProject === 'object'
+      ) {
+        for (const [projId, cur] of Object.entries(parsed.lastCurrencyByProject)) {
+          if (
+            typeof projId === 'string' &&
+            projId.trim() &&
+            typeof cur === 'string' &&
+            /^[A-Z]{3}$/.test(cur.trim().toUpperCase())
+          ) {
+            lastCurrencyByProject[projId] = cur.trim().toUpperCase()
+          }
+        }
+      }
+
       const rawProfile = parsed.userProfile
       const userProfile: UserProfile =
         rawProfile && typeof rawProfile === 'object'
@@ -330,6 +348,7 @@ function loadUserPrefs(): PersistedUserPrefsV2 {
         projectOrder,
         projectOrderUpdatedAt,
         exchangeRates,
+        lastCurrencyByProject,
         userProfile,
       }
     }
@@ -384,8 +403,9 @@ export const useLedgerStore = defineStore('ledger', () => {
   const isLoaded = ref(false)
   const isStoragePersisted = ref(false)
 
-  // 即時多人協作同步狀態、離線待補傳計數與異常大量刪除熔斷告警
+  // 即時多人協作同步狀態、最後同步時間、離線待補傳計數與異常大量刪除熔斷告警
   const syncStatusByProject = ref<Record<string, ProjectRealtimeSyncStatus>>({})
+  const lastSyncedAtByProject = ref<Record<string, number>>({})
   const outboxCountByProject = ref<Record<string, number>>({})
   const pendingDeletionGuard = ref<PendingDeletionGuardAlert | null>(null)
   const activeRealtimeUnsubscribers = new Map<string, () => void>()
@@ -428,6 +448,9 @@ export const useLedgerStore = defineStore('ledger', () => {
   )
   const rememberedExchangeRates = ref<Record<string, number>>(
     initialPrefs.exchangeRates ?? {},
+  )
+  const lastCurrencyByProject = ref<Record<string, string>>(
+    initialPrefs.lastCurrencyByProject ?? {},
   )
   const userProfile = ref<UserProfile>(
     initialPrefs.userProfile ?? createDefaultUserProfile(),
@@ -477,6 +500,7 @@ export const useLedgerStore = defineStore('ledger', () => {
         projectOrder: projectOrder.value,
         projectOrderUpdatedAt: projectOrderUpdatedAt.value || undefined,
         exchangeRates: rememberedExchangeRates.value,
+        lastCurrencyByProject: lastCurrencyByProject.value,
         userProfile: userProfile.value,
       }
       window.localStorage.setItem(PREFS_STORAGE_KEY, JSON.stringify(data))
@@ -574,6 +598,25 @@ export const useLedgerStore = defineStore('ledger', () => {
     const next = { ...rememberedExchangeRates.value }
     delete next[key]
     rememberedExchangeRates.value = next
+    saveUserPrefs()
+  }
+
+  function getProjectLastCurrency(projectId: string, fallbackCurrency: string): string {
+    const remembered = lastCurrencyByProject.value[projectId]
+    if (remembered && /^[A-Z]{3}$/.test(remembered)) {
+      return remembered
+    }
+    return fallbackCurrency.trim().toUpperCase()
+  }
+
+  function rememberProjectLastCurrency(projectId: string, currency: string): void {
+    const code = currency.trim().toUpperCase()
+    if (!projectId || !/^[A-Z]{3}$/.test(code)) return
+    if (lastCurrencyByProject.value[projectId] === code) return
+    lastCurrencyByProject.value = {
+      ...lastCurrencyByProject.value,
+      [projectId]: code,
+    }
     saveUserPrefs()
   }
 
@@ -1310,6 +1353,10 @@ export const useLedgerStore = defineStore('ledger', () => {
         ...syncStatusByProject.value,
         [projectId]: 'synced',
       }
+      lastSyncedAtByProject.value = {
+        ...lastSyncedAtByProject.value,
+        [projectId]: Date.now(),
+      }
     } catch {
       syncStatusByProject.value = {
         ...syncStatusByProject.value,
@@ -1357,6 +1404,10 @@ export const useLedgerStore = defineStore('ledger', () => {
 
     const saved = await saveProjectToNormalVault(mergedProject)
     projects.value = projects.value.map((p) => (p.id === localProjectId ? saved : p))
+    lastSyncedAtByProject.value = {
+      ...lastSyncedAtByProject.value,
+      [localProjectId]: Date.now(),
+    }
   }
 
   async function applyRemoteTransactionsList(
@@ -1430,6 +1481,10 @@ export const useLedgerStore = defineStore('ledger', () => {
     syncStatusByProject.value = {
       ...syncStatusByProject.value,
       [localProjectId]: 'synced',
+    }
+    lastSyncedAtByProject.value = {
+      ...lastSyncedAtByProject.value,
+      [localProjectId]: Date.now(),
     }
   }
 
@@ -1519,6 +1574,10 @@ export const useLedgerStore = defineStore('ledger', () => {
       syncStatusByProject.value = {
         ...syncStatusByProject.value,
         [projectId]: 'synced',
+      }
+      lastSyncedAtByProject.value = {
+        ...lastSyncedAtByProject.value,
+        [projectId]: Date.now(),
       }
       void flushProjectOutbox(projectId)
     } catch {
@@ -2639,6 +2698,7 @@ export const useLedgerStore = defineStore('ledger', () => {
     isLoaded,
     isStoragePersisted,
     syncStatusByProject,
+    lastSyncedAtByProject,
     outboxCountByProject,
     pendingDeletionGuard,
     googleDriveStatus,
@@ -2680,6 +2740,8 @@ export const useLedgerStore = defineStore('ledger', () => {
     getRememberedExchangeRate,
     rememberExchangeRate,
     clearRememberedExchangeRate,
+    getProjectLastCurrency,
+    rememberProjectLastCurrency,
     getProjectSettlementRateOverrides,
     updateProjectSettlementCurrency,
     updateProjectSettlementRateConfig,

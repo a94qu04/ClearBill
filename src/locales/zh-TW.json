@@ -150,14 +150,17 @@
     "failedToast": "分享失敗，請重試。"
   },
   "swipe": {
-    "hint": "左滑放開修改 · 深滑漸層刪除",
-    "hintTapExpand": "點帳目展開詳情 · 左滑修改／深滑刪除",
+    "hint": "左滑放開修改 · 右滑放開刪除",
+    "hintTapExpand": "點帳目展開詳情 · 左滑修改／右滑刪除",
     "releaseEdit": "放開立即修改",
     "releaseDelete": "放開立即刪除"
   },
   "search": {
-    "placeholder": "搜尋備註、分類、金額或日期...",
+    "placeholder": "搜尋備註、分類、成員、金額或日期...",
     "allCategories": "全部類別",
+    "allProjects": "全部專案",
+    "allMembers": "全部成員",
+    "memberShareTotal": "分攤小計 {amount}",
     "addCategoryInline": "新增類別",
     "newCategoryPlaceholder": "新類別名稱...",
     "noMatches": "找不到符合篩選條件的帳目。",
@@ -170,6 +173,11 @@
     "viewerTitle": "收據圖片檢視",
     "prev": "上一張圖片",
     "next": "下一張圖片",
+    "zoomIn": "放大檢視",
+    "zoomOut": "還原大小",
+    "download": "下載原圖",
+    "tapToZoomHint": "點擊圖片放大 · 左右滑切換 · 點圖片外關閉",
+    "zoomedHint": "可拖曳移動檢視 · 點擊圖片還原",
     "uploadError": "圖片讀取失敗，請重試。"
   },
   "home": {
@@ -204,6 +212,7 @@
     "quickIntakeEmpty": "未能辨識出金額，請手動輸入。",
     "quickIntakeNeedProject": "請先建立一個分帳專案再匯入消費。",
     "editTx": "修改",
+    "duplicateTx": "複製再記",
     "deleteTx": "刪除",
     "saveFailed": "儲存失敗，請檢查輸入內容。"
   },
@@ -287,6 +296,11 @@
     "convertedPreview": "約 {amount}",
     "saveExpenseButton": "儲存消費",
     "saveRefundButton": "儲存退款／退稅",
+    "saveAndContinueButton": "存並續記",
+    "savedAndContinueToast": "已儲存！請繼續記下一筆",
+    "discardChangesTitle": "放棄未儲存的內容？",
+    "discardChangesMessage": "你剛輸入的帳目內容尚未儲存，確定要直接關閉嗎？",
+    "discardButton": "放棄關閉",
     "updateExpenseButton": "儲存修改",
     "cancelEditButton": "取消",
     "noProjectTransactions": "尚無消費紀錄，點擊右下角「+」記下第一筆！",
@@ -356,7 +370,12 @@
     "paymentRecordedToast": "已記錄還款！",
     "historyTitle": "已記錄之還款明細",
     "noHistory": "尚無還款紀錄。",
-    "paidHistoryLine": "{from} 已付給 {to}"
+    "paidHistoryLine": "{from} 已付給 {to}",
+    "viewMemberDetails": "查看對帳明細",
+    "hideMemberDetails": "收合明細",
+    "memberStatementTitle": "{name} 的分攤與墊付明細",
+    "openInEntriesButton": "去明細篩選",
+    "memberStatementEmpty": "目前尚無此成員的消費與分攤紀錄。"
   },
   "split": {
     "payerLabel": "誰先墊付",
@@ -480,6 +499,8 @@
     "statusConnecting": "正在連線至雲端...",
     "statusOffline": "離線記帳中（待補傳 {count} 筆）",
     "statusError": "雲端連線暫時中斷，請點擊重試",
+    "statusMetaSummary": "雲端已同步 {count} 筆 · 最後同步：{time}",
+    "statusMetaCountOnly": "雲端已同步 {count} 筆",
     "resyncButton": "立即同步",
     "resyncedToast": "已完成同步檢查！",
     "inviteLinkTitle": "邀請旅伴加入連結",

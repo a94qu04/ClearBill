@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   Archive,
@@ -328,6 +328,7 @@ async function handleCreateDemoProject() {
 // 支出與還款彈窗狀態
 const projExpenseSheetOpen = ref(false)
 const editingExpenseTx = ref<Transaction | null>(null)
+const duplicateExpenseTx = ref<Transaction | null>(null)
 const quickIntakePrefill = ref<ParsedQuickIntakeResult | null>(null)
 
 const settleSheetOpen = ref(false)
@@ -524,13 +525,32 @@ function onProjectDragEnd() {
 // ==================== 支出／還款新增、修改、刪除與復原 ====================
 function openAddProjectExpenseSheet() {
   editingExpenseTx.value = null
+  duplicateExpenseTx.value = null
   quickIntakePrefill.value = null
   projExpenseSheetOpen.value = true
 }
 
 function closeProjectExpenseSheet() {
   projExpenseSheetOpen.value = false
+  duplicateExpenseTx.value = null
   quickIntakePrefill.value = null
+}
+
+function startDuplicateTransaction(tx: Transaction) {
+  const targetProject = store.getProjectById(tx.projectId)
+  if (!targetProject || tx.type === 'transfer') return
+  store.selectProject(targetProject.id)
+  editingExpenseTx.value = null
+  quickIntakePrefill.value = null
+  duplicateExpenseTx.value = tx
+  projExpenseSheetOpen.value = true
+}
+
+function handleInspectMemberInExpenses(memberId: string) {
+  projectTab.value = 'expenses'
+  void nextTick(() => {
+    projectTxListRef.value?.setMemberFilter(memberId)
+  })
 }
 
 /** 編輯交易：維持當前頁面不跳轉，在首頁修改完成或關閉皆留在首頁 */
@@ -539,6 +559,7 @@ function startEditTransaction(tx: Transaction) {
   if (!targetProject) return
 
   store.selectProject(targetProject.id)
+  duplicateExpenseTx.value = null
   quickIntakePrefill.value = null
 
   if (tx.type === 'transfer') {
@@ -1057,15 +1078,17 @@ onBeforeUnmount(() => {
           </div>
         </section>
 
-        <!-- 首頁近期帳目（左滑修改／深滑漸層刪除，完成或關閉皆留在首頁） -->
+        <!-- 首頁近期帳目（支援專案快速篩選、左滑修改／右滑刪除，完成或關閉皆留在首頁） -->
         <TransactionListSection
           ref="homeTxListRef"
           context="home"
           :title="t('home.recentTransactions')"
           :transactions="homeProjectTransactions"
+          :filter-projects="store.activeProjects"
           :empty-text="t('home.noTransactionsYet')"
           :collapsible-limit="8"
           @edit="startEditTransaction"
+          @duplicate="startDuplicateTransaction"
           @delete="handleDeleteTransaction"
           @open-project="openProjectWorkspace($event)"
           @preview-photos="openPhotoLightbox"
@@ -1468,7 +1491,9 @@ onBeforeUnmount(() => {
           :transactions="store.activeProjectExpenses"
           :empty-text="t('project.noProjectTransactions')"
           :project-base-currency="store.activeProject.baseCurrency"
+          :project-members="store.activeProject.members"
           @edit="startEditTransaction"
+          @duplicate="startDuplicateTransaction"
           @delete="handleDeleteTransaction"
           @preview-photos="openPhotoLightbox"
           @toast="showToast($event)"
@@ -1483,6 +1508,8 @@ onBeforeUnmount(() => {
           :settlements="store.activeProjectSettlements"
           @record-payment="openRecordSettlementModal"
           @edit-settlement="startEditTransaction"
+          @edit-expense="startEditTransaction"
+          @inspect-member="handleInspectMemberInExpenses"
           @delete-settlement="handleDeleteTransaction"
           @toast="showToast($event)"
         />
@@ -1536,6 +1563,7 @@ onBeforeUnmount(() => {
       :open="projExpenseSheetOpen"
       :project="store.activeProject"
       :editing-tx="editingExpenseTx"
+      :duplicate-tx="duplicateExpenseTx"
       :prefill="quickIntakePrefill"
       @close="closeProjectExpenseSheet"
       @saved="showToast($event)"

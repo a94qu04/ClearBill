@@ -150,14 +150,17 @@
     "failedToast": "シェアに失敗しました。"
   },
   "swipe": {
-    "hint": "左スワイプで編集 · 奥まで左で削除",
-    "hintTapExpand": "タップで詳細表示 · 左スワイプで編集／削除",
+    "hint": "左スワイプで編集 · 右スワイプで削除",
+    "hintTapExpand": "タップで詳細表示 · 左スワイプ編集／右スワイプ削除",
     "releaseEdit": "離して編集",
     "releaseDelete": "離して削除"
   },
   "search": {
-    "placeholder": "メモ・カテゴリ・金額・日付を検索...",
+    "placeholder": "メモ・カテゴリ・メンバー・金額・日付を検索...",
     "allCategories": "すべて",
+    "allProjects": "全プロジェクト",
+    "allMembers": "全メンバー",
+    "memberShareTotal": "負担小計 {amount}",
     "addCategoryInline": "カテゴリ追加",
     "newCategoryPlaceholder": "新しいカテゴリ名...",
     "noMatches": "条件に一致する記録がありません。",
@@ -170,6 +173,11 @@
     "viewerTitle": "レシート写真",
     "prev": "前の写真",
     "next": "次の写真",
+    "zoomIn": "拡大表示",
+    "zoomOut": "等倍に戻す",
+    "download": "画像を保存",
+    "tapToZoomHint": "画像タップで拡大 · 左右スワイプで切替 · 外側タップで閉じる",
+    "zoomedHint": "ドラッグで移動 · 画像タップで等倍に戻る",
     "uploadError": "画像の読み込みに失敗しました。"
   },
   "home": {
@@ -204,6 +212,7 @@
     "quickIntakeEmpty": "金額を検出できませんでした。",
     "quickIntakeNeedProject": "先に割り勘プロジェクトを作成してください。",
     "editTx": "編集",
+    "duplicateTx": "複製",
     "deleteTx": "削除",
     "saveFailed": "保存に失敗しました。入力を確認してください。"
   },
@@ -287,6 +296,11 @@
     "convertedPreview": "約 {amount}",
     "saveExpenseButton": "支出を保存",
     "saveRefundButton": "返金・免税を保存",
+    "saveAndContinueButton": "保存して次へ",
+    "savedAndContinueToast": "保存しました！続けて次を入力できます",
+    "discardChangesTitle": "未保存の変更を破棄しますか？",
+    "discardChangesMessage": "入力中の内容が保存されていません。このまま閉じますか？",
+    "discardButton": "破棄して閉じる",
     "updateExpenseButton": "変更を保存",
     "cancelEditButton": "キャンセル",
     "noProjectTransactions": "まだ支出がありません。右下の「+」から追加しましょう！",
@@ -356,7 +370,12 @@
     "paymentRecordedToast": "返済を記録しました！",
     "historyTitle": "返済履歴",
     "noHistory": "まだ返済記録がありません。",
-    "paidHistoryLine": "{from} が {to} へ支払済"
+    "paidHistoryLine": "{from} が {to} へ支払済",
+    "viewMemberDetails": "内訳を見る",
+    "hideMemberDetails": "内訳を閉じる",
+    "memberStatementTitle": "{name} の負担・立替内訳",
+    "openInEntriesButton": "明細で絞り込む",
+    "memberStatementEmpty": "このメンバーに関する支出記録はまだありません。"
   },
   "split": {
     "payerLabel": "立替者",
@@ -480,6 +499,8 @@
     "statusConnecting": "クラウドへ接続中...",
     "statusOffline": "オフライン記録中（未送信 {count} 件）",
     "statusError": "同期が中断されました。再試行してください",
+    "statusMetaSummary": "クラウド同期済 {count} 件 · 最終同期：{time}",
+    "statusMetaCountOnly": "クラウド同期済 {count} 件",
     "resyncButton": "今すぐ同期",
     "resyncedToast": "同期を確認しました！",
     "inviteLinkTitle": "招待リンク",

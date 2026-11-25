@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   ArrowLeftRight,
+  ChevronRight,
   Coins,
   Copy,
   FileSpreadsheet,
@@ -12,6 +13,7 @@ import {
   RefreshCw,
   Share2,
   Trash2,
+  X,
 } from 'lucide-vue-next'
 import type { Project, Transaction } from '@/schemas/ledgerSchema'
 import {
@@ -41,6 +43,8 @@ const props = defineProps<Props>()
 const emit = defineEmits<{
   (e: 'recordPayment', payload: { fromMemberId: string; toMemberId: string; amount: number; currency: string }): void
   (e: 'editSettlement', tx: Transaction): void
+  (e: 'editExpense', tx: Transaction): void
+  (e: 'inspectMember', memberId: string): void
   (e: 'deleteSettlement', id: string): void
   (e: 'toast', message: string): void
 }>()
@@ -51,6 +55,60 @@ const store = useLedgerStore()
 const includeDetailsInShare = ref(false)
 const isGeneratingImage = ref(false)
 const customSettleRateDrafts = ref<Record<string, string>>({})
+const selectedMemberDetailId = ref<string | null>(null)
+
+function toggleMemberDetail(memberId: string) {
+  selectedMemberDetailId.value =
+    selectedMemberDetailId.value === memberId ? null : memberId
+}
+
+interface MemberStatementEntry {
+  tx: Transaction
+  title: string
+  shareInSettle: number
+  paidInSettle: number
+  isRefund: boolean
+}
+
+const selectedMemberStatement = computed<MemberStatementEntry[]>(() => {
+  const memberId = selectedMemberDetailId.value
+  if (!memberId) return []
+  const list: MemberStatementEntry[] = []
+
+  const sorted = [...props.expenses]
+    .filter((tx) => !tx.isDeleted && (tx.type === 'expense' || tx.type === 'refund'))
+    .sort((a, b) => {
+      const d = b.date.localeCompare(a.date)
+      if (d !== 0) return d
+      return b.time.localeCompare(a.time)
+    })
+
+  for (const tx of sorted) {
+    if (!tx.splitConfig) continue
+    const rate = tx.exchangeRateToBase > 0 ? tx.exchangeRateToBase : 1
+    const sign = tx.type === 'refund' ? -1 : 1
+    const shareObj = tx.splitConfig.shares.find((s) => s.memberId === memberId)
+    const shareAmt = shareObj ? shareObj.finalAmount : 0
+
+    let paidAmt = 0
+    const multiPayers = (tx.splitConfig.payers ?? []).filter((p) => p.amount > 0)
+    if (multiPayers.length > 0) {
+      paidAmt = multiPayers.find((p) => p.memberId === memberId)?.amount ?? 0
+    } else if (tx.splitConfig.payerId === memberId) {
+      paidAmt = tx.amount
+    }
+
+    if (shareAmt <= 0 && paidAmt <= 0) continue
+    list.push({
+      tx,
+      title: tx.note?.trim() || getCategoryLabel(tx.categoryKey),
+      shareInSettle: sign * shareAmt * rate,
+      paidInSettle: sign * paidAmt * rate,
+      isRefund: tx.type === 'refund',
+    })
+  }
+  return list
+})
 
 const settlementCurrency = computed<string>(() =>
   store.getProjectSettlementCurrency(props.project),
@@ -679,14 +737,21 @@ async function handleExportLongImage() {
       </div>
 
       <div class="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-        <div
+        <button
           v-for="bal in settleUp.balances"
           :key="bal.memberId"
-          class="overflow-hidden rounded-xl border border-slate-100 bg-slate-50 dark:border-slate-800 dark:bg-slate-800/60"
+          type="button"
+          class="overflow-hidden rounded-xl border text-left transition hover:brightness-[0.98] active:scale-[0.99]"
+          :class="
+            selectedMemberDetailId === bal.memberId
+              ? 'border-emerald-400 bg-emerald-50/60 ring-2 ring-emerald-500/20 dark:border-emerald-500/70 dark:bg-emerald-950/40'
+              : 'border-slate-100 bg-slate-50 dark:border-slate-800 dark:bg-slate-800/60'
+          "
           :style="{
             borderLeftWidth: '4px',
             borderLeftColor: getMemberColor(bal.memberId),
           }"
+          @click="toggleMemberDetail(bal.memberId)"
         >
           <div class="p-3">
             <div class="flex items-center justify-between gap-2">
@@ -743,8 +808,117 @@ async function handleExportLongImage() {
                 </div>
               </div>
             </div>
+
+            <div class="mt-1.5 flex items-center justify-end gap-0.5 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400">
+              <span>{{
+                selectedMemberDetailId === bal.memberId
+                  ? t('settle.hideMemberDetails')
+                  : t('settle.viewMemberDetails')
+              }}</span>
+              <ChevronRight
+                class="h-3 w-3 transition-transform"
+                :class="selectedMemberDetailId === bal.memberId ? 'rotate-90' : ''"
+              />
+            </div>
+          </div>
+        </button>
+      </div>
+
+      <!-- 點擊成員卡片展開之個人分攤與墊付明細（一鍵核對帳目） -->
+      <div
+        v-if="selectedMemberDetailId"
+        class="mt-3 space-y-2 rounded-2xl border border-emerald-200/80 bg-emerald-50/40 p-3 dark:border-emerald-900/60 dark:bg-emerald-950/20"
+      >
+        <div class="flex items-center justify-between gap-2">
+          <div class="flex items-center gap-2 text-xs font-bold text-slate-800 dark:text-slate-100">
+            <MemberAvatar
+              :name="getMemberName(selectedMemberDetailId)"
+              :color="getMemberColor(selectedMemberDetailId)"
+              :image="project.members.find((m) => m.id === selectedMemberDetailId)?.avatarImage"
+              size="xs"
+            />
+            <span>
+              {{
+                t('settle.memberStatementTitle', {
+                  name: getMemberName(selectedMemberDetailId),
+                })
+              }}
+              ({{ selectedMemberStatement.length }})
+            </span>
+          </div>
+          <div class="flex items-center gap-2">
+            <button
+              type="button"
+              class="text-[11px] font-bold text-emerald-700 hover:underline dark:text-emerald-400"
+              @click="emit('inspectMember', selectedMemberDetailId)"
+            >
+              {{ t('settle.openInEntriesButton') }}
+            </button>
+            <button
+              type="button"
+              :aria-label="t('settings.close')"
+              class="rounded-full p-1 text-slate-400 hover:bg-white dark:hover:bg-slate-800"
+              @click="selectedMemberDetailId = null"
+            >
+              <X class="h-3.5 w-3.5" />
+            </button>
           </div>
         </div>
+
+        <p
+          v-if="selectedMemberStatement.length === 0"
+          class="py-3 text-center text-xs text-slate-400"
+        >
+          {{ t('settle.memberStatementEmpty') }}
+        </p>
+
+        <ul
+          v-else
+          class="max-h-64 divide-y divide-slate-200/70 overflow-y-auto rounded-xl bg-white px-2.5 dark:divide-slate-800 dark:bg-slate-900"
+        >
+          <li
+            v-for="item in selectedMemberStatement"
+            :key="item.tx.id"
+            class="flex items-center justify-between gap-2 py-2 text-xs"
+          >
+            <button
+              type="button"
+              class="min-w-0 flex-1 text-left transition hover:opacity-80"
+              @click="emit('editExpense', item.tx)"
+            >
+              <div class="flex items-center gap-1.5">
+                <span
+                  v-if="item.isRefund"
+                  class="rounded bg-teal-50 px-1 py-0.5 text-[9px] font-bold text-teal-700 dark:bg-teal-950/70 dark:text-teal-300"
+                >
+                  {{ t('project.refundBadge') }}
+                </span>
+                <span class="truncate font-semibold text-slate-800 dark:text-slate-100">
+                  {{ item.title }}
+                </span>
+              </div>
+              <div class="mt-0.5 text-[10px] text-slate-400">
+                {{ item.tx.date }} · {{ fmt(item.tx.amount, item.tx.currency) }}
+              </div>
+            </button>
+            <div class="shrink-0 text-right tabular-nums">
+              <div
+                v-if="item.shareInSettle !== 0"
+                class="text-[11px] font-bold text-slate-800 dark:text-slate-100"
+              >
+                {{ t('settle.memberTotalExpense') }}
+                {{ fmt(item.shareInSettle, settlementCurrency) }}
+              </div>
+              <div
+                v-if="item.paidInSettle !== 0"
+                class="text-[10px] font-semibold text-emerald-600 dark:text-emerald-400"
+              >
+                {{ t('settle.memberTotalPaid') }}
+                {{ fmt(item.paidInSettle, settlementCurrency) }}
+              </div>
+            </div>
+          </li>
+        </ul>
       </div>
 
       <!-- 匯出報表列：標準 Excel (.xlsx) 與高解析長截圖報表 (PNG) -->

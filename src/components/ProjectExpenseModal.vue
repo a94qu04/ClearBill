@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Camera, Clock, Plus, RefreshCw, X } from 'lucide-vue-next'
 import { useLedgerStore, type ManagedCategory } from '@/stores/ledgerStore'
+import { askConfirm } from '@/composables/useConfirm'
 import { formatCurrencyAmount } from '@/core/currency'
 import { compressImageFileToDataUrl } from '@/core/imageCompressor'
 import {
@@ -19,10 +20,12 @@ interface Props {
   open: boolean
   project: Project | null
   editingTx: Transaction | null
+  duplicateTx?: Transaction | null
   prefill?: ParsedQuickIntakeResult | null
 }
 
 const props = withDefaults(defineProps<Props>(), {
+  duplicateTx: null,
   prefill: null,
 })
 
@@ -57,6 +60,46 @@ const errorText = ref('')
 
 const inlineNewCategoryOpen = ref(false)
 const inlineNewCategoryName = ref('')
+const initialSnapshot = ref('')
+
+function captureFormSnapshot(): string {
+  return JSON.stringify({
+    txType: txType.value,
+    amount: amount.value ?? null,
+    currency: currency.value,
+    exchangeRate: exchangeRate.value ?? null,
+    categoryKey: categoryKey.value,
+    note: note.value.trim(),
+    date: date.value,
+    time: time.value,
+    receiptCount: receiptImages.value.length,
+  })
+}
+
+const isDirty = computed(() => {
+  if (!props.open) return false
+  if (props.editingTx) {
+    return captureFormSnapshot() !== initialSnapshot.value
+  }
+  return (
+    (amount.value !== null && amount.value > 0) ||
+    note.value.trim().length > 0 ||
+    receiptImages.value.length > 0
+  )
+})
+
+async function requestClose() {
+  if (isDirty.value) {
+    const confirmed = await askConfirm({
+      title: t('project.discardChangesTitle'),
+      message: t('project.discardChangesMessage'),
+      confirmText: t('project.discardButton'),
+      tone: 'danger',
+    })
+    if (!confirmed) return
+  }
+  emit('close')
+}
 
 function resolveCategoryLabel(cat: ManagedCategory): string {
   if (cat.customLabel) return cat.customLabel
@@ -179,6 +222,28 @@ function hydrateForm() {
     links.value = tx.links ? [...tx.links] : []
     receiptImages.value = tx.receiptImages ? [...tx.receiptImages] : []
     splitPreset.value = cloneSplitConfig(tx.splitConfig)
+  } else if (props.duplicateTx) {
+    // 複製既有帳目再記一筆：保留類型、金額、幣別、匯率、分類、備註與拆帳配置，日期重設為今天且不帶舊收據
+    const src = props.duplicateTx
+    txType.value = src.type === 'refund' ? 'refund' : 'expense'
+    amount.value = src.amount
+    currency.value = src.currency
+    const resolved = resolveExchangeRateForCurrency(
+      src.currency,
+      props.project.baseCurrency,
+    )
+    exchangeRate.value =
+      src.currency === props.project.baseCurrency
+        ? 1
+        : src.exchangeRateToBase || resolved.rate
+    exchangeRateSource.value = 'saved'
+    categoryKey.value = src.categoryKey
+    note.value = src.note ?? ''
+    date.value = getTodayIso()
+    time.value = ''
+    links.value = []
+    receiptImages.value = []
+    splitPreset.value = cloneSplitConfig(src.splitConfig)
   } else if (props.prefill) {
     // 來自 #/quick-add（iOS 捷徑 / Web Share）之快速入帳自動預填
     const pf = props.prefill
@@ -202,9 +267,18 @@ function hydrateForm() {
   } else {
     txType.value = 'expense'
     amount.value = null
-    currency.value = props.project.baseCurrency
-    exchangeRate.value = 1
-    exchangeRateSource.value = 'estimated'
+    // 按專案自動記憶上次記帳使用之幣別（出國連續記當地幣別不必每筆重選）
+    const lastCur = store.getProjectLastCurrency(
+      props.project.id,
+      props.project.baseCurrency,
+    )
+    currency.value = lastCur
+    const resolved = resolveExchangeRateForCurrency(
+      lastCur,
+      props.project.baseCurrency,
+    )
+    exchangeRate.value = resolved.rate
+    exchangeRateSource.value = resolved.source
     categoryKey.value = store.categories[0]?.key ?? 'cat_food'
     note.value = ''
     date.value = getTodayIso()
@@ -215,11 +289,19 @@ function hydrateForm() {
   }
 
   splitResetKey.value += 1
+  initialSnapshot.value = captureFormSnapshot()
   isHydrating = false
 }
 
 watch(
-  () => [props.open, props.editingTx?.id, props.prefill, props.project?.id] as const,
+  () =>
+    [
+      props.open,
+      props.editingTx?.id,
+      props.duplicateTx?.id,
+      props.prefill,
+      props.project?.id,
+    ] as const,
   ([isOpen]) => {
     if (isOpen) {
       hydrateForm()
@@ -280,7 +362,7 @@ function removeImage(index: number) {
   receiptImages.value = receiptImages.value.filter((_, idx) => idx !== index)
 }
 
-async function handleSubmit() {
+async function handleSubmit(continueAdding = false) {
   errorText.value = ''
   if (!props.project) return
 
@@ -318,6 +400,7 @@ async function handleSubmit() {
   }
 
   try {
+    store.rememberProjectLastCurrency(props.project.id, currency.value)
     if (needsExchangeRate.value && rate > 0) {
       store.rememberExchangeRate(currency.value, props.project.baseCurrency, rate)
     }
@@ -328,6 +411,19 @@ async function handleSubmit() {
       return
     }
     await store.addTransaction(payload)
+    if (continueAdding) {
+      // 存並續記：保留幣別、匯率、分類與日期，清空金額、備註與收據立刻記下一筆
+      amount.value = null
+      note.value = ''
+      time.value = ''
+      links.value = []
+      receiptImages.value = []
+      splitPreset.value = null
+      splitResetKey.value += 1
+      initialSnapshot.value = captureFormSnapshot()
+      emit('toast', t('project.savedAndContinueToast'))
+      return
+    }
     emit('saved', t('daily.savedToast'))
     emit('close')
   } catch {
@@ -341,12 +437,15 @@ async function handleSubmit() {
     <div
       v-if="open && project"
       class="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/50 backdrop-blur-sm sm:items-center sm:p-4"
-      @click.self="emit('close')"
+      @click.self="requestClose"
     >
       <div
-        class="max-h-[92vh] w-full max-w-lg overflow-y-auto rounded-t-3xl border border-slate-200 bg-white p-5 shadow-2xl dark:border-slate-800 dark:bg-slate-900 sm:rounded-3xl"
+        class="flex max-h-[92vh] w-full max-w-lg flex-col overflow-hidden rounded-t-3xl border border-slate-200 bg-white shadow-2xl dark:border-slate-800 dark:bg-slate-900 sm:rounded-3xl"
       >
-        <div class="mb-4 flex items-center justify-between">
+        <!-- Sticky 固定頂部標題列 -->
+        <div
+          class="flex shrink-0 items-center justify-between border-b border-slate-100 px-5 py-3.5 dark:border-slate-800"
+        >
           <h2 class="text-base font-bold text-slate-900 dark:text-white">
             {{
               editingTx
@@ -358,13 +457,18 @@ async function handleSubmit() {
             type="button"
             :aria-label="t('settings.close')"
             class="rounded-full p-1 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
-            @click="emit('close')"
+            @click="requestClose"
           >
             <X class="h-5 w-5" />
           </button>
         </div>
 
-        <form class="space-y-3.5" @submit.prevent="handleSubmit">
+        <!-- 中間可捲動表單主體 -->
+        <form
+          id="project-expense-form"
+          class="min-h-0 flex-1 space-y-3.5 overflow-y-auto px-5 py-4"
+          @submit.prevent="handleSubmit(false)"
+        >
           <!-- 兩段式類型切換：消費支出 / 退款・退稅 -->
           <div
             role="tablist"
@@ -616,26 +720,49 @@ async function handleSubmit() {
           <p v-if="errorText" class="text-xs font-medium text-rose-500">
             {{ errorText }}
           </p>
-
-          <button
-            type="submit"
-            :disabled="!splitValid || (amount ?? 0) <= 0"
-            class="w-full rounded-2xl py-3 text-sm font-bold text-white shadow-sm transition disabled:opacity-40"
-            :class="
-              txType === 'refund'
-                ? 'bg-teal-600 hover:bg-teal-700 dark:bg-teal-500 dark:text-slate-950'
-                : 'bg-emerald-600 hover:bg-emerald-700 dark:bg-emerald-500 dark:text-slate-950'
-            "
-          >
-            {{
-              editingTx
-                ? t('project.updateExpenseButton')
-                : txType === 'refund'
-                  ? t('project.saveRefundButton')
-                  : t('project.saveExpenseButton')
-            }}
-          </button>
         </form>
+
+        <!-- Sticky 固定底部儲存按鈕列（無須滑到最底即可隨時秒存，新增模式附「存並續記」） -->
+        <div
+          class="shrink-0 border-t border-slate-100 bg-white/95 px-5 py-3 backdrop-blur dark:border-slate-800 dark:bg-slate-900/95"
+        >
+          <div class="flex items-center gap-2">
+            <button
+              v-if="!editingTx"
+              type="button"
+              :disabled="!splitValid || (amount ?? 0) <= 0"
+              class="shrink-0 rounded-2xl border border-slate-200 bg-slate-50 px-3.5 py-3 text-xs font-bold text-slate-700 transition hover:bg-slate-100 disabled:opacity-40 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+              @click="handleSubmit(true)"
+            >
+              {{ t('project.saveAndContinueButton') }}
+            </button>
+            <button
+              type="submit"
+              form="project-expense-form"
+              :disabled="!splitValid || (amount ?? 0) <= 0"
+              class="flex-1 rounded-2xl py-3 text-sm font-bold text-white shadow-sm transition disabled:opacity-40"
+              :class="
+                txType === 'refund'
+                  ? 'bg-teal-600 hover:bg-teal-700 dark:bg-teal-500 dark:text-slate-950'
+                  : 'bg-emerald-600 hover:bg-emerald-700 dark:bg-emerald-500 dark:text-slate-950'
+              "
+            >
+              {{
+                editingTx
+                  ? t('project.updateExpenseButton')
+                  : txType === 'refund'
+                    ? t('project.saveRefundButton')
+                    : t('project.saveExpenseButton')
+              }}
+              <span
+                v-if="(amount ?? 0) > 0"
+                class="ml-1 tabular-nums opacity-90"
+              >
+                · {{ fmt(amount ?? 0, currency) }}
+              </span>
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   </Teleport>

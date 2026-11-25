@@ -43,7 +43,7 @@ const emit = defineEmits<{
   (e: 'toast', message: string): void
 }>()
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const store = useLedgerStore()
 
 const isBusy = ref(false)
@@ -83,6 +83,30 @@ const syncStatus = computed(() => {
 const outboxCount = computed(() => {
   if (!props.project) return 0
   return store.outboxCountByProject[props.project.id] ?? 0
+})
+
+const syncedTxCount = computed(() => {
+  if (!props.project) return 0
+  return store.getProjectTransactionCount(props.project.id)
+})
+
+const formattedLastSyncedAt = computed(() => {
+  if (!props.project) return ''
+  const ts =
+    store.lastSyncedAtByProject[props.project.id] ??
+    props.project.syncMeta?.lastSyncedAt ??
+    null
+  if (!ts) return ''
+  try {
+    return new Intl.DateTimeFormat(locale.value, {
+      month: 'numeric',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(new Date(ts))
+  } catch {
+    return new Date(ts).toLocaleTimeString()
+  }
 })
 
 const inviteUrl = computed(() => {
@@ -418,9 +442,9 @@ async function handleStopSync() {
 
         <!-- 已開啟即時共享狀態 -->
         <div v-else class="space-y-4">
-          <!-- 即時連線狀態卡 -->
+          <!-- 即時連線狀態卡（含雲端同步筆數與最後同步時間） -->
           <div
-            class="flex items-center justify-between gap-2 rounded-2xl border px-3.5 py-3 text-xs"
+            class="space-y-1.5 rounded-2xl border px-3.5 py-3 text-xs"
             :class="
               syncStatus === 'synced'
                 ? 'border-emerald-200 bg-emerald-50/70 text-emerald-900 dark:border-emerald-800/60 dark:bg-emerald-950/40 dark:text-emerald-200'
@@ -429,39 +453,54 @@ async function handleStopSync() {
                   : 'border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200'
             "
           >
-            <div class="flex items-center gap-2 font-bold">
-              <CheckCircle2
-                v-if="syncStatus === 'synced'"
-                class="h-4 w-4 text-emerald-600 dark:text-emerald-400"
-              />
-              <CloudOff
-                v-else-if="syncStatus === 'offline'"
-                class="h-4 w-4 text-amber-600 dark:text-amber-400"
-              />
-              <Loader2 v-else-if="syncStatus === 'connecting'" class="h-4 w-4 animate-spin" />
-              <Cloud v-else class="h-4 w-4 text-rose-500" />
-              <span>
-                {{
-                  syncStatus === 'synced'
-                    ? t('realtime.statusSynced')
-                    : syncStatus === 'offline'
-                      ? t('realtime.statusOffline', { count: outboxCount })
-                      : syncStatus === 'connecting'
-                        ? t('realtime.statusConnecting')
-                        : t('realtime.statusError')
-                }}
-              </span>
+            <div class="flex items-center justify-between gap-2">
+              <div class="flex items-center gap-2 font-bold">
+                <CheckCircle2
+                  v-if="syncStatus === 'synced'"
+                  class="h-4 w-4 text-emerald-600 dark:text-emerald-400"
+                />
+                <CloudOff
+                  v-else-if="syncStatus === 'offline'"
+                  class="h-4 w-4 text-amber-600 dark:text-amber-400"
+                />
+                <Loader2 v-else-if="syncStatus === 'connecting'" class="h-4 w-4 animate-spin" />
+                <Cloud v-else class="h-4 w-4 text-rose-500" />
+                <span>
+                  {{
+                    syncStatus === 'synced'
+                      ? t('realtime.statusSynced')
+                      : syncStatus === 'offline'
+                        ? t('realtime.statusOffline', { count: outboxCount })
+                        : syncStatus === 'connecting'
+                          ? t('realtime.statusConnecting')
+                          : t('realtime.statusError')
+                  }}
+                </span>
+              </div>
+
+              <button
+                type="button"
+                :disabled="isBusy"
+                class="inline-flex items-center gap-1 rounded-lg bg-white/80 px-2 py-1 text-[11px] font-bold text-slate-700 shadow-sm hover:bg-white dark:bg-slate-900 dark:text-slate-200"
+                @click="handleRetrySync"
+              >
+                <RefreshCw class="h-3 w-3" :class="isBusy ? 'animate-spin' : ''" />
+                <span>{{ t('realtime.resyncButton') }}</span>
+              </button>
             </div>
 
-            <button
-              type="button"
-              :disabled="isBusy"
-              class="inline-flex items-center gap-1 rounded-lg bg-white/80 px-2 py-1 text-[11px] font-bold text-slate-700 shadow-sm hover:bg-white dark:bg-slate-900 dark:text-slate-200"
-              @click="handleRetrySync"
-            >
-              <RefreshCw class="h-3 w-3" :class="isBusy ? 'animate-spin' : ''" />
-              <span>{{ t('realtime.resyncButton') }}</span>
-            </button>
+            <div class="text-[11px] font-medium opacity-80">
+              {{
+                formattedLastSyncedAt
+                  ? t('realtime.statusMetaSummary', {
+                      count: syncedTxCount,
+                      time: formattedLastSyncedAt,
+                    })
+                  : t('realtime.statusMetaCountOnly', {
+                      count: syncedTxCount,
+                    })
+              }}
+            </div>
           </div>
 
           <!-- 專屬邀請連結與分享按鈕 -->

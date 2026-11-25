@@ -150,14 +150,17 @@
     "failedToast": "Failed to share. Please try again."
   },
   "swipe": {
-    "hint": "Swipe left to edit · Deep swipe to delete",
-    "hintTapExpand": "Tap row for details · Swipe left to edit/delete",
+    "hint": "Swipe left to edit · Swipe right to delete",
+    "hintTapExpand": "Tap for details · Swipe left to edit / right to delete",
     "releaseEdit": "Release to Edit",
     "releaseDelete": "Release to Delete"
   },
   "search": {
-    "placeholder": "Search notes, categories, amount, or date...",
+    "placeholder": "Search notes, categories, members, amount, or date...",
     "allCategories": "All",
+    "allProjects": "All Projects",
+    "allMembers": "All Members",
+    "memberShareTotal": "Share subtotal {amount}",
     "addCategoryInline": "New Category",
     "newCategoryPlaceholder": "Category name...",
     "noMatches": "No entries match your search or filter.",
@@ -170,6 +173,11 @@
     "viewerTitle": "Receipt Photo",
     "prev": "Previous photo",
     "next": "Next photo",
+    "zoomIn": "Zoom in",
+    "zoomOut": "Reset zoom",
+    "download": "Download image",
+    "tapToZoomHint": "Tap image to zoom · Swipe left/right · Tap outside to close",
+    "zoomedHint": "Drag to pan · Tap image to reset",
     "uploadError": "Could not load image. Please try again."
   },
   "home": {
@@ -204,6 +212,7 @@
     "quickIntakeEmpty": "No amount detected. Please enter manually.",
     "quickIntakeNeedProject": "Create a split project first to import.",
     "editTx": "Edit",
+    "duplicateTx": "Duplicate",
     "deleteTx": "Delete",
     "saveFailed": "Could not save. Please check your inputs."
   },
@@ -287,6 +296,11 @@
     "convertedPreview": "≈ {amount}",
     "saveExpenseButton": "Save Expense",
     "saveRefundButton": "Save Refund",
+    "saveAndContinueButton": "Save & Next",
+    "savedAndContinueToast": "Saved! Ready for the next entry.",
+    "discardChangesTitle": "Discard unsaved changes?",
+    "discardChangesMessage": "Your current entry hasn't been saved yet. Discard and close?",
+    "discardButton": "Discard",
     "updateExpenseButton": "Save Changes",
     "cancelEditButton": "Cancel",
     "noProjectTransactions": "No expenses yet. Tap '+' to add the first one!",
@@ -356,7 +370,12 @@
     "paymentRecordedToast": "Payment recorded!",
     "historyTitle": "Recorded Payments",
     "noHistory": "No repayments recorded yet.",
-    "paidHistoryLine": "{from} paid {to}"
+    "paidHistoryLine": "{from} paid {to}",
+    "viewMemberDetails": "View breakdown",
+    "hideMemberDetails": "Hide breakdown",
+    "memberStatementTitle": "{name}'s Breakdown",
+    "openInEntriesButton": "Filter in Entries",
+    "memberStatementEmpty": "No entries involving this member yet."
   },
   "split": {
     "payerLabel": "Paid by",
@@ -480,6 +499,8 @@
     "statusConnecting": "Connecting to cloud...",
     "statusOffline": "Offline mode ({count} pending)",
     "statusError": "Sync interrupted — tap to retry",
+    "statusMetaSummary": "{count} entries synced · Last sync: {time}",
+    "statusMetaCountOnly": "{count} entries synced",
     "resyncButton": "Sync Now",
     "resyncedToast": "Sync check complete!",
     "inviteLinkTitle": "Group Invite Link",

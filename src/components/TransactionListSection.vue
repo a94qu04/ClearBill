@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   ChevronDown,
+  CopyPlus,
   ExternalLink,
   Pencil,
   Plus,
@@ -13,7 +14,7 @@ import {
 import { useLedgerStore, type ManagedCategory } from '@/stores/ledgerStore'
 import { formatCurrencyAmount, fromMinorUnits, toMinorUnits } from '@/core/currency'
 import { matchesDateQuery } from '@/core/ledgerHelpers'
-import type { Transaction } from '@/schemas/ledgerSchema'
+import type { ProjectMember, Transaction } from '@/schemas/ledgerSchema'
 import MemberAvatar from '@/components/MemberAvatar.vue'
 import SwipeableTxRow from '@/components/SwipeableTxRow.vue'
 
@@ -23,17 +24,22 @@ interface Props {
   title?: string
   emptyText: string
   projectBaseCurrency?: string
+  projectMembers?: ProjectMember[]
+  filterProjects?: Array<{ id: string; name: string }>
   collapsibleLimit?: number
 }
 
 const props = withDefaults(defineProps<Props>(), {
   title: undefined,
   projectBaseCurrency: undefined,
+  projectMembers: undefined,
+  filterProjects: undefined,
   collapsibleLimit: 0,
 })
 
 const emit = defineEmits<{
   (e: 'edit', tx: Transaction): void
+  (e: 'duplicate', tx: Transaction): void
   (e: 'delete', id: string): void
   (e: 'openProject', projectId: string): void
   (e: 'previewPhotos', payload: { photos: string[]; index: number }): void
@@ -45,6 +51,8 @@ const store = useLedgerStore()
 
 const searchQuery = ref('')
 const selectedCategoryFilter = ref<string>('all')
+const selectedMemberFilter = ref<string>('all')
+const selectedProjectFilter = ref<string>('all')
 const showAll = ref(false)
 const inlineNewCategoryOpen = ref(false)
 const inlineNewCategoryName = ref('')
@@ -159,10 +167,37 @@ function getTxShareBreakdown(
   return tx.splitConfig.shares.filter((s) => s.finalAmount > 0)
 }
 
+function isMemberInvolvedInTx(tx: Transaction, memberId: string): boolean {
+  if (!tx.splitConfig) return false
+  if (tx.splitConfig.payerId === memberId) return true
+  if (
+    tx.splitConfig.payers?.some(
+      (p) => p.memberId === memberId && p.amount > 0,
+    )
+  ) {
+    return true
+  }
+  return tx.splitConfig.shares.some(
+    (s) => s.memberId === memberId && s.finalAmount > 0,
+  )
+}
+
 function matchesFilter(tx: Transaction): boolean {
+  if (
+    selectedProjectFilter.value !== 'all' &&
+    tx.projectId !== selectedProjectFilter.value
+  ) {
+    return false
+  }
   if (
     selectedCategoryFilter.value !== 'all' &&
     tx.categoryKey !== selectedCategoryFilter.value
+  ) {
+    return false
+  }
+  if (
+    selectedMemberFilter.value !== 'all' &&
+    !isMemberInvolvedInTx(tx, selectedMemberFilter.value)
   ) {
     return false
   }
@@ -186,6 +221,13 @@ function matchesFilter(tx: Transaction): boolean {
         .join(' ')
         .toLowerCase()
     : ''
+  const shareNames = tx.splitConfig
+    ? tx.splitConfig.shares
+        .filter((s) => s.finalAmount > 0)
+        .map((s) => getMemberName(s.memberId, tx.projectId))
+        .join(' ')
+        .toLowerCase()
+    : ''
 
   return (
     note.includes(q) ||
@@ -195,9 +237,39 @@ function matchesFilter(tx: Transaction): boolean {
     amountStr.includes(qWithoutComma) ||
     currencyStr.includes(q) ||
     projectName.includes(q) ||
-    payerNames.includes(q)
+    payerNames.includes(q) ||
+    shareNames.includes(q)
   )
 }
+
+const hasActiveFilter = computed(
+  () =>
+    Boolean(searchQuery.value.trim()) ||
+    selectedCategoryFilter.value !== 'all' ||
+    selectedMemberFilter.value !== 'all' ||
+    selectedProjectFilter.value !== 'all',
+)
+
+const filteredMemberShareSubtotal = computed<number | null>(() => {
+  if (
+    selectedMemberFilter.value === 'all' ||
+    props.context !== 'project' ||
+    !props.projectBaseCurrency
+  ) {
+    return null
+  }
+  const memberId = selectedMemberFilter.value
+  let units = 0
+  for (const tx of filteredTransactions.value) {
+    if (tx.type !== 'expense' && tx.type !== 'refund') continue
+    const share = tx.splitConfig?.shares.find((s) => s.memberId === memberId)
+    if (!share || share.finalAmount <= 0) continue
+    const rate = tx.exchangeRateToBase > 0 ? tx.exchangeRateToBase : 1
+    const sign = tx.type === 'refund' ? -1 : 1
+    units += sign * toMinorUnits(share.finalAmount * rate, props.projectBaseCurrency)
+  }
+  return fromMinorUnits(units, props.projectBaseCurrency)
+})
 
 const filteredTransactions = computed(() =>
   props.transactions
@@ -299,11 +371,17 @@ function confirmInlineAddCategory() {
 function resetFilters() {
   searchQuery.value = ''
   selectedCategoryFilter.value = 'all'
+  selectedMemberFilter.value = 'all'
+  selectedProjectFilter.value = 'all'
   inlineNewCategoryOpen.value = false
   expandedTxId.value = null
 }
 
-defineExpose({ resetFilters })
+function setMemberFilter(memberId: string) {
+  selectedMemberFilter.value = memberId || 'all'
+}
+
+defineExpose({ resetFilters, setMemberFilter })
 </script>
 
 <template>
@@ -334,6 +412,42 @@ defineExpose({ resetFilters })
         @click="searchQuery = ''"
       >
         <X class="h-3.5 w-3.5" />
+      </button>
+    </div>
+
+    <!-- 首頁近期帳目：專案快速篩選膠囊列（2 個以上進行中專案時顯示） -->
+    <div
+      v-if="context === 'home' && filterProjects && filterProjects.length > 1"
+      class="mb-2.5 flex flex-wrap items-center gap-1.5"
+    >
+      <button
+        type="button"
+        class="rounded-full px-2.5 py-1 text-[11px] font-semibold transition"
+        :class="
+          selectedProjectFilter === 'all'
+            ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-950'
+            : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300'
+        "
+        @click="selectedProjectFilter = 'all'"
+      >
+        {{ t('search.allProjects') }}
+      </button>
+      <button
+        v-for="proj in filterProjects"
+        :key="proj.id"
+        type="button"
+        class="max-w-[140px] truncate rounded-full px-2.5 py-1 text-[11px] font-semibold transition"
+        :class="
+          selectedProjectFilter === proj.id
+            ? 'bg-emerald-600 text-white shadow-sm dark:bg-emerald-500 dark:text-slate-950'
+            : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300'
+        "
+        @click="
+          selectedProjectFilter =
+            selectedProjectFilter === proj.id ? 'all' : proj.id
+        "
+      >
+        {{ proj.name }}
       </button>
     </div>
 
@@ -410,13 +524,65 @@ defineExpose({ resetFilters })
       </button>
     </div>
 
+    <!-- 專案成員快速篩選膠囊列（點選某位成員即可一鍵列出其墊付或分攤之明細） -->
+    <div
+      v-if="context === 'project' && projectMembers && projectMembers.length > 0"
+      class="mb-3 flex flex-wrap items-center gap-1.5"
+    >
+      <button
+        type="button"
+        class="rounded-full px-2.5 py-1 text-[11px] font-semibold transition"
+        :class="
+          selectedMemberFilter === 'all'
+            ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-950'
+            : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300'
+        "
+        @click="selectedMemberFilter = 'all'"
+      >
+        {{ t('search.allMembers') }}
+      </button>
+      <button
+        v-for="m in projectMembers"
+        :key="m.id"
+        type="button"
+        class="inline-flex items-center gap-1 rounded-full py-0.5 pl-1 pr-2.5 text-[11px] font-semibold transition"
+        :class="
+          selectedMemberFilter === m.id
+            ? 'bg-emerald-600 text-white shadow-sm dark:bg-emerald-500 dark:text-slate-950'
+            : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300'
+        "
+        @click="
+          selectedMemberFilter = selectedMemberFilter === m.id ? 'all' : m.id
+        "
+      >
+        <MemberAvatar
+          :name="m.name"
+          :color="m.avatarColor"
+          :image="m.avatarImage"
+          size="xxs"
+          ring
+        />
+        <span>{{ m.name }}</span>
+      </button>
+    </div>
+
     <div
       v-if="filteredTransactions.length > 0"
-      class="mb-2 flex items-center justify-between text-[10px] text-slate-400"
+      class="mb-2 flex flex-wrap items-center justify-between gap-1 text-[10px] text-slate-400"
     >
       <span>{{ t('swipe.hintTapExpand') }}</span>
-      <span v-if="searchQuery || selectedCategoryFilter !== 'all'">
+      <span v-if="hasActiveFilter" class="font-semibold text-slate-500 dark:text-slate-400">
         {{ t('search.filteredCount', { count: filteredTransactions.length }) }}
+        <template
+          v-if="filteredMemberShareSubtotal !== null && projectBaseCurrency"
+        >
+          ·
+          {{
+            t('search.memberShareTotal', {
+              amount: fmt(filteredMemberShareSubtotal, projectBaseCurrency),
+            })
+          }}
+        </template>
       </span>
     </div>
 
@@ -424,11 +590,7 @@ defineExpose({ resetFilters })
       v-if="filteredTransactions.length === 0"
       class="py-8 text-center text-xs text-slate-400 dark:text-slate-500"
     >
-      {{
-        searchQuery || selectedCategoryFilter !== 'all'
-          ? t('search.noMatches')
-          : emptyText
-      }}
+      {{ hasActiveFilter ? t('search.noMatches') : emptyText }}
     </p>
 
     <!-- 依日期分組之明細清單（含單日小計與點擊展開分攤詳情） -->
@@ -740,7 +902,16 @@ defineExpose({ resetFilters })
                       {{ t('project.lastEditedByLabel', { name: tx.lastEditedBy }) }}
                     </span>
                     <span v-else />
-                    <div class="flex items-center gap-2">
+                    <div class="flex items-center gap-1.5">
+                      <button
+                        v-if="tx.type !== 'transfer'"
+                        type="button"
+                        class="inline-flex items-center gap-1 rounded-lg bg-white px-2.5 py-1 text-[11px] font-bold text-slate-600 shadow-sm hover:bg-sky-50 hover:text-sky-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:text-sky-400"
+                        @click="emit('duplicate', tx)"
+                      >
+                        <CopyPlus class="h-3 w-3" />
+                        <span>{{ t('home.duplicateTx') }}</span>
+                      </button>
                       <button
                         type="button"
                         class="inline-flex items-center gap-1 rounded-lg bg-white px-2.5 py-1 text-[11px] font-bold text-slate-700 shadow-sm hover:bg-emerald-50 hover:text-emerald-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:text-emerald-400"
