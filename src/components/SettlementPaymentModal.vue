@@ -252,7 +252,7 @@ async function handleSubmit() {
       @click.self="emit('close')"
     >
       <div
-        class="w-full max-w-md rounded-t-3xl border border-slate-200 bg-white p-5 shadow-2xl dark:border-slate-800 dark:bg-slate-900 sm:rounded-3xl"
+        class="safe-sheet-pb w-full max-w-md rounded-t-3xl border border-slate-200 bg-white px-5 pt-5 shadow-2xl dark:border-slate-800 dark:bg-slate-900 sm:rounded-3xl sm:pb-5"
       >
         <div class="mb-4 flex items-center justify-between">
           <h2 class="text-base font-bold text-slate-900 dark:text-white">

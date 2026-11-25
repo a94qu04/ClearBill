@@ -6,12 +6,8 @@ import {
   ArchiveRestore,
   Camera,
   FileJson,
-  FileSpreadsheet,
-  ImageDown,
   ImagePlus,
-  Loader2,
   Pencil,
-  Plus,
   Trash2,
   UserPlus,
   X,
@@ -25,17 +21,11 @@ import {
   AVATAR_PALETTE,
   PROJECT_CARD_PALETTE,
   useLedgerStore,
-  type ManagedCategory,
 } from '@/stores/ledgerStore'
-import {
-  applySettlementRatesToTransactions,
-  calculateSettleUp,
-} from '@/core/settleUpEngine'
 import { askConfirm } from '@/composables/useConfirm'
 import {
   getTodayIso,
   sanitizeExportFilename,
-  triggerBinaryFileDownload,
   triggerTextFileDownload,
 } from '@/core/ledgerHelpers'
 import type { Project, ProjectMember, SplitMode } from '@/schemas/ledgerSchema'
@@ -47,14 +37,12 @@ interface Props {
 const props = defineProps<Props>()
 
 const emit = defineEmits<{
-  (e: 'createProject'): void
   (e: 'projectDeleted'): void
   (e: 'toast', message: string): void
 }>()
 
-const { t, locale } = useI18n()
+const { t } = useI18n()
 const store = useLedgerStore()
-const isGeneratingImage = ref(false)
 
 const editProjectName = ref(props.project.name)
 const editProjectCurrency = ref(props.project.baseCurrency)
@@ -262,160 +250,6 @@ async function handleDeleteProject() {
   emit('projectDeleted')
 }
 
-function resolveCategoryLabel(cat: ManagedCategory): string {
-  if (cat.customLabel) return cat.customLabel
-  const translated = t(`categories.${cat.key}`)
-  return translated === `categories.${cat.key}` ? cat.key : translated
-}
-
-function getCategoryLabel(key: string): string {
-  const found = store.categories.find((c) => c.key === key)
-  if (found) return resolveCategoryLabel(found)
-  const translated = t(`categories.${key}`)
-  return translated === `categories.${key}` ? key : translated
-}
-
-function getCategoryColor(key: string): string {
-  return store.categories.find((c) => c.key === key)?.color ?? '#64748b'
-}
-
-async function handleExportProjectExcel() {
-  const { buildProjectExcelBytes } = await import('@/core/excelExporter')
-  const rawProjectTxs = store.visibleTransactions.filter(
-    (tx) => tx.projectId === props.project.id,
-  )
-  const { settlementCurrency, options } = store.getProjectSettlementOptions(
-    props.project,
-    rawProjectTxs,
-  )
-  const projectTxs = applySettlementRatesToTransactions(
-    rawProjectTxs,
-    settlementCurrency,
-    options.overrideRatesByCurrency,
-    options.projectBaseCurrency,
-    options.baseToSettlementRate,
-  )
-  const settleUp = calculateSettleUp(
-    projectTxs,
-    settlementCurrency,
-    props.project.members.map((m) => m.id),
-  )
-  const bytes = buildProjectExcelBytes(props.project, projectTxs, settleUp, {
-    sheets: {
-      entries: t('export.excelSheetEntries'),
-      summary: t('export.excelSheetSummary'),
-    },
-    headers: {
-      date: t('export.csvDate'),
-      time: t('export.csvTime'),
-      type: t('export.csvType'),
-      category: t('export.csvCategory'),
-      note: t('export.csvNote'),
-      originalAmount: t('export.csvOriginalAmount'),
-      currency: t('export.csvCurrency'),
-      exchangeRate: t('export.csvExchangeRate'),
-      baseAmount: t('export.csvBaseAmount'),
-      baseCurrency: t('export.csvBaseCurrency'),
-      payers: t('export.csvPayers'),
-      shares: t('export.csvShares'),
-    },
-    summaryHeaders: {
-      member: t('export.excelMember'),
-      totalExpense: t('settle.memberTotalExpense'),
-      totalPaid: t('settle.memberTotalPaid'),
-      netAmount: t('export.excelNetAmount'),
-      transferFrom: t('settle.fromLabel'),
-      transferTo: t('settle.toLabel'),
-      transferAmount: t('daily.amountLabel'),
-      projectTotal: t('settle.projectTotalSpend'),
-      transfersTitle: t('settle.suggestionsTitle'),
-    },
-    typeNames: {
-      expense: t('project.typeExpense'),
-      refund: t('project.typeRefund'),
-      transfer: t('home.settlementBadge'),
-      income: t('daily.typeIncome'),
-      card_repayment: 'card_repayment',
-    },
-    resolveCategoryLabel: getCategoryLabel,
-  })
-  const safeName = sanitizeExportFilename(props.project.name)
-  triggerBinaryFileDownload(
-    bytes,
-    `clearbill-${safeName}-${getTodayIso()}.xlsx`,
-    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  )
-  emit('toast', t('export.excelExportedToast'))
-}
-
-async function handleExportProjectLongImage() {
-  if (isGeneratingImage.value) return
-  isGeneratingImage.value = true
-  try {
-    const rawProjectTxs = store.visibleTransactions.filter(
-      (tx) => tx.projectId === props.project.id,
-    )
-    const { settlementCurrency, options } = store.getProjectSettlementOptions(
-      props.project,
-      rawProjectTxs,
-    )
-    const projectTxs = applySettlementRatesToTransactions(
-      rawProjectTxs,
-      settlementCurrency,
-      options.overrideRatesByCurrency,
-      options.projectBaseCurrency,
-      options.baseToSettlementRate,
-    )
-    const expenses = projectTxs.filter((tx) => tx.type !== 'transfer')
-    const settleUp = calculateSettleUp(
-      projectTxs,
-      settlementCurrency,
-      props.project.members.map((m) => m.id),
-    )
-    const { generateProjectReportPngBlob } = await import(
-      '@/core/reportImageGenerator'
-    )
-    const blob = await generateProjectReportPngBlob(
-      props.project,
-      settleUp,
-      expenses,
-      {
-        brandTitle: t('app.name'),
-        totalSpendLabel: t('settle.projectTotalSpend'),
-        memberCountLabel: t('project.memberCount', {
-          count: props.project.members.length,
-        }),
-        categorySectionTitle: t('stats.title'),
-        memberSectionTitle: t('settle.balancesTitle'),
-        spentLabel: t('settle.memberTotalExpense'),
-        paidLabel: t('settle.memberTotalPaid'),
-        shouldReceive: t('settle.shouldReceive'),
-        shouldPay: t('settle.shouldPay'),
-        settled: t('settle.settled'),
-        transfersSectionTitle: t('settle.suggestionsTitle'),
-        allSettledText: t('settle.allSettled'),
-        entriesSectionTitle: t('share.detailsTitle'),
-        refundBadge: t('project.refundBadge'),
-        footerTagline: t('share.footerTagline'),
-        resolveCategoryLabel: getCategoryLabel,
-        resolveCategoryColor: getCategoryColor,
-      },
-      locale.value,
-    )
-    const safeName = sanitizeExportFilename(props.project.name)
-    triggerBinaryFileDownload(
-      blob,
-      `clearbill-${safeName}-${getTodayIso()}.png`,
-      'image/png',
-    )
-    emit('toast', t('export.longImageExportedToast'))
-  } catch {
-    emit('toast', t('export.longImageFailedToast'))
-  } finally {
-    isGeneratingImage.value = false
-  }
-}
-
 function handleExportProjectJson() {
   const backup = store.exportProjectBackup(props.project.id)
   if (!backup) return
@@ -430,10 +264,10 @@ function handleExportProjectJson() {
 </script>
 
 <template>
-  <div class="space-y-4">
-    <!-- 成員管理 -->
+  <div class="space-y-4 lg:grid lg:grid-cols-12 lg:items-start lg:gap-5 lg:space-y-0">
+    <!-- 成員管理（桌機左欄） -->
     <section
-      class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900"
+      class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900 lg:col-span-5"
     >
       <h3 class="mb-3 text-xs font-bold text-slate-700 dark:text-slate-200">
         {{ t('project.membersManageTitle') }}
@@ -602,6 +436,8 @@ function handleExportProjectJson() {
       </div>
     </section>
 
+    <!-- 右欄：專案基本設定 ＋ 單一專案本地備份 -->
+    <div class="space-y-4 lg:col-span-7">
     <!-- 專案基本設定 -->
     <section
       class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900"
@@ -754,82 +590,52 @@ function handleExportProjectJson() {
         </button>
       </form>
 
-      <div class="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-3 dark:border-slate-800">
+      <div class="mt-4 flex flex-wrap items-center justify-end gap-4 border-t border-slate-100 pt-3 dark:border-slate-800">
         <button
           type="button"
-          class="inline-flex items-center gap-1 text-xs font-semibold text-emerald-600 hover:underline dark:text-emerald-400"
-          @click="emit('createProject')"
+          class="inline-flex items-center gap-1 text-xs font-semibold text-amber-600 hover:underline dark:text-amber-400"
+          @click="handleToggleArchive"
         >
-          <Plus class="h-3.5 w-3.5" />
-          <span>{{ t('project.newProject') }}</span>
+          <ArchiveRestore v-if="project.isArchived" class="h-3.5 w-3.5" />
+          <Archive v-else class="h-3.5 w-3.5" />
+          <span>{{
+            project.isArchived
+              ? t('project.unarchiveButton')
+              : t('project.archiveButton')
+          }}</span>
         </button>
-
-        <div class="flex items-center gap-3">
-          <button
-            type="button"
-            class="inline-flex items-center gap-1 text-xs font-semibold text-amber-600 hover:underline dark:text-amber-400"
-            @click="handleToggleArchive"
-          >
-            <ArchiveRestore v-if="project.isArchived" class="h-3.5 w-3.5" />
-            <Archive v-else class="h-3.5 w-3.5" />
-            <span>{{
-              project.isArchived
-                ? t('project.unarchiveButton')
-                : t('project.archiveButton')
-            }}</span>
-          </button>
-          <button
-            type="button"
-            class="inline-flex items-center gap-1 text-xs font-semibold text-rose-600 hover:underline dark:text-rose-400"
-            @click="handleDeleteProject"
-          >
-            <Trash2 class="h-3.5 w-3.5" />
-            <span>{{ t('project.deleteProject') }}</span>
-          </button>
-        </div>
+        <button
+          type="button"
+          class="inline-flex items-center gap-1 text-xs font-semibold text-rose-600 hover:underline dark:text-rose-400"
+          @click="handleDeleteProject"
+        >
+          <Trash2 class="h-3.5 w-3.5" />
+          <span>{{ t('project.deleteProject') }}</span>
+        </button>
       </div>
     </section>
 
-    <!-- 單一專案報表匯出：Excel (.xlsx) 與高解析長截圖報表 (PNG) -->
+    <!-- 單一專案本地 JSON 備份（報表 Excel 與長截圖統一收斂於「結算」分頁） -->
     <section
-      class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900"
+      class="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900"
     >
-      <h3 class="text-xs font-bold text-slate-700 dark:text-slate-200">
-        {{ t('export.sectionTitle') }}
-      </h3>
-      <p class="mt-1 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
-        {{ t('export.sectionDescExcelImage') }}
-      </p>
-      <div class="mt-3 grid grid-cols-2 gap-2">
-        <button
-          type="button"
-          class="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs font-bold text-slate-700 transition hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
-          @click="handleExportProjectExcel"
-        >
-          <FileSpreadsheet class="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
-          <span>{{ t('export.excelButton') }}</span>
-        </button>
-        <button
-          type="button"
-          :disabled="isGeneratingImage"
-          class="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs font-bold text-slate-700 transition hover:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
-          @click="handleExportProjectLongImage"
-        >
-          <Loader2 v-if="isGeneratingImage" class="h-4 w-4 animate-spin text-sky-600" />
-          <ImageDown v-else class="h-4 w-4 text-sky-600 dark:text-sky-400" />
-          <span>{{ t('export.longImageButton') }}</span>
-        </button>
+      <div class="min-w-0 flex-1">
+        <h3 class="text-xs font-bold text-slate-700 dark:text-slate-200">
+          {{ t('export.projectBackupTitle') }}
+        </h3>
+        <p class="mt-0.5 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
+          {{ t('export.projectBackupDesc') }}
+        </p>
       </div>
-      <div class="mt-2.5 text-right">
-        <button
-          type="button"
-          class="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-400 transition hover:text-sky-600 dark:text-slate-500 dark:hover:text-sky-400"
-          @click="handleExportProjectJson"
-        >
-          <FileJson class="h-3.5 w-3.5" />
-          <span>{{ t('export.projectJsonButton') }}</span>
-        </button>
-      </div>
+      <button
+        type="button"
+        class="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold text-slate-700 transition hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+        @click="handleExportProjectJson"
+      >
+        <FileJson class="h-4 w-4 text-sky-600 dark:text-sky-400" />
+        <span>{{ t('export.projectJsonButton') }}</span>
+      </button>
     </section>
+    </div>
   </div>
 </template>

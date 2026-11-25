@@ -37,6 +37,24 @@
   bottom: calc(5rem + env(safe-area-inset-bottom, 0px));
 }
 
+.safe-sheet-pb {
+  padding-bottom: calc(1.25rem + env(safe-area-inset-bottom, 0px));
+}
+
+.safe-sticky-pb {
+  padding-bottom: calc(0.75rem + env(safe-area-inset-bottom, 0px));
+}
+
+/* 橫向滑動篩選列隱藏捲軸但保留平滑觸控滑動 */
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 /* 防止 iOS Safari / PWA 聚焦字體小於 16px 的表單欄位時觸發自動放大 */
 @supports (-webkit-touch-callout: none) {
   input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='file']):not([type='color']):not(.text-lg):not(.text-xl):not(.text-2xl):not(.text-3xl),

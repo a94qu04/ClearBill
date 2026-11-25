@@ -415,14 +415,14 @@ defineExpose({ resetFilters, setMemberFilter })
       </button>
     </div>
 
-    <!-- 首頁近期帳目：專案快速篩選膠囊列（2 個以上進行中專案時顯示） -->
+    <!-- 首頁近期帳目：專案快速篩選膠囊列（單行橫向滑動，節省手機垂直高度） -->
     <div
       v-if="context === 'home' && filterProjects && filterProjects.length > 1"
-      class="mb-2.5 flex flex-wrap items-center gap-1.5"
+      class="no-scrollbar mb-2 flex flex-nowrap items-center gap-1.5 overflow-x-auto pb-0.5"
     >
       <button
         type="button"
-        class="rounded-full px-2.5 py-1 text-[11px] font-semibold transition"
+        class="shrink-0 whitespace-nowrap rounded-full px-2.5 py-1 text-[11px] font-semibold transition"
         :class="
           selectedProjectFilter === 'all'
             ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-950'
@@ -436,7 +436,7 @@ defineExpose({ resetFilters, setMemberFilter })
         v-for="proj in filterProjects"
         :key="proj.id"
         type="button"
-        class="max-w-[140px] truncate rounded-full px-2.5 py-1 text-[11px] font-semibold transition"
+        class="max-w-[140px] shrink-0 truncate whitespace-nowrap rounded-full px-2.5 py-1 text-[11px] font-semibold transition"
         :class="
           selectedProjectFilter === proj.id
             ? 'bg-emerald-600 text-white shadow-sm dark:bg-emerald-500 dark:text-slate-950'
@@ -451,11 +451,11 @@ defineExpose({ resetFilters, setMemberFilter })
       </button>
     </div>
 
-    <!-- 費用類別篩選膠囊列＋現場新增類別 -->
-    <div class="mb-3 flex flex-wrap items-center gap-1.5">
+    <!-- 費用類別篩選膠囊列＋現場新增類別（單行橫向滑動，手機不換行佔高度） -->
+    <div class="no-scrollbar mb-2.5 flex flex-nowrap items-center gap-1.5 overflow-x-auto pb-0.5">
       <button
         type="button"
-        class="rounded-full px-2.5 py-1 text-[11px] font-semibold transition"
+        class="shrink-0 whitespace-nowrap rounded-full px-2.5 py-1 text-[11px] font-semibold transition"
         :class="
           selectedCategoryFilter === 'all'
             ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-950'
@@ -469,7 +469,7 @@ defineExpose({ resetFilters, setMemberFilter })
         v-for="cat in allCategories"
         :key="cat.key"
         type="button"
-        class="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold transition"
+        class="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full px-2.5 py-1 text-[11px] font-semibold transition"
         :class="
           selectedCategoryFilter === cat.key
             ? 'bg-emerald-600 text-white dark:bg-emerald-500 dark:text-slate-950'
@@ -478,7 +478,7 @@ defineExpose({ resetFilters, setMemberFilter })
         @click="selectedCategoryFilter = cat.key"
       >
         <span
-          class="h-1.5 w-1.5 rounded-full"
+          class="h-1.5 w-1.5 shrink-0 rounded-full"
           :style="{
             backgroundColor:
               selectedCategoryFilter === cat.key ? '#ffffff' : cat.color,
@@ -488,10 +488,10 @@ defineExpose({ resetFilters, setMemberFilter })
       </button>
       <button
         type="button"
-        class="inline-flex items-center gap-0.5 rounded-full border border-dashed border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-500 hover:border-emerald-500 hover:text-emerald-600 dark:border-slate-700 dark:text-slate-400"
+        class="inline-flex shrink-0 items-center gap-0.5 whitespace-nowrap rounded-full border border-dashed border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-500 hover:border-emerald-500 hover:text-emerald-600 dark:border-slate-700 dark:text-slate-400"
         @click="inlineNewCategoryOpen = !inlineNewCategoryOpen"
       >
-        <Plus class="h-3 w-3" />
+        <Plus class="h-3 w-3 shrink-0" />
         <span>{{ t('search.addCategoryInline') }}</span>
       </button>
     </div>
@@ -524,14 +524,14 @@ defineExpose({ resetFilters, setMemberFilter })
       </button>
     </div>
 
-    <!-- 專案成員快速篩選膠囊列（點選某位成員即可一鍵列出其墊付或分攤之明細） -->
+    <!-- 專案成員快速篩選膠囊列（單行橫向滑動，點選成員即列出其墊付或分攤之明細） -->
     <div
       v-if="context === 'project' && projectMembers && projectMembers.length > 0"
-      class="mb-3 flex flex-wrap items-center gap-1.5"
+      class="no-scrollbar mb-2.5 flex flex-nowrap items-center gap-1.5 overflow-x-auto pb-0.5"
     >
       <button
         type="button"
-        class="rounded-full px-2.5 py-1 text-[11px] font-semibold transition"
+        class="shrink-0 whitespace-nowrap rounded-full px-2.5 py-1 text-[11px] font-semibold transition"
         :class="
           selectedMemberFilter === 'all'
             ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-950'
@@ -545,7 +545,7 @@ defineExpose({ resetFilters, setMemberFilter })
         v-for="m in projectMembers"
         :key="m.id"
         type="button"
-        class="inline-flex items-center gap-1 rounded-full py-0.5 pl-1 pr-2.5 text-[11px] font-semibold transition"
+        class="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full py-0.5 pl-1 pr-2.5 text-[11px] font-semibold transition"
         :class="
           selectedMemberFilter === m.id
             ? 'bg-emerald-600 text-white shadow-sm dark:bg-emerald-500 dark:text-slate-950'

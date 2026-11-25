@@ -146,7 +146,7 @@ async function handleConfirmJoin() {
       @click.self="emit('close')"
     >
       <div
-        class="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-t-3xl border border-slate-200 bg-white p-5 shadow-2xl dark:border-slate-800 dark:bg-slate-900 sm:rounded-3xl"
+        class="safe-sheet-pb max-h-[90vh] w-full max-w-md overflow-y-auto rounded-t-3xl border border-slate-200 bg-white px-5 pt-5 shadow-2xl dark:border-slate-800 dark:bg-slate-900 sm:rounded-3xl sm:pb-5"
       >
         <div class="mb-4 flex items-center justify-between gap-2">
           <div class="flex items-center gap-2">

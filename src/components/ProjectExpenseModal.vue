@@ -510,7 +510,6 @@ async function handleSubmit(continueAdding = false) {
             :currencies="currencyOptions"
             show-currency-select
             enable-expression
-            show-math-toolbar
             show-service-fee-button
             show-fx-fee-button
             size="lg"
@@ -638,25 +637,27 @@ async function handleSubmit(continueAdding = false) {
             </div>
           </div>
 
-          <div class="flex items-center gap-2">
+          <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
             <input
               v-model="date"
               type="date"
-              class="flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-800 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+              class="w-full min-w-0 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-800 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
             />
-            <input
-              v-model="time"
-              type="time"
-              class="w-32 rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs text-slate-800 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
-            />
-            <button
-              type="button"
-              class="inline-flex shrink-0 items-center gap-1 rounded-xl bg-slate-100 px-2.5 py-1.5 text-xs font-semibold text-emerald-600 dark:bg-slate-800 dark:text-emerald-400"
-              @click="time = getCurrentTimeHHmm()"
-            >
-              <Clock class="h-3.5 w-3.5" />
-              <span>{{ t('daily.useNowTime') }}</span>
-            </button>
+            <div class="flex min-w-0 items-center gap-1.5">
+              <input
+                v-model="time"
+                type="time"
+                class="min-w-0 flex-1 rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs text-slate-800 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+              />
+              <button
+                type="button"
+                class="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-xl bg-slate-100 px-2.5 py-1.5 text-xs font-semibold text-emerald-600 dark:bg-slate-800 dark:text-emerald-400"
+                @click="time = getCurrentTimeHHmm()"
+              >
+                <Clock class="h-3.5 w-3.5 shrink-0" />
+                <span>{{ t('daily.useNowTime') }}</span>
+              </button>
+            </div>
           </div>
 
           <div class="space-y-2">
@@ -722,9 +723,9 @@ async function handleSubmit(continueAdding = false) {
           </p>
         </form>
 
-        <!-- Sticky 固定底部儲存按鈕列（無須滑到最底即可隨時秒存，新增模式附「存並續記」） -->
+        <!-- Sticky 固定底部儲存按鈕列（無須滑到最底即可隨時秒存，新增模式附「存並續記」，避讓 iPhone Home Indicator） -->
         <div
-          class="shrink-0 border-t border-slate-100 bg-white/95 px-5 py-3 backdrop-blur dark:border-slate-800 dark:bg-slate-900/95"
+          class="safe-sticky-pb shrink-0 border-t border-slate-100 bg-white/95 px-5 pt-3 backdrop-blur dark:border-slate-800 dark:bg-slate-900/95 sm:pb-3"
         >
           <div class="flex items-center gap-2">
             <button

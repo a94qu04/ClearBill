@@ -542,7 +542,9 @@ async function handleExportLongImage() {
 </script>
 
 <template>
-  <div class="space-y-4">
+  <div class="space-y-4 lg:grid lg:grid-cols-12 lg:items-start lg:gap-5 lg:space-y-0">
+    <!-- 左欄：結帳幣別匯率設定 ＋ 各成員總支出與展開明細 -->
+    <div class="space-y-4 lg:col-span-7">
     <!-- 結帳幣別與匯率設定卡片（可自行選擇要結帳的幣別，並於含外幣時切換各筆原匯率／即時匯率／自訂結算匯率） -->
     <section
       class="space-y-2.5 rounded-2xl border border-amber-200/80 bg-amber-50/40 p-3.5 shadow-sm dark:border-amber-900/60 dark:bg-amber-950/20"
@@ -945,7 +947,10 @@ async function handleExportLongImage() {
         </button>
       </div>
     </section>
+    </div>
 
+    <!-- 右欄：消費結構圓餅圖 ＋ 待還款結算 ＋ 已記錄還款明細 -->
+    <div class="space-y-4 lg:col-span-5">
     <!-- 消費結構圓餅圖統計 -->
     <CategoryPieChart
       :transactions="expenses"
@@ -1099,5 +1104,6 @@ async function handleExportLongImage() {
         </li>
       </ul>
     </section>
+    </div>
   </div>
 </template>

@@ -666,7 +666,7 @@ function fmt(amount: number, currency: string): string {
         @click.self="emit('close')"
       >
         <aside
-          class="flex h-full w-full max-w-sm flex-col border-l border-slate-200 bg-white shadow-2xl dark:border-slate-800 dark:bg-slate-900"
+          class="safe-top flex h-full w-full max-w-sm flex-col border-l border-slate-200 bg-white shadow-2xl dark:border-slate-800 dark:bg-slate-900"
         >
           <!-- 標題列 -->
           <div
@@ -740,7 +740,7 @@ function fmt(amount: number, currency: string): string {
           </nav>
 
           <!-- 分頁內容區 -->
-          <div class="flex-1 overflow-y-auto p-5">
+          <div class="safe-sheet-pb flex-1 overflow-y-auto px-5 pt-5">
             <!-- 分頁 1：個人（我的成員檔案 ＋ 外觀深淺色 ＋ 介面語言） -->
             <div v-if="activeTab === 'profile'" class="space-y-6">
               <!-- 我的成員名稱與大頭貼設定 -->

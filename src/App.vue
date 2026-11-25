@@ -728,7 +728,7 @@ onBeforeUnmount(() => {
     <header
       class="safe-top sticky top-0 z-30 border-b border-slate-200/80 bg-white/90 backdrop-blur-md transition-colors dark:border-slate-800/80 dark:bg-slate-950/90"
     >
-      <div class="mx-auto flex h-13 max-w-xl items-center justify-between gap-2 px-4 py-2">
+      <div class="mx-auto flex h-14 max-w-xl items-center justify-between gap-2 px-4 py-2 md:max-w-3xl lg:max-w-5xl">
         <div class="flex min-w-0 items-center gap-2">
           <button
             v-if="activeView !== 'home'"
@@ -857,7 +857,7 @@ onBeforeUnmount(() => {
       </div>
     </Transition>
 
-    <main class="mx-auto max-w-xl px-4 pt-5">
+    <main class="mx-auto max-w-xl px-4 pt-5 md:max-w-3xl lg:max-w-5xl">
       <!-- LINE / FB / IG / WeChat 內建瀏覽器偵測提醒橫幅 -->
       <div
         v-if="inAppBrowser.isInApp && !inAppBannerDismissed"
@@ -890,10 +890,13 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
-      <!-- ==================== 視圖 1：極簡首頁 ==================== -->
-      <div v-if="activeView === 'home'" class="space-y-5">
+      <!-- ==================== 視圖 1：極簡首頁（桌機雙欄／平板寬版／手機精簡） ==================== -->
+      <div
+        v-if="activeView === 'home'"
+        class="space-y-5 lg:grid lg:grid-cols-12 lg:items-start lg:gap-5 lg:space-y-0"
+      >
         <!-- 分帳專案區（依裝置調整排序提示，提供「全部 (N)」開啟上移/下移與拖曳排序） -->
-        <section class="space-y-2.5">
+        <section class="space-y-2.5 lg:col-span-5">
           <div class="space-y-1">
             <div class="flex items-center justify-between gap-2">
               <h2 class="whitespace-nowrap text-xs font-semibold text-slate-500 dark:text-slate-400">
@@ -960,15 +963,16 @@ onBeforeUnmount(() => {
             </button>
           </div>
 
-          <div v-else class="grid grid-cols-2 gap-2.5">
+          <div v-else class="grid grid-cols-2 gap-2.5 md:grid-cols-3 lg:grid-cols-2">
             <div
-              v-for="proj in store.activeProjects.slice(0, 4)"
+              v-for="(proj, idx) in store.activeProjects.slice(0, 6)"
               :key="proj.id"
               draggable="true"
               :data-project-id="proj.id"
-              class="relative flex items-start gap-1.5 overflow-hidden rounded-2xl border px-2.5 py-3 text-left transition"
+              class="relative items-start gap-1.5 overflow-hidden rounded-2xl border px-2.5 py-3 text-left transition"
               :style="getProjectCardStyle(proj)"
               :class="[
+                idx >= 4 ? 'hidden md:flex' : 'flex',
                 hasCustomProjectCardBg(proj)
                   ? store.activeProject?.id === proj.id
                     ? 'border-emerald-400 text-white ring-2 ring-emerald-400/50'
@@ -1081,6 +1085,7 @@ onBeforeUnmount(() => {
         <!-- 首頁近期帳目（支援專案快速篩選、左滑修改／右滑刪除，完成或關閉皆留在首頁） -->
         <TransactionListSection
           ref="homeTxListRef"
+          class="lg:col-span-7"
           context="home"
           :title="t('home.recentTransactions')"
           :transactions="homeProjectTransactions"
@@ -1097,7 +1102,7 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- ==================== 視圖 2：建立旅遊 / 分帳專案 ==================== -->
-      <div v-else-if="activeView === 'project_create'">
+      <div v-else-if="activeView === 'project_create'" class="mx-auto max-w-xl">
         <section
           class="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900"
         >
@@ -1518,21 +1523,26 @@ onBeforeUnmount(() => {
         <ProjectSettingsTab
           v-else-if="projectTab === 'settings'"
           :project="store.activeProject"
-          @create-project="openCreateProjectView"
           @project-deleted="handleProjectDeleted"
           @toast="showToast($event)"
         />
 
-        <!-- 浮動「+ 記一筆」按鈕（含底部 Safe Area 避讓） -->
-        <button
+        <!-- 浮動「+ 記一筆」按鈕（與主容器右緣對齊並含底部 Safe Area 避讓） -->
+        <div
           v-if="projectTab !== 'settings'"
-          type="button"
-          class="safe-fab-bottom fixed right-6 z-40 inline-flex items-center gap-2 rounded-full bg-emerald-600 px-5 py-3.5 text-sm font-bold text-white shadow-xl transition hover:scale-105 active:scale-95 dark:bg-emerald-500 dark:text-slate-950"
-          @click="openAddProjectExpenseSheet"
+          class="safe-fab-bottom pointer-events-none fixed inset-x-0 z-40"
         >
-          <Plus class="h-5 w-5" />
-          <span>{{ t('project.fabAdd') }}</span>
-        </button>
+          <div class="mx-auto flex max-w-xl justify-end px-4 md:max-w-3xl lg:max-w-5xl">
+            <button
+              type="button"
+              class="pointer-events-auto inline-flex items-center gap-2 rounded-full bg-emerald-600 px-5 py-3.5 text-sm font-bold text-white shadow-xl transition hover:scale-105 active:scale-95 dark:bg-emerald-500 dark:text-slate-950"
+              @click="openAddProjectExpenseSheet"
+            >
+              <Plus class="h-5 w-5" />
+              <span>{{ t('project.fabAdd') }}</span>
+            </button>
+          </div>
+        </div>
       </div>
     </main>
 

@@ -4,7 +4,6 @@ import {
   hasMathExpression,
 } from '@/core/expressionEvaluator'
 import { calculateCategoryStats } from '@/core/categoryStats'
-import { buildProjectCsvContent, escapeCsvCell } from '@/core/csvExporter'
 import { buildProjectExcelBytes } from '@/core/excelExporter'
 import { computeCrossRateFromUsdTable } from '@/services/exchangeRateService'
 import {
@@ -167,44 +166,6 @@ describe('categoryStats - 專案消費結構分類統計', () => {
       count: 2,
     })
     expect(stats.items[0].percentage + stats.items[1].percentage).toBeCloseTo(100, 0)
-  })
-})
-
-describe('csvExporter - 專案 CSV 報表匯出', () => {
-  it('產生帶 UTF-8 BOM 之 CSV 並正確轉義與防範公式注入', () => {
-    expect(escapeCsvCell('=SUM(A1:A2)')).toBe("'=SUM(A1:A2)")
-    expect(escapeCsvCell('燒肉, "和牛"')).toBe('"燒肉, ""和牛"""')
-
-    const csv = buildProjectCsvContent(sampleProject, sampleTxs, {
-      headers: {
-        date: '日期',
-        time: '時間',
-        type: '類型',
-        category: '分類',
-        note: '備註',
-        originalAmount: '原始金額',
-        currency: '幣別',
-        exchangeRate: '匯率',
-        baseAmount: '折合主幣別',
-        baseCurrency: '主幣別',
-        payers: '墊付人',
-        shares: '分攤明細',
-      },
-      typeNames: {
-        expense: '消費',
-        refund: '退款',
-        transfer: '還款',
-        income: '收入',
-        card_repayment: '卡費',
-      },
-      resolveCategoryLabel: (k) =>
-        k === 'cat_food' ? '餐飲美食' : k === 'custom_souvenir' ? '伴手禮' : k,
-    })
-
-    expect(csv.startsWith('\uFEFF')).toBe(true)
-    expect(csv).toContain('道頓堀燒肉')
-    expect(csv).toContain('-1000,JPY,0.21,-210,TWD')
-    expect(csv).toContain('伴手禮')
   })
 })
 

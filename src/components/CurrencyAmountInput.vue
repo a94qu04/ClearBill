@@ -496,7 +496,7 @@ const sizeClasses = computed(() => {
         <!-- 服務費自訂 % 與確認／取消鈕 -->
         <div
           v-if="showServiceFeeButton"
-          class="flex items-center justify-between gap-1 rounded-xl border px-2 py-1.5 transition"
+          class="flex items-center justify-between gap-1 rounded-xl border px-1.5 py-1.5 transition sm:px-2"
           :class="
             serviceFeeEnabled
               ? 'border-emerald-500 bg-emerald-50 text-emerald-900 dark:border-emerald-500/80 dark:bg-emerald-950/50 dark:text-emerald-200'
@@ -525,7 +525,7 @@ const sizeClasses = computed(() => {
           </button>
 
           <div
-            class="flex shrink-0 items-center rounded-lg border border-slate-200 bg-white px-1.5 py-0.5 dark:border-slate-700 dark:bg-slate-900"
+            class="flex shrink-0 items-center rounded-lg border border-slate-200 bg-white px-1 py-0.5 dark:border-slate-700 dark:bg-slate-900 sm:px-1.5"
           >
             <input
               v-model="serviceFeePercentInput"
@@ -535,7 +535,7 @@ const sizeClasses = computed(() => {
               step="any"
               inputmode="decimal"
               :aria-label="t('project.serviceFeeShort')"
-              class="w-10 bg-transparent text-right text-[11px] font-bold tabular-nums text-slate-900 focus:outline-none dark:text-white"
+              class="w-9 bg-transparent text-right text-[11px] font-bold tabular-nums text-slate-900 focus:outline-none dark:text-white"
               @input="handleServiceFeeRateChange"
               @keyup.enter.prevent="!serviceFeeEnabled && toggleServiceFee()"
             />
@@ -546,7 +546,7 @@ const sizeClasses = computed(() => {
         <!-- 刷卡手續費自訂 % 與確認／取消鈕 -->
         <div
           v-if="showFxFeeButton"
-          class="flex items-center justify-between gap-1 rounded-xl border px-2 py-1.5 transition"
+          class="flex items-center justify-between gap-1 rounded-xl border px-1.5 py-1.5 transition sm:px-2"
           :class="
             fxFeeEnabled
               ? 'border-amber-500 bg-amber-50 text-amber-950 dark:border-amber-500/80 dark:bg-amber-950/50 dark:text-amber-200'
@@ -575,7 +575,7 @@ const sizeClasses = computed(() => {
           </button>
 
           <div
-            class="flex shrink-0 items-center rounded-lg border border-slate-200 bg-white px-1.5 py-0.5 dark:border-slate-700 dark:bg-slate-900"
+            class="flex shrink-0 items-center rounded-lg border border-slate-200 bg-white px-1 py-0.5 dark:border-slate-700 dark:bg-slate-900 sm:px-1.5"
           >
             <input
               v-model="fxFeePercentInput"
@@ -585,7 +585,7 @@ const sizeClasses = computed(() => {
               step="any"
               inputmode="decimal"
               :aria-label="t('project.fxFeeShort')"
-              class="w-10 bg-transparent text-right text-[11px] font-bold tabular-nums text-slate-900 focus:outline-none dark:text-white"
+              class="w-9 bg-transparent text-right text-[11px] font-bold tabular-nums text-slate-900 focus:outline-none dark:text-white"
               @input="handleFxFeeRateChange"
               @keyup.enter.prevent="!fxFeeEnabled && toggleFxFee()"
             />
