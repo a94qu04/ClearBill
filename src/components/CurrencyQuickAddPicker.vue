@@ -72,7 +72,7 @@ function handleEnter() {
           type="text"
           :placeholder="t('settings.searchCurrencyPlaceholder')"
           class="w-full rounded-xl border border-slate-200 bg-white py-1.5 pl-8 pr-2.5 text-xs text-slate-900 focus:border-emerald-500 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-white"
-          @keyup.enter.prevent="handleEnter"
+          @keydown.enter.prevent.stop="handleEnter"
         />
       </div>
       <button

@@ -62,20 +62,33 @@ export interface SplitCalculationResult {
  */
 function allocateUnitsByWeights(totalUnits: number, weights: number[]): number[] {
   const result = new Array<number>(weights.length).fill(0)
-  if (totalUnits <= 0) return result
-  const sum = weights.reduce((acc, w) => acc + w, 0)
-  if (sum <= 0) return result
+  if (totalUnits <= 0 || !Number.isFinite(totalUnits)) return result
+
+  // 先依最大正權重正規化，徹底防止極端大權重（如 1e308）相加溢位成 Infinity / Infinity = NaN
+  let maxWeight = 0
+  for (const w of weights) {
+    if (Number.isFinite(w) && w > maxWeight) {
+      maxWeight = w
+    }
+  }
+  if (maxWeight <= 0) return result
+
+  const normalizedWeights = weights.map((w) =>
+    Number.isFinite(w) && w > 0 ? w / maxWeight : 0,
+  )
+  const sum = normalizedWeights.reduce((acc, w) => acc + w, 0)
+  if (!Number.isFinite(sum) || sum <= 0) return result
 
   const remainders: Array<{ idx: number; frac: number }> = []
   let allocated = 0
 
-  for (let i = 0; i < weights.length; i += 1) {
-    const w = weights[i]
+  for (let i = 0; i < normalizedWeights.length; i += 1) {
+    const w = normalizedWeights[i]
     if (w <= 0) {
       remainders.push({ idx: i, frac: -1 })
       continue
     }
-    const exact = (totalUnits * w) / sum
+    const exact = totalUnits * (w / sum)
     const floored = Math.floor(exact)
     result[i] = floored
     allocated += floored
@@ -110,7 +123,12 @@ function allocateUnitsByWeights(totalUnits: number, weights: number[]): number[]
 export function calculateSplit(input: SplitCalculationInput): SplitCalculationResult {
   const { totalAmount, members } = input
 
-  if (typeof totalAmount !== 'number' || !Number.isFinite(totalAmount) || totalAmount < 0) {
+  if (
+    typeof totalAmount !== 'number' ||
+    !Number.isFinite(totalAmount) ||
+    totalAmount < 0 ||
+    totalAmount > 1e12
+  ) {
     throw new SplitCalculationError(
       'ERR_INVALID_TOTAL_AMOUNT',
       '總金額必須為大於或等於 0 的有效數字',
@@ -149,13 +167,17 @@ export function calculateSplit(input: SplitCalculationInput): SplitCalculationRe
           ? 1
           : 0,
     )
-    const totalWeight = Number(weights.reduce((acc, w) => acc + w, 0).toFixed(4))
-    if (totalUnits > 0 && totalWeight <= 0) {
+    const rawTotalWeight = weights.reduce((acc, w) => acc + w, 0)
+    if (totalUnits > 0 && rawTotalWeight <= 0) {
       throw new SplitCalculationError(
         'ERR_INVALID_WEIGHTS',
         '所有成員份數總和必須大於 0',
       )
     }
+    const totalWeight =
+      rawTotalWeight > 0 && rawTotalWeight < 0.0001
+        ? Number(rawTotalWeight.toPrecision(4))
+        : Number(rawTotalWeight.toFixed(4))
     const allocatedUnits = allocateUnitsByWeights(totalUnits, weights)
     const activeCount = weights.filter((w) => w > 0).length
     const perUnitBase =

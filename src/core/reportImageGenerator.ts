@@ -2,6 +2,7 @@ import type { Project, Transaction } from '@/schemas/ledgerSchema'
 import type { SettleUpResult } from '@/core/settleUpEngine'
 import { calculateCategoryStats } from '@/core/categoryStats'
 import { formatCurrencyAmount } from '@/core/currency'
+import { splitGraphemes } from '@/core/ledgerHelpers'
 
 export interface LongReportLabels {
   brandTitle: string
@@ -57,11 +58,11 @@ function truncateText(
   maxWidth: number,
 ): string {
   if (ctx.measureText(text).width <= maxWidth) return text
-  let trimmed = text
-  while (trimmed.length > 1 && ctx.measureText(`${trimmed}…`).width > maxWidth) {
-    trimmed = trimmed.slice(0, -1)
+  const chars = splitGraphemes(text)
+  while (chars.length > 1 && ctx.measureText(`${chars.join('')}…`).width > maxWidth) {
+    chars.pop()
   }
-  return `${trimmed}…`
+  return `${chars.join('')}…`
 }
 
 /**
@@ -553,13 +554,19 @@ export async function generateProjectReportPngBlob(
       ctx.font = `700 16px ${fontStack}`
       ctx.fillText(truncateText(ctx, title, CARD_W - 210), PAD + 24, ey + 14)
 
-      const payerText = tx.splitConfig
-        ? nameOf(tx.splitConfig.payerId)
-        : ''
+      let payerText = ''
+      if (tx.splitConfig) {
+        const multiPayers = (tx.splitConfig.payers ?? []).filter((p) => p.amount > 0)
+        payerText =
+          multiPayers.length > 1
+            ? multiPayers.map((p) => nameOf(p.memberId)).join('、')
+            : nameOf(tx.splitConfig.payerId)
+      }
+      const subtitleText = `${tx.date} · ${labels.resolveCategoryLabel(tx.categoryKey)}${payerText ? ` · ${payerText}` : ''}`
       ctx.fillStyle = '#64748b'
       ctx.font = `500 13px ${fontStack}`
       ctx.fillText(
-        `${tx.date} · ${labels.resolveCategoryLabel(tx.categoryKey)}${payerText ? ` · ${payerText}` : ''}`,
+        truncateText(ctx, subtitleText, CARD_W - 210),
         PAD + 24,
         ey + 36,
       )

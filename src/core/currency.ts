@@ -55,17 +55,36 @@ export function fromMinorUnits(units: number, currency: string): number {
 }
 
 /**
- * 將純數字或輸入字串格式化為帶千分位逗號的字串（保留輸入中的尾隨小數點或小數零）
+ * 將純數字或輸入字串格式化為帶千分位逗號的字串（保留輸入中的尾隨小數點或小數零，並安全展開極小／極大科學記號）
  */
 export function formatGroupedNumberInput(
   raw: string | number | null | undefined,
   allowDecimals = true,
+  maxDecimals = 4,
 ): string {
   if (raw === null || raw === undefined || raw === '') return ''
-  const str = String(raw).replace(/,/g, '').replace(/[^\d.]/g, '')
+  const clampedMaxDecimals = Math.max(0, Math.min(8, Math.floor(maxDecimals)))
+
+  let rawStr: string
+  if (typeof raw === 'number') {
+    if (!Number.isFinite(raw) || raw < 0) return ''
+    const numStr = String(raw)
+    if (/e/i.test(numStr)) {
+      if (Math.abs(raw) >= 1e15) return ''
+      rawStr = allowDecimals
+        ? raw.toFixed(clampedMaxDecimals).replace(/\.?0+$/, '')
+        : Math.round(raw).toFixed(0)
+    } else {
+      rawStr = numStr
+    }
+  } else {
+    rawStr = String(raw)
+  }
+
+  const str = rawStr.replace(/,/g, '').replace(/[^\d.]/g, '')
   if (!str) return ''
 
-  if (!allowDecimals) {
+  if (!allowDecimals || clampedMaxDecimals === 0) {
     const intOnly = str.split('.')[0] ?? ''
     if (!intOnly) return ''
     const normalized = intOnly.replace(/^0+(?=\d)/, '')
@@ -80,7 +99,7 @@ export function formatGroupedNumberInput(
       : str
           .slice(firstDotIdx + 1)
           .replace(/\./g, '')
-          .slice(0, 4)
+          .slice(0, clampedMaxDecimals)
 
   const normalizedInt = (intRaw || '0').replace(/^0+(?=\d)/, '')
   const groupedInt = normalizedInt.replace(/\B(?=(\d{3})+(?!\d))/g, ',')

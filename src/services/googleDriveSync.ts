@@ -356,13 +356,12 @@ function loadGoogleIdentityScript(): Promise<void> {
       `script[src="${GIS_SCRIPT_URL}"]`,
     )
     if (existing) {
-      existing.addEventListener('load', () => resolve(), { once: true })
-      existing.addEventListener(
-        'error',
-        () => reject(new GoogleDriveSyncError('ERR_GIS_LOAD')),
-        { once: true },
-      )
-      return
+      if (window.google?.accounts?.oauth2) {
+        resolve()
+        return
+      }
+      // 移除先前可能載入失敗的殘留節點，改為全新載入避免永遠卡死
+      existing.remove()
     }
 
     const script = document.createElement('script')
@@ -372,6 +371,7 @@ function loadGoogleIdentityScript(): Promise<void> {
     script.onload = () => resolve()
     script.onerror = () => {
       gisScriptLoadPromise = null
+      script.remove()
       reject(new GoogleDriveSyncError('ERR_GIS_LOAD'))
     }
     document.head.appendChild(script)
@@ -566,7 +566,7 @@ async function uploadBackupPayload(
   backup: LedgerBackup,
   existingFileId: string | null,
 ): Promise<{ fileId: string; syncedAt: number; modifiedTime?: string }> {
-  const boundary = 'clearbill_drive_sync_boundary'
+  const boundary = `clearbill_drive_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
   const metadata = {
     name: GOOGLE_DRIVE_BACKUP_FILENAME,
     mimeType: 'application/json',

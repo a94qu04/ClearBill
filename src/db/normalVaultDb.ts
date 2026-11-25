@@ -82,6 +82,21 @@ export async function removeSyncOutboxKeys(keys: string[]): Promise<void> {
   await normalVaultDb.syncOutbox.bulkDelete(keys)
 }
 
+/** 僅刪除 updatedAt <= 已推送版本之 Outbox 項目，避免推送期間產生的新修改遭誤刪漏傳 */
+export async function removeSyncOutboxIfNotNewer(
+  entries: Array<{ key: string; updatedAt: number }>,
+): Promise<void> {
+  if (entries.length === 0) return
+  await normalVaultDb.transaction('rw', normalVaultDb.syncOutbox, async () => {
+    for (const entry of entries) {
+      const existing = await normalVaultDb.syncOutbox.get(entry.key)
+      if (existing && existing.updatedAt <= entry.updatedAt) {
+        await normalVaultDb.syncOutbox.delete(entry.key)
+      }
+    }
+  })
+}
+
 export async function clearProjectSyncOutbox(projectId: string): Promise<void> {
   await normalVaultDb.syncOutbox.where('projectId').equals(projectId).delete()
 }

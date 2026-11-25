@@ -19,7 +19,7 @@ import {
   enqueueSyncOutbox,
   listSyncOutbox,
   normalVaultDb,
-  removeSyncOutboxKeys,
+  removeSyncOutboxIfNotNewer,
   saveProjectToNormalVault,
   saveTransactionToNormalVault,
 } from '@/db/normalVaultDb'
@@ -568,6 +568,7 @@ export const useLedgerStore = defineStore('ledger', () => {
   const pendingDeletionGuard = ref<PendingDeletionGuardAlert | null>(null)
   const activeRealtimeUnsubscribers = new Map<string, () => void>()
   const flushingProjectIds = new Set<string>()
+  const needsReflushProjectIds = new Set<string>()
 
   // Google 雲端跨裝置自動同步狀態
   const googleDriveAccount = ref<GoogleDriveAccountInfo | null>(
@@ -583,6 +584,8 @@ export const useLedgerStore = defineStore('ledger', () => {
   )
   let googleAutoSyncTimer: ReturnType<typeof setTimeout> | null = null
   let googleSyncInFlight: Promise<GoogleDriveSyncResult | null> | null = null
+  let googlePullInFlight: Promise<{ stats: LedgerMergeStats; syncedAt: number }> | null = null
+  let googleMutationSeq = 0
 
   function resolveInitialGoogleDriveStatus(): GoogleDriveSyncStatus {
     if (isGoogleDriveConnected()) {
@@ -1602,6 +1605,7 @@ export const useLedgerStore = defineStore('ledger', () => {
   }
 
   function markGoogleDriveDirty(): void {
+    googleMutationSeq += 1
     googleDriveDirty.value = true
     setGoogleDriveDirtyChanges(true)
     if (!googleDriveAutoSync.value) return
@@ -1660,6 +1664,14 @@ export const useLedgerStore = defineStore('ledger', () => {
     }
 
     const run = async (): Promise<GoogleDriveSyncResult | null> => {
+      if (googlePullInFlight) {
+        try {
+          await googlePullInFlight
+        } catch {
+          // 忽略既有拉取失敗，繼續本次同步
+        }
+      }
+      const snapshotSeq = googleMutationSeq
       googleDriveStatus.value = 'syncing'
       googleDriveLastErrorCode.value = null
       googleDriveLastErrorDetail.value = null
@@ -1677,11 +1689,20 @@ export const useLedgerStore = defineStore('ledger', () => {
         if (res.account) {
           googleDriveAccount.value = res.account
         }
-        googleDriveDirty.value = false
-        setGoogleDriveDirtyChanges(false)
         googleDriveLastErrorCode.value = null
         googleDriveLastErrorDetail.value = null
-        googleDriveStatus.value = 'synced'
+
+        // 若上傳期間有新增本地修改，保留 dirty 旗標並排程補傳，絕不漏同步
+        if (googleMutationSeq === snapshotSeq) {
+          googleDriveDirty.value = false
+          setGoogleDriveDirtyChanges(false)
+          googleDriveStatus.value = 'synced'
+        } else {
+          googleDriveDirty.value = true
+          setGoogleDriveDirtyChanges(true)
+          googleDriveStatus.value = 'pending'
+          scheduleGoogleDriveAutoSync(1200)
+        }
 
         // 首次透過互動式按鈕連結成功時，預設開啟跨裝置自動同步
         if (!silentOnly && options?.enableAutoSyncOnSuccess !== false) {
@@ -1725,36 +1746,52 @@ export const useLedgerStore = defineStore('ledger', () => {
     stats: LedgerMergeStats
     syncedAt: number
   }> {
-    googleDriveStatus.value = 'syncing'
-    googleDriveLastErrorCode.value = null
-    googleDriveLastErrorDetail.value = null
-    try {
-      const downloaded = await downloadBackupFromGoogleDrive(clientId, false)
-      if (!downloaded) {
-        throw new GoogleDriveSyncError('ERR_DRIVE_NOT_FOUND')
-      }
-      const stats = await importAndMergeLedgerBackup(downloaded.rawJson)
-      googleDriveLastSyncAt.value = downloaded.syncedAt
-      if (downloaded.account) {
-        googleDriveAccount.value = downloaded.account
-      }
-      googleDriveStatus.value = googleDriveDirty.value ? 'pending' : 'synced'
-      return { stats, syncedAt: downloaded.syncedAt }
-    } catch (err) {
-      if (err instanceof GoogleDriveSyncError) {
-        googleDriveLastErrorCode.value = err.code
-        googleDriveLastErrorDetail.value = err.message
-        if (err.code === 'ERR_OAUTH_SILENT_REQUIRED') {
-          googleDriveStatus.value = 'needs_auth'
-          throw err
-        }
-      } else {
-        googleDriveLastErrorDetail.value =
-          err instanceof Error ? err.message : String(err)
-      }
-      googleDriveStatus.value = 'error'
-      throw err
+    if (googlePullInFlight) {
+      return googlePullInFlight
     }
+    const runPull = async (): Promise<{ stats: LedgerMergeStats; syncedAt: number }> => {
+      if (googleSyncInFlight) {
+        try {
+          await googleSyncInFlight
+        } catch {
+          // 忽略既有背景同步失敗，繼續本次拉取
+        }
+      }
+      googleDriveStatus.value = 'syncing'
+      googleDriveLastErrorCode.value = null
+      googleDriveLastErrorDetail.value = null
+      try {
+        const downloaded = await downloadBackupFromGoogleDrive(clientId, false)
+        if (!downloaded) {
+          throw new GoogleDriveSyncError('ERR_DRIVE_NOT_FOUND')
+        }
+        const stats = await importAndMergeLedgerBackup(downloaded.rawJson)
+        googleDriveLastSyncAt.value = downloaded.syncedAt
+        if (downloaded.account) {
+          googleDriveAccount.value = downloaded.account
+        }
+        googleDriveStatus.value = googleDriveDirty.value ? 'pending' : 'synced'
+        return { stats, syncedAt: downloaded.syncedAt }
+      } catch (err) {
+        if (err instanceof GoogleDriveSyncError) {
+          googleDriveLastErrorCode.value = err.code
+          googleDriveLastErrorDetail.value = err.message
+          if (err.code === 'ERR_OAUTH_SILENT_REQUIRED') {
+            googleDriveStatus.value = 'needs_auth'
+            throw err
+          }
+        } else {
+          googleDriveLastErrorDetail.value =
+            err instanceof Error ? err.message : String(err)
+        }
+        googleDriveStatus.value = 'error'
+        throw err
+      } finally {
+        googlePullInFlight = null
+      }
+    }
+    googlePullInFlight = runPull()
+    return googlePullInFlight
   }
 
   function disconnectGoogleDriveAccount(): void {
@@ -1829,7 +1866,10 @@ export const useLedgerStore = defineStore('ledger', () => {
       }
       return
     }
-    if (flushingProjectIds.has(projectId)) return
+    if (flushingProjectIds.has(projectId)) {
+      needsReflushProjectIds.add(projectId)
+      return
+    }
 
     flushingProjectIds.add(projectId)
     try {
@@ -1837,33 +1877,48 @@ export const useLedgerStore = defineStore('ledger', () => {
       if (pendingItems.length === 0) return
 
       const syncImages = proj.syncMeta.syncReceiptImages !== false
-      const succeededKeys: string[] = []
+      const succeededEntries: Array<{ key: string; updatedAt: number }> = []
 
       for (const item of pendingItems) {
         if (item.entityType === 'project') {
           const latestProj = projects.value.find((p) => p.id === projectId)
           if (latestProj) {
             await pushProjectUpdateToFirestore(shareId, latestProj)
+            succeededEntries.push({
+              key: item.key,
+              updatedAt: Math.max(item.updatedAt, latestProj.updatedAt),
+            })
+          } else {
+            succeededEntries.push({ key: item.key, updatedAt: item.updatedAt })
           }
-          succeededKeys.push(item.key)
         } else {
           const latestTx = transactions.value.find((t) => t.id === item.entityId)
           if (latestTx) {
             await pushTransactionToFirestore(shareId, latestTx, syncImages)
+            succeededEntries.push({
+              key: item.key,
+              updatedAt: Math.max(item.updatedAt, latestTx.updatedAt),
+            })
+          } else {
+            succeededEntries.push({ key: item.key, updatedAt: item.updatedAt })
           }
-          succeededKeys.push(item.key)
         }
       }
 
-      await removeSyncOutboxKeys(succeededKeys)
+      await removeSyncOutboxIfNotNewer(succeededEntries)
       await refreshOutboxCounts()
-      syncStatusByProject.value = {
-        ...syncStatusByProject.value,
-        [projectId]: 'synced',
-      }
-      lastSyncedAtByProject.value = {
-        ...lastSyncedAtByProject.value,
-        [projectId]: Date.now(),
+      const stillPending = (outboxCountByProject.value[projectId] ?? 0) > 0
+      if (!stillPending) {
+        syncStatusByProject.value = {
+          ...syncStatusByProject.value,
+          [projectId]: 'synced',
+        }
+        lastSyncedAtByProject.value = {
+          ...lastSyncedAtByProject.value,
+          [projectId]: Date.now(),
+        }
+      } else {
+        needsReflushProjectIds.add(projectId)
       }
     } catch {
       syncStatusByProject.value = {
@@ -1875,6 +1930,9 @@ export const useLedgerStore = defineStore('ledger', () => {
       }
     } finally {
       flushingProjectIds.delete(projectId)
+      if (needsReflushProjectIds.delete(projectId)) {
+        void flushProjectOutbox(projectId)
+      }
     }
   }
 
@@ -1949,7 +2007,16 @@ export const useLedgerStore = defineStore('ledger', () => {
 
     const plainToPersist = toPlainClone(toPersist)
     await normalVaultDb.transactions.bulkPut(plainToPersist)
-    transactions.value = Array.from(localMap.values())
+
+    // 寫入完成後改以當下最新記憶體陣列增量合併，避免蓋掉 await 期間本地剛新增的交易
+    const currentMap = new Map(transactions.value.map((t) => [t.id, t]))
+    for (const savedTx of plainToPersist) {
+      const current = currentMap.get(savedTx.id)
+      if (!current || savedTx.updatedAt >= current.updatedAt) {
+        currentMap.set(savedTx.id, savedTx)
+      }
+    }
+    transactions.value = Array.from(currentMap.values())
   }
 
   async function handleRemoteTransactionsBatch(
@@ -2633,8 +2700,9 @@ export const useLedgerStore = defineStore('ledger', () => {
     projectId: string,
     memberId: string,
   ): boolean {
+    // 連同回收桶中尚未永久刪除的交易一併檢查，避免刪除成員後復原交易出現裸露孤兒 ID
     return transactions.value.some((tx) => {
-      if (tx.isDeleted || tx.projectId !== projectId || !tx.splitConfig) {
+      if (tx.projectId !== projectId || !tx.splitConfig) {
         return false
       }
       if (tx.splitConfig.payerId === memberId) return true
@@ -2654,7 +2722,11 @@ export const useLedgerStore = defineStore('ledger', () => {
     const existing = projects.value.find((p) => p.id === projectId && !p.isDeleted)
     if (!existing) return { ok: false }
 
-    if (existing.members.length <= 1) {
+    const targetMember = existing.members.find((m) => m.id === memberId)
+    if (!targetMember) return { ok: false }
+
+    const humanMemberCount = existing.members.filter((m) => !m.isPool).length
+    if (existing.members.length <= 1 || (!targetMember.isPool && humanMemberCount <= 1)) {
       return { ok: false, reason: 'last_member' }
     }
 
@@ -2680,6 +2752,15 @@ export const useLedgerStore = defineStore('ledger', () => {
 
     const now = Date.now()
     const baseExisting = toPlainClone(existing)
+    const nextSyncMeta = baseExisting.syncMeta
+      ? {
+          ...baseExisting.syncMeta,
+          myMemberId:
+            baseExisting.syncMeta.myMemberId === memberId
+              ? undefined
+              : baseExisting.syncMeta.myMemberId,
+        }
+      : undefined
     const updated: Project = {
       ...baseExisting,
       members: remainingMembers,
@@ -2688,6 +2769,7 @@ export const useLedgerStore = defineStore('ledger', () => {
         cleanedSplitGroups && cleanedSplitGroups.length > 0
           ? cleanedSplitGroups
           : undefined,
+      syncMeta: nextSyncMeta,
       updatedAt: now,
     }
 
@@ -3222,6 +3304,7 @@ export const useLedgerStore = defineStore('ledger', () => {
 
     // 統一收斂為單筆多人繳交之公費帳目，避免一次收公費產生大量零散紀錄
     const perMemberUnits = toMinorUnits(params.amountPerMember, payCurrency)
+    if (perMemberUnits <= 0) return 0
     const normalizedPerMember = fromMinorUnits(perMemberUnits, payCurrency)
     const totalAmount = fromMinorUnits(
       perMemberUnits * validContributors.length,
@@ -3416,12 +3499,14 @@ export const useLedgerStore = defineStore('ledger', () => {
 
     const now = Date.now()
 
-    // 若該筆消費原本屬於某個專案且該專案目前處於軟刪除狀態，一併復原專案；若交易指向已刪除的公費袋 ID，亦自動補回該公費袋成員避免出現孤兒 ID
+    // 若該筆消費原本屬於某個專案且該專案目前處於軟刪除狀態，一併復原專案；若交易指向已刪除的公費袋 ID，優先重映射到既有公費袋避免出現雙公費袋
     let targetProjectId = target.projectId
+    let remappedSplitConfig = target.splitConfig
     if (targetProjectId) {
       const parentProject = projects.value.find((p) => p.id === targetProjectId)
       if (parentProject) {
         const existingMemberIds = new Set(parentProject.members.map((m) => m.id))
+        const existingPool = parentProject.members.find((m) => m.isPool)
         const missingPoolIds = new Set<string>()
         if (target.splitConfig) {
           const refIds = [
@@ -3440,12 +3525,30 @@ export const useLedgerStore = defineStore('ledger', () => {
           }
         }
 
+        if (existingPool && missingPoolIds.size > 0 && target.splitConfig) {
+          const mapPoolId = (poolRefId: string) =>
+            missingPoolIds.has(poolRefId) ? existingPool.id : poolRefId
+          remappedSplitConfig = {
+            ...target.splitConfig,
+            payerId: mapPoolId(target.splitConfig.payerId),
+            payers: target.splitConfig.payers?.map((p) => ({
+              ...p,
+              memberId: mapPoolId(p.memberId),
+            })),
+            shares: target.splitConfig.shares.map((s) => ({
+              ...s,
+              memberId: mapPoolId(s.memberId),
+            })),
+          }
+          missingPoolIds.clear()
+        }
+
         if (parentProject.isDeleted || missingPoolIds.size > 0) {
           const plainParent = toPlainClone(parentProject)
           const extraPoolMembers: ProjectMember[] = Array.from(missingPoolIds).map(
             (poolId) => ({
               id: poolId,
-              name: '公費袋',
+              name: 'Pool',
               avatarColor: '#0f766e',
               isPool: true,
             }),
@@ -3453,6 +3556,7 @@ export const useLedgerStore = defineStore('ledger', () => {
           const restoredProject = await saveProjectToNormalVault({
             ...plainParent,
             isDeleted: false,
+            isArchived: false,
             isActive: true,
             members: [
               ...plainParent.members.map((m) => ({ ...m })),
@@ -3480,7 +3584,8 @@ export const useLedgerStore = defineStore('ledger', () => {
     }
 
     const restoredPayload: Transaction = {
-      ...target,
+      ...toPlainClone(target),
+      splitConfig: remappedSplitConfig,
       projectId: targetProjectId,
       isDeleted: false,
       updatedAt: now,
@@ -3669,12 +3774,14 @@ export const useLedgerStore = defineStore('ledger', () => {
   function exportProjectBackup(projectId: string): LedgerBackup | null {
     const target = projects.value.find((p) => p.id === projectId && !p.isDeleted)
     if (!target) return null
-    const clonedProject = cloneProjectsForBackup([target])[0]
+    const rawClonedProject = cloneProjectsForBackup([target])[0]
+    // 匯出可分享之單一專案備份時剝離裝置私有同步金鑰（syncMeta / accessKey）與本機封存旗標，避免外洩權限
+    const { syncMeta: _omitSync, isArchived: _omitArch, ...safeProject } = rawClonedProject
     const clonedTxs = cloneTransactionsForBackup(
       transactions.value.filter((tx) => tx.projectId === projectId),
     )
     return createSingleProjectBackupPayload(
-      clonedProject,
+      safeProject,
       clonedTxs,
       toPlainClone(categories.value),
     )
@@ -3705,8 +3812,24 @@ export const useLedgerStore = defineStore('ledger', () => {
       await normalVaultDb.transactions.bulkPut(plainTransactions)
     }
 
-    projects.value = plainProjects
-    transactions.value = plainTransactions
+    // 改以當下最新記憶體陣列增量合併，避免覆蓋 await bulkPut 期間剛產生的本地操作
+    const currentProjMap = new Map(projects.value.map((p) => [p.id, p]))
+    for (const p of plainProjects) {
+      const cur = currentProjMap.get(p.id)
+      if (!cur || p.updatedAt >= cur.updatedAt) {
+        currentProjMap.set(p.id, p)
+      }
+    }
+    projects.value = Array.from(currentProjMap.values())
+
+    const currentTxMap = new Map(transactions.value.map((t) => [t.id, t]))
+    for (const t of plainTransactions) {
+      const cur = currentTxMap.get(t.id)
+      if (!cur || t.updatedAt >= cur.updatedAt) {
+        currentTxMap.set(t.id, t)
+      }
+    }
+    transactions.value = Array.from(currentTxMap.values())
 
     let prefsChanged = false
     if (merged.categories.length > 0) {

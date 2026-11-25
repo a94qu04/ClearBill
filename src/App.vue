@@ -1,5 +1,13 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import {
+  computed,
+  defineAsyncComponent,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  watch,
+} from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   Archive,
@@ -374,7 +382,12 @@ function removeMemberChip(index: number) {
   )
 }
 
+const isCreatingDemo = ref(false)
+const isCreatingProject = ref(false)
+
 async function handleCreateDemoProject() {
+  if (isCreatingDemo.value) return
+  isCreatingDemo.value = true
   try {
     await store.createDemoProject({
       projectName: t('demo.projectName'),
@@ -390,6 +403,8 @@ async function handleCreateDemoProject() {
     showToast(t('demo.createdToast'))
   } catch {
     showToast(t('home.saveFailed'))
+  } finally {
+    isCreatingDemo.value = false
   }
 }
 
@@ -445,20 +460,24 @@ function setTheme(dark: boolean) {
   }
 }
 
+let undoClearTimer: ReturnType<typeof setTimeout> | null = null
+
 function showToast(message: string, undoTxId: string | null = null) {
   toastMessage.value = message
   if (undoTxId) {
     if (!undoDeletedTxIds.value.includes(undoTxId)) {
       undoDeletedTxIds.value = [...undoDeletedTxIds.value, undoTxId]
     }
-  } else {
-    undoDeletedTxIds.value = []
+    if (undoClearTimer) clearTimeout(undoClearTimer)
+    undoClearTimer = setTimeout(() => {
+      undoDeletedTxIds.value = []
+      undoClearTimer = null
+    }, 6000)
   }
   if (toastTimer) clearTimeout(toastTimer)
   toastTimer = setTimeout(
     () => {
       toastMessage.value = ''
-      undoDeletedTxIds.value = []
     },
     undoDeletedTxIds.value.length > 0 ? 6000 : 2800,
   )
@@ -568,6 +587,7 @@ function openCreateProjectView() {
 }
 
 async function handleCreateProject() {
+  if (isCreatingProject.value) return
   projectFormError.value = ''
   if (newProjectMemberInput.value.trim()) {
     commitNewMemberChips()
@@ -598,6 +618,7 @@ async function handleCreateProject() {
     seenNames.add(key)
   }
 
+  isCreatingProject.value = true
   try {
     await store.createProject({
       name: trimmedName,
@@ -611,14 +632,27 @@ async function handleCreateProject() {
     activeView.value = 'project_workspace'
   } catch {
     projectFormError.value = t('home.saveFailed')
+  } finally {
+    isCreatingProject.value = false
   }
 }
 
+/** 刪除專案後一律返回首頁並重設分頁，避免原地切到下一個專案的設定頁造成連環誤刪 */
 function handleProjectDeleted() {
-  if (!store.activeProject) {
-    activeView.value = 'home'
-  }
+  projectTab.value = 'expenses'
+  activeView.value = 'home'
 }
+
+// 遠端同步或備份合併導致目前專案不存在時，自動退回首頁防止空白主畫面
+watch(
+  () => store.activeProject,
+  (proj) => {
+    if (!proj && activeView.value === 'project_workspace') {
+      projectTab.value = 'expenses'
+      activeView.value = 'home'
+    }
+  },
+)
 
 function onProjectDragStart(projectId: string, event: DragEvent) {
   draggingProjectId.value = projectId
@@ -834,11 +868,19 @@ function handleHashQuickAdd() {
 
   if (!hash.startsWith('#/quick-add')) return
 
-  const parsed = parseQuickIntake(window.location.href, {
-    activeProject: store.activeProject,
-    defaultCurrency: store.defaultCurrency,
-  })
+  const fullUrl = window.location.href
   window.history.replaceState(null, '', window.location.pathname)
+
+  let parsed: ParsedQuickIntakeResult
+  try {
+    parsed = parseQuickIntake(fullUrl, {
+      activeProject: store.activeProject,
+      defaultCurrency: store.defaultCurrency,
+    })
+  } catch {
+    showToast(t('home.saveFailed'))
+    return
+  }
 
   if (parsed.projectId && store.activeProject) {
     editingExpenseTx.value = null
@@ -874,6 +916,30 @@ function handleVisibilityChange() {
   }
 }
 
+let isSyncingFromPopstate = false
+
+watch(activeView, (nextView, prevView) => {
+  if (typeof window === 'undefined' || isSyncingFromPopstate) return
+  // 從首頁進入專案工作區或建立專案頁時推入一筆瀏覽器歷史紀錄，讓手機系統返回鍵可自然退回首頁而非直接跳離 App
+  if (prevView === 'home' && nextView !== 'home') {
+    try {
+      window.history.pushState({ clearbillView: nextView }, '')
+    } catch {
+      // 忽略受限環境
+    }
+  }
+})
+
+function handleBrowserPopState() {
+  if (activeView.value === 'home') return
+  isSyncingFromPopstate = true
+  activeView.value = 'home'
+  projectTab.value = 'expenses'
+  void nextTick(() => {
+    isSyncingFromPopstate = false
+  })
+}
+
 onMounted(async () => {
   initTheme()
   detectTouchDevice()
@@ -889,12 +955,18 @@ onMounted(async () => {
   void store.tryBackgroundGoogleDriveSync(false)
   handleHashQuickAdd()
   window.addEventListener('hashchange', handleHashQuickAdd)
+  window.addEventListener('popstate', handleBrowserPopState)
   window.addEventListener('online', handleNetworkOnline)
   document.addEventListener('visibilitychange', handleVisibilityChange)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('hashchange', handleHashQuickAdd)
+  window.removeEventListener('popstate', handleBrowserPopState)
+  if (undoClearTimer) {
+    clearTimeout(undoClearTimer)
+    undoClearTimer = null
+  }
   window.removeEventListener('online', handleNetworkOnline)
   document.removeEventListener('visibilitychange', handleVisibilityChange)
   store.stopAllSharedProjectListeners()
@@ -1032,37 +1104,39 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
-    <!-- 輕量提示 Toast（含即時復原鈕） -->
-    <Transition
-      enter-active-class="transition duration-200 ease-out"
-      enter-from-class="opacity-0 translate-y-2"
-      enter-to-class="opacity-100 translate-y-0"
-      leave-active-class="transition duration-150 ease-in"
-      leave-from-class="opacity-100 translate-y-0"
-      leave-to-class="opacity-0 translate-y-2"
-    >
-      <div
-        v-if="toastMessage"
-        role="status"
-        class="safe-toast-bottom fixed left-1/2 z-50 flex w-max max-w-[calc(100vw-2rem)] -translate-x-1/2 items-center gap-2 rounded-2xl bg-slate-900 px-3.5 py-2 text-xs font-semibold text-white shadow-xl dark:bg-slate-100 dark:text-slate-950 sm:rounded-full sm:px-4"
+    <!-- 輕量提示 Toast（透過 Teleport 掛載至 body 最上層 z-[80]，絕不被彈窗遮罩蓋住） -->
+    <Teleport to="body">
+      <Transition
+        enter-active-class="transition duration-200 ease-out"
+        enter-from-class="opacity-0 translate-y-2"
+        enter-to-class="opacity-100 translate-y-0"
+        leave-active-class="transition duration-150 ease-in"
+        leave-from-class="opacity-100 translate-y-0"
+        leave-to-class="opacity-0 translate-y-2"
       >
-        <Check class="h-3.5 w-3.5 shrink-0 text-emerald-400 dark:text-emerald-600" />
-        <span class="break-words leading-snug">{{ toastMessage }}</span>
-        <button
-          v-if="undoDeletedTxIds.length > 0"
-          type="button"
-          class="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-500 px-2.5 py-0.5 text-[11px] font-bold text-slate-950 transition hover:bg-emerald-400"
-          @click="handleUndoDelete"
+        <div
+          v-if="toastMessage"
+          role="status"
+          class="safe-toast-bottom fixed left-1/2 z-[80] flex w-max max-w-[calc(100vw-2rem)] -translate-x-1/2 items-center gap-2 rounded-2xl bg-slate-900 px-3.5 py-2 text-xs font-semibold text-white shadow-xl dark:bg-slate-100 dark:text-slate-950 sm:rounded-full sm:px-4"
         >
-          <Undo2 class="h-3 w-3" />
-          <span>{{
-            undoDeletedTxIds.length > 1
-              ? `${t('trash.restore')} (${undoDeletedTxIds.length})`
-              : t('trash.restore')
-          }}</span>
-        </button>
-      </div>
-    </Transition>
+          <Check class="h-3.5 w-3.5 shrink-0 text-emerald-400 dark:text-emerald-600" />
+          <span class="break-words leading-snug">{{ toastMessage }}</span>
+          <button
+            v-if="undoDeletedTxIds.length > 0"
+            type="button"
+            class="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-500 px-2.5 py-0.5 text-[11px] font-bold text-slate-950 transition hover:bg-emerald-400"
+            @click="handleUndoDelete"
+          >
+            <Undo2 class="h-3 w-3" />
+            <span>{{
+              undoDeletedTxIds.length > 1
+                ? `${t('trash.restore')} (${undoDeletedTxIds.length})`
+                : t('trash.restore')
+            }}</span>
+          </button>
+        </div>
+      </Transition>
+    </Teleport>
 
     <main class="mx-auto max-w-xl px-4 pt-5 md:max-w-3xl lg:max-w-5xl">
       <!-- LINE / FB / IG / WeChat 內建瀏覽器偵測提醒橫幅 -->
@@ -1162,10 +1236,12 @@ onBeforeUnmount(() => {
 
             <button
               type="button"
-              class="flex w-full items-center justify-center gap-1.5 rounded-2xl bg-emerald-500/12 px-4 py-3 text-xs font-bold text-emerald-700 transition hover:bg-emerald-500/20 dark:bg-emerald-500/15 dark:text-emerald-300"
+              :disabled="isCreatingDemo"
+              class="flex w-full items-center justify-center gap-1.5 rounded-2xl bg-emerald-500/12 px-4 py-3 text-xs font-bold text-emerald-700 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-emerald-500/15 dark:text-emerald-300"
               @click="handleCreateDemoProject"
             >
-              <Sparkles class="h-4 w-4" />
+              <Loader2 v-if="isCreatingDemo" class="h-4 w-4 animate-spin" />
+              <Sparkles v-else class="h-4 w-4" />
               <span>{{ t('demo.tryButton') }}</span>
             </button>
           </div>
@@ -1363,6 +1439,7 @@ onBeforeUnmount(() => {
               <input
                 v-model="projectName"
                 type="text"
+                maxlength="100"
                 autofocus
                 :placeholder="t('project.namePlaceholder')"
                 class="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-sm font-medium text-slate-900 focus:border-emerald-500 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white"
@@ -1486,6 +1563,7 @@ onBeforeUnmount(() => {
                   <input
                     v-model="newProjectMemberInput"
                     type="text"
+                    maxlength="50"
                     :placeholder="t('project.memberChipPlaceholder')"
                     class="min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-900 focus:border-emerald-500 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-white"
                     @keydown="handleMemberInputKeydown"
@@ -1587,9 +1665,11 @@ onBeforeUnmount(() => {
 
             <button
               type="submit"
-              class="w-full rounded-2xl bg-emerald-600 py-3 text-sm font-bold text-white shadow-sm transition hover:bg-emerald-700 dark:bg-emerald-500 dark:text-slate-950"
+              :disabled="isCreatingProject"
+              class="inline-flex w-full items-center justify-center gap-1.5 rounded-2xl bg-emerald-600 py-3 text-sm font-bold text-white shadow-sm transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-emerald-500 dark:text-slate-950"
             >
-              {{ t('project.createButton') }}
+              <Loader2 v-if="isCreatingProject" class="h-4 w-4 animate-spin" />
+              <span>{{ t('project.createButton') }}</span>
             </button>
           </form>
         </section>
@@ -1827,6 +1907,7 @@ onBeforeUnmount(() => {
         <!-- 分頁 A：專案明細（含消費、退款與統一收斂之繳公費帳目） -->
         <TransactionListSection
           v-if="projectTab === 'expenses'"
+          :key="store.activeProject.id"
           ref="projectTxListRef"
           context="project"
           :transactions="store.activeProjectEntriesWithPool"
@@ -1844,6 +1925,7 @@ onBeforeUnmount(() => {
         <!-- 分頁 B：結算、圓餅圖統計、結算匯率切換與一鍵分享 -->
         <ProjectSettleTab
           v-else-if="projectTab === 'settle' && store.activeProjectSettleUp"
+          :key="store.activeProject.id"
           :project="store.activeProject"
           :settle-up="store.activeProjectSettleUp"
           :base-settle-up="store.activeProjectBaseSettleUp"

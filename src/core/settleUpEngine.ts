@@ -233,6 +233,47 @@ export function calculateSettleUp(
     map.set(memberId, (map.get(memberId) ?? 0) + delta)
   }
 
+  /** 最大餘數法非負整數分配：確保所有項目皆 >= 0 且總和 100% 等於 totalUnits */
+  const allocateNonNegativeUnits = (
+    totalUnits: number,
+    weights: number[],
+  ): number[] => {
+    const out = new Array<number>(weights.length).fill(0)
+    if (totalUnits <= 0 || !Number.isFinite(totalUnits)) return out
+    let maxW = 0
+    for (const w of weights) {
+      if (Number.isFinite(w) && w > maxW) maxW = w
+    }
+    if (maxW <= 0) return out
+    const norm = weights.map((w) => (Number.isFinite(w) && w > 0 ? w / maxW : 0))
+    const sum = norm.reduce((acc, w) => acc + w, 0)
+    if (!Number.isFinite(sum) || sum <= 0) return out
+    const rems: Array<{ idx: number; frac: number }> = []
+    let allocated = 0
+    for (let i = 0; i < norm.length; i += 1) {
+      if (norm[i] <= 0) {
+        rems.push({ idx: i, frac: -1 })
+        continue
+      }
+      const exact = totalUnits * (norm[i] / sum)
+      const floored = Math.floor(exact)
+      out[i] = floored
+      allocated += floored
+      rems.push({ idx: i, frac: exact - floored })
+    }
+    let leftover = totalUnits - allocated
+    if (leftover > 0) {
+      rems.sort((a, b) => (b.frac !== a.frac ? b.frac - a.frac : a.idx - b.idx))
+      for (const r of rems) {
+        if (leftover <= 0) break
+        if (r.frac < 0) continue
+        out[r.idx] += 1
+        leftover -= 1
+      }
+    }
+    return out
+  }
+
   for (const tx of effectiveTransactions) {
     if (tx.isDeleted || !tx.splitConfig) {
       continue
@@ -242,22 +283,35 @@ export function calculateSettleUp(
     }
 
     const { payerId, payers, shares } = tx.splitConfig
-    const rate = tx.exchangeRateToBase > 0 ? tx.exchangeRateToBase : 1
+    const rate =
+      Number.isFinite(tx.exchangeRateToBase) && tx.exchangeRateToBase > 0
+        ? tx.exchangeRateToBase
+        : 1
     // expense / transfer：付款方 (+)，分攤/收款方 (-)；refund 方向相反
     const direction = tx.type === 'refund' ? -1 : 1
     const isSpendingTx = tx.type === 'expense' || tx.type === 'refund'
 
-    let totalShareUnitsInBase = 0
+    const positiveShares = shares.filter(
+      (s) => Number.isFinite(s.finalAmount) && s.finalAmount > 0,
+    )
+    const origShareTotal = positiveShares.reduce((acc, s) => acc + s.finalAmount, 0)
+    const totalShareUnitsInBase = toMinorUnits(origShareTotal * rate, currency)
+    if (!Number.isFinite(totalShareUnitsInBase) || totalShareUnitsInBase <= 0) {
+      continue
+    }
 
-    for (const share of shares) {
-      const shareBaseUnits = toMinorUnits(share.finalAmount * rate, currency)
-      if (shareBaseUnits === 0) {
-        continue
-      }
-      totalShareUnitsInBase += shareBaseUnits
-      addUnits(netUnitMap, share.memberId, -direction * shareBaseUnits)
+    const allocatedShareUnits = allocateNonNegativeUnits(
+      totalShareUnitsInBase,
+      positiveShares.map((s) => s.finalAmount),
+    )
+
+    for (let i = 0; i < positiveShares.length; i += 1) {
+      const shareBaseUnits = allocatedShareUnits[i]
+      if (shareBaseUnits <= 0) continue
+      const memberId = positiveShares[i].memberId
+      addUnits(netUnitMap, memberId, -direction * shareBaseUnits)
       if (isSpendingTx) {
-        addUnits(expenseUnitMap, share.memberId, direction * shareBaseUnits)
+        addUnits(expenseUnitMap, memberId, direction * shareBaseUnits)
       }
     }
 
@@ -265,22 +319,22 @@ export function calculateSettleUp(
       totalProjectExpenseUnits += direction * totalShareUnitsInBase
     }
 
-    // 支援多人墊付（splitConfig.payers），若未提供則向下相容使用單一 payerId
-    const activePayers = (payers ?? []).filter((p) => p.amount > 0)
+    // 支援多人墊付（splitConfig.payers），依實付比例以最大餘數法分配基準單位，確保恆非負且總和守恆
+    const activePayers = (payers ?? []).filter(
+      (p) => Number.isFinite(p.amount) && p.amount > 0,
+    )
     if (activePayers.length > 0) {
-      const payerBaseUnitsList = activePayers.map((p) => ({
-        memberId: p.memberId,
-        units: toMinorUnits(p.amount * rate, currency),
-      }))
-      const payerSum = payerBaseUnitsList.reduce((acc, p) => acc + p.units, 0)
-      const roundingDiff = totalShareUnitsInBase - payerSum
-      if (roundingDiff !== 0) {
-        payerBaseUnitsList[0].units += roundingDiff
-      }
-      for (const entry of payerBaseUnitsList) {
-        addUnits(netUnitMap, entry.memberId, direction * entry.units)
+      const allocatedPayerUnits = allocateNonNegativeUnits(
+        totalShareUnitsInBase,
+        activePayers.map((p) => p.amount),
+      )
+      for (let i = 0; i < activePayers.length; i += 1) {
+        const units = allocatedPayerUnits[i]
+        if (units <= 0) continue
+        const memberId = activePayers[i].memberId
+        addUnits(netUnitMap, memberId, direction * units)
         if (isSpendingTx) {
-          addUnits(paidUnitMap, entry.memberId, direction * entry.units)
+          addUnits(paidUnitMap, memberId, direction * units)
         }
       }
     } else {

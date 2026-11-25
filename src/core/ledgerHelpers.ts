@@ -11,6 +11,14 @@ const APPROX_RATE_TO_TWD: Record<string, number> = {
   THB: 0.93,
   CNY: 4.45,
   CAD: 23.2,
+  VND: 0.00126,
+  IDR: 0.002,
+  PHP: 0.55,
+  MYR: 7.2,
+  CHF: 36.5,
+  NZD: 19.2,
+  MOP: 3.98,
+  INR: 0.38,
 }
 
 export function getSuggestedExchangeRate(from: string, to: string): number {
@@ -20,7 +28,10 @@ export function getSuggestedExchangeRate(from: string, to: string): number {
   const fromInTwd = APPROX_RATE_TO_TWD[f]
   const toInTwd = APPROX_RATE_TO_TWD[tCode]
   if (fromInTwd && toInTwd) {
-    return Number((fromInTwd / toInTwd).toFixed(4))
+    const ratio = fromInTwd / toInTwd
+    const rounded =
+      ratio < 0.01 ? Number(ratio.toPrecision(6)) : Number(ratio.toFixed(4))
+    return Number.isFinite(rounded) && rounded > 0 ? rounded : 1
   }
   return 1
 }
@@ -159,4 +170,36 @@ export function triggerBinaryFileDownload(
   link.click()
   document.body.removeChild(link)
   URL.revokeObjectURL(url)
+}
+
+/**
+ * 依字形叢集（Grapheme Cluster）安全拆字，避免將 Emoji（如 😀、🇯🇵、👨‍👩‍👧）劈成破圖亂碼
+ */
+export function splitGraphemes(text: string): string[] {
+  if (!text) return []
+  try {
+    const IntlWithSeg = Intl as unknown as {
+      Segmenter?: new (
+        locales?: string | string[],
+        options?: { granularity?: 'grapheme' | 'word' | 'sentence' },
+      ) => { segment(input: string): Iterable<{ segment: string }> }
+    }
+    if (typeof IntlWithSeg.Segmenter === 'function') {
+      const seg = new IntlWithSeg.Segmenter(undefined, { granularity: 'grapheme' })
+      return Array.from(seg.segment(text), (item) => item.segment)
+    }
+  } catch {
+    // 降級為 code point 拆字
+  }
+  return Array.from(text)
+}
+
+/**
+ * 取得字串第一個完整字形叢集（供頭像縮寫使用，完整支援 Emoji 與多碼點字元）
+ */
+export function getFirstGrapheme(text: string, fallback = '?'): string {
+  const trimmed = text.trim()
+  if (!trimmed) return fallback
+  const first = splitGraphemes(trimmed)[0]
+  return first ? first.toUpperCase() : fallback
 }

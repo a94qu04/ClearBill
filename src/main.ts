@@ -30,10 +30,49 @@ async function requestPersistentStorage(): Promise<void> {
 if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
   const hadController = Boolean(navigator.serviceWorker.controller)
   let reloadedForSwUpdate = false
+  let pendingReloadForSwUpdate = false
+
+  const isUserEditingForm = (): boolean => {
+    if (typeof document === 'undefined') return false
+    if (document.querySelector('[role="dialog"], [role="alertdialog"]')) {
+      return true
+    }
+    const active = document.activeElement
+    if (
+      active &&
+      (active.tagName === 'INPUT' ||
+        active.tagName === 'TEXTAREA' ||
+        active.tagName === 'SELECT')
+    ) {
+      return true
+    }
+    return false
+  }
+
+  const tryDeferredSwReload = () => {
+    if (!pendingReloadForSwUpdate || reloadedForSwUpdate) return
+    if (isUserEditingForm()) return
+    reloadedForSwUpdate = true
+    pendingReloadForSwUpdate = false
+    window.location.reload()
+  }
+
   navigator.serviceWorker.addEventListener('controllerchange', () => {
     if (!hadController || reloadedForSwUpdate) return
-    reloadedForSwUpdate = true
-    window.location.reload()
+    pendingReloadForSwUpdate = true
+    if (!isUserEditingForm()) {
+      tryDeferredSwReload()
+      return
+    }
+    // 使用者正在填寫表單或開啟彈窗時延後重整，待離開輸入或切回前景後再無縫套用新版
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        tryDeferredSwReload()
+      }
+    })
+    window.addEventListener('focusout', () => {
+      setTimeout(tryDeferredSwReload, 400)
+    })
   })
 }
 

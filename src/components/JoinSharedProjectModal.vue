@@ -344,6 +344,7 @@ async function handleConfirmJoin() {
             <input
               v-model="customNewMemberName"
               type="text"
+              maxlength="50"
               :placeholder="t('project.addMemberPlaceholder')"
               class="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-900 focus:border-emerald-500 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white"
               @input="customNewMemberName.trim() && (selectedMemberId = '')"

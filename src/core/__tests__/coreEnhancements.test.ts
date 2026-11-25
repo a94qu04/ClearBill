@@ -12,6 +12,12 @@ import {
 } from '@/core/backupMergeEngine'
 import { buildProjectSettlementShareText } from '@/core/shareFormatter'
 import { calculateSettleUp } from '@/core/settleUpEngine'
+import { formatGroupedNumberInput } from '@/core/currency'
+import {
+  getFirstGrapheme,
+  getSuggestedExchangeRate,
+  splitGraphemes,
+} from '@/core/ledgerHelpers'
 import type { Project, Transaction } from '@/schemas/ledgerSchema'
 
 const sampleProject: Project = {
@@ -123,10 +129,14 @@ const sampleTxs: Transaction[] = [
 ]
 
 describe('expressionEvaluator - 安全簡易算式與服務費百分比計算器', () => {
-  it('支援加減乘除、括號與全形運算符號', () => {
+  it('支援加減乘除、括號與全形運算符號（含小寫 x 乘號）', () => {
     expect(hasMathExpression('350+180')).toBe(true)
+    expect(hasMathExpression('3x')).toBe(true)
+    expect(hasMathExpression('3x500')).toBe(true)
+    expect(hasMathExpression('3 X 500')).toBe(true)
     expect(hasMathExpression('1,200')).toBe(false)
     expect(evaluateAmountExpression('350+180', 0)).toBe(530)
+    expect(evaluateAmountExpression('3x500', 0)).toBe(1500)
     expect(evaluateAmountExpression('1,200 × 1.1', 0)).toBe(1320)
     expect(evaluateAmountExpression('(500 + 300) / 2', 2)).toBe(400)
   })
@@ -295,14 +305,94 @@ describe('excelExporter & exchangeRateService - 標準 .xlsx 匯出與即時匯�
     expect(decoded).toContain('道頓堀燒肉')
     expect(decoded).toContain('<v>-1000</v>')
     expect(decoded).toContain('<v>2940</v>')
+
+    // 確認還款 transfer 列不會在基準支出金額欄輸出正數（避免 SUM() 把還款重複算進總支出）
+    expect(decoded).not.toContain('先還部分</t></is></c><c r="F5"><v>500</v></c><c r="G5" t="inlineStr"><is><t xml:space="preserve">TWD</t></is></c><c r="H5"><v>1</v></c><c r="I5"><v>500</v></c>')
+    // 確認 XML 控制字元會被清洗且換行前置公式注入會被加上單引號防護
+    const dirtyBytes = buildProjectExcelBytes(
+      sampleProject,
+      [
+        {
+          ...sampleTxs[0],
+          note: '測試\x0B控制字元',
+        },
+        {
+          ...sampleTxs[1],
+          note: '\n=HYPERLINK("http://evil")',
+        },
+      ],
+      settleUp,
+      {
+        sheets: { entries: '明細🍜🍣🏯✈️', summary: '結算' },
+        headers: {
+          date: '日期',
+          time: '時間',
+          type: '類型',
+          category: '分類',
+          note: '備註',
+          originalAmount: '原金額',
+          currency: '幣別',
+          exchangeRate: '匯率',
+          baseAmount: '主幣別金額',
+          baseCurrency: '主幣別',
+          payers: '墊付人',
+          shares: '分攤',
+        },
+        summaryHeaders: {
+          member: '成員',
+          totalExpense: '總支出',
+          totalPaid: '已墊付',
+          netAmount: '淨收支',
+          transferFrom: '付款人',
+          transferTo: '收款人',
+          transferAmount: '金額',
+          projectTotal: '專案總支出',
+          transfersTitle: '待還款',
+        },
+        typeNames: {
+          expense: '消費',
+          refund: '退款',
+          transfer: '還款',
+          income: '收入',
+          card_repayment: '卡費',
+        },
+        resolveCategoryLabel: (k) => k,
+      },
+    )
+    const dirtyDecoded = new TextDecoder().decode(dirtyBytes)
+    expect(dirtyDecoded).toContain('<t xml:space="preserve">測試控制字元</t>')
+    expect(dirtyDecoded).not.toContain('測試\x0B控制字元')
+    expect(dirtyDecoded).toContain("&apos;\n=HYPERLINK")
   })
 
-  it('依 USD 基準匯率表正確交叉換算任意兩幣別（JPY -> TWD）', () => {
-    const table = { USD: 1, TWD: 32, JPY: 150, KRW: 1380 }
+  it('依 USD 基準匯率表正確交叉換算任意兩幣別（含 VND / IDR 等低面額幣別不歸零）', () => {
+    const table = { USD: 1, TWD: 32, JPY: 150, KRW: 1380, VND: 25400, IDR: 16000 }
     expect(computeCrossRateFromUsdTable(table, 'TWD', 'TWD')).toBe(1)
     expect(computeCrossRateFromUsdTable(table, 'JPY', 'TWD')).toBe(0.2133)
     expect(computeCrossRateFromUsdTable(table, 'USD', 'JPY')).toBe(150)
     expect(computeCrossRateFromUsdTable(table, 'XXX', 'TWD')).toBeNull()
+
+    const vndToUsd = computeCrossRateFromUsdTable(table, 'VND', 'USD')
+    expect(vndToUsd).not.toBeNull()
+    expect(vndToUsd!).toBeGreaterThan(0)
+    expect(vndToUsd!).toBeCloseTo(1 / 25400, 7)
+
+    const idrToUsd = computeCrossRateFromUsdTable(table, 'IDR', 'USD')
+    expect(idrToUsd).toBe(0.0000625)
+
+    // 離線建議匯率涵蓋 VND / IDR 且不退回 1
+    expect(getSuggestedExchangeRate('VND', 'USD')).toBeLessThan(0.001)
+    expect(getSuggestedExchangeRate('IDR', 'TWD')).toBeLessThan(0.01)
+
+    // 科學記號與高小數位匯率格式化不腐化
+    expect(formatGroupedNumberInput(3.937e-5, true, 8)).toBe('0.00003937')
+    expect(formatGroupedNumberInput(1e21, true, 4)).toBe('')
+    expect(formatGroupedNumberInput(-500, true, 4)).toBe('')
+
+    // Emoji 字形叢集安全切字不出現破圖半碼
+    expect(getFirstGrapheme('😀小明')).toBe('😀')
+    expect(getFirstGrapheme('🇯🇵東京團')).toBe('🇯🇵')
+    expect(splitGraphemes('🍜東京🇯🇵').length).toBe(4)
   })
 
   it('啟用公費袋時，分享文字與 Excel 皆應將公費袋獨立分區呈現而不混入真人成員列', () => {

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { AlertTriangle, ShieldAlert } from 'lucide-vue-next'
+import { AlertTriangle, Loader2, ShieldAlert } from 'lucide-vue-next'
 import { useLedgerStore } from '@/stores/ledgerStore'
 import { useModalLayer } from '@/composables/useModalLayer'
 import { formatCurrencyAmount } from '@/core/currency'
@@ -28,12 +28,21 @@ function fmt(amount: number, currency: string): string {
   return formatCurrencyAmount(amount, currency, locale.value)
 }
 
+function resolveCategoryLabel(categoryKey: string): string {
+  const found = store.categories.find((c) => c.key === categoryKey)
+  if (found?.customLabel) return found.customLabel
+  const translated = t(`categories.${categoryKey}`)
+  return translated === `categories.${categoryKey}` ? categoryKey : translated
+}
+
 async function handleRejectAndProtect() {
   if (isHandling.value) return
   isHandling.value = true
   try {
     const count = await store.rejectPendingRemoteDeletes()
     emit('toast', t('realtime.guardRejectedToast', { count }))
+  } catch {
+    emit('toast', t('home.saveFailed'))
   } finally {
     isHandling.value = false
   }
@@ -45,6 +54,8 @@ async function handleApproveDeletes() {
   try {
     const count = await store.approvePendingRemoteDeletes()
     emit('toast', t('realtime.guardApprovedToast', { count }))
+  } catch {
+    emit('toast', t('home.saveFailed'))
   } finally {
     isHandling.value = false
   }
@@ -96,7 +107,7 @@ async function handleApproveDeletes() {
             class="flex items-center justify-between gap-2 py-1.5"
           >
             <span class="truncate font-medium text-slate-700 dark:text-slate-200">
-              {{ tx.date }} · {{ tx.note || tx.categoryKey }}
+              {{ tx.date }} · {{ tx.note || resolveCategoryLabel(tx.categoryKey) }}
             </span>
             <span class="shrink-0 font-bold tabular-nums text-rose-600 dark:text-rose-400">
               {{ fmt(tx.amount, tx.currency) }}
@@ -117,17 +128,19 @@ async function handleApproveDeletes() {
             class="flex w-full items-center justify-center gap-1.5 rounded-2xl bg-emerald-600 py-3 text-xs font-bold text-white shadow-sm transition hover:bg-emerald-700 disabled:opacity-50 dark:bg-emerald-500 dark:text-slate-950"
             @click="handleRejectAndProtect"
           >
-            <AlertTriangle class="h-4 w-4" />
+            <Loader2 v-if="isHandling" class="h-4 w-4 animate-spin" />
+            <AlertTriangle v-else class="h-4 w-4" />
             <span>{{ t('realtime.guardRejectButton') }}</span>
           </button>
 
           <button
             type="button"
             :disabled="isHandling"
-            class="w-full rounded-2xl border border-rose-200 bg-rose-50 py-2.5 text-xs font-bold text-rose-700 transition hover:bg-rose-100 disabled:opacity-50 dark:border-rose-800/70 dark:bg-rose-950/40 dark:text-rose-300"
+            class="flex w-full items-center justify-center gap-1.5 rounded-2xl border border-rose-200 bg-rose-50 py-2.5 text-xs font-bold text-rose-700 transition hover:bg-rose-100 disabled:opacity-50 dark:border-rose-800/70 dark:bg-rose-950/40 dark:text-rose-300"
             @click="handleApproveDeletes"
           >
-            {{ t('realtime.guardApproveButton') }}
+            <Loader2 v-if="isHandling" class="h-3.5 w-3.5 animate-spin" />
+            <span>{{ t('realtime.guardApproveButton') }}</span>
           </button>
         </div>
       </div>

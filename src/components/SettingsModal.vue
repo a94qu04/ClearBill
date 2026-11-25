@@ -167,7 +167,7 @@ async function handleManualRefreshRates() {
 }
 
 function handleSaveCustomRate(currencyCode: string) {
-  const raw = (customRateDrafts.value[currencyCode] ?? '').trim()
+  const raw = String(customRateDrafts.value[currencyCode] ?? '').trim()
   const parsed = Number(raw)
   if (!Number.isFinite(parsed) || parsed <= 0) {
     syncCustomRateDrafts()
@@ -288,7 +288,8 @@ const isGoogleBusy = computed(() => store.googleDriveStatus === 'syncing')
 const googleAccountInitial = computed(() => {
   const name =
     store.googleDriveAccount?.displayName || store.googleDriveAccount?.email || 'G'
-  return name.trim().charAt(0).toUpperCase() || 'G'
+  const trimmed = name.trim()
+  return (Array.from(trimmed)[0] ?? 'G').toUpperCase()
 })
 
 const googleStatusBadge = computed(() => {
@@ -713,6 +714,13 @@ async function handleRestoreTx(id: string) {
 }
 
 async function handlePermanentDeleteTx(id: string) {
+  const confirmed = await askConfirm({
+    title: t('trash.deleteForever'),
+    message: t('trash.emptyAllConfirm', { count: 1 }),
+    confirmText: t('trash.deleteForever'),
+    tone: 'danger',
+  })
+  if (!confirmed) return
   await store.permanentlyDeleteTransaction(id)
   emit('toast', t('trash.permanentlyDeletedToast'))
 }
@@ -1227,10 +1235,7 @@ function fmt(amount: number, currency: string): string {
                 >
                   {{
                     t('backup.googleSyncError', {
-                      reason: store.googleDriveLastErrorCode
-                        ? t(`backup.errors.${store.googleDriveLastErrorCode}`)
-                        : store.googleDriveLastErrorDetail ||
-                          t('backup.errors.ERR_UNKNOWN'),
+                      reason: resolveGoogleErrorReason(store.googleDriveLastErrorCode),
                     })
                   }}
                 </div>

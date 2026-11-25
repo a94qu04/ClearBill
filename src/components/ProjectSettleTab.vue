@@ -219,9 +219,15 @@ const resolvedHubMemberId = computed<string>(() => {
   ) {
     return hubMemberId.value
   }
-  // 預設優先選公費袋，其次選應收回金額最高之大債權人（財務長）
-  if (poolMembers.value.length > 0) {
-    return poolMembers.value[0].id
+  // 預設優先選應收回金額最高之真人債權人（財務長），無真人時才回退公費袋
+  const humanBalances = props.settleUp.balances.filter(
+    (b) => !poolMemberIds.value.has(b.memberId),
+  )
+  const topHumanCreditor = [...humanBalances].sort(
+    (a, b) => b.netAmount - a.netAmount,
+  )[0]
+  if (topHumanCreditor) {
+    return topHumanCreditor.memberId
   }
   const topCreditor = [...props.settleUp.balances].sort(
     (a, b) => b.netAmount - a.netAmount,
@@ -496,7 +502,6 @@ watch(
       store.getProjectCustomRatesForTarget(props.project, settlementCurrency.value) ?? {},
     ),
     foreignCurrenciesInProject.value.join(','),
-    store.liveRatesFetchedAt,
   ],
   () => {
     syncSettleRateDrafts()
@@ -699,9 +704,15 @@ async function handleShareMemberStatement(memberId: string) {
   }
 }
 
+const isSharingSummary = ref(false)
+const isExportingExcel = ref(false)
+
 async function handleShareSettlement() {
+  if (isSharingSummary.value) return
+  isSharingSummary.value = true
   shareSheetOpen.value = false
-  const summaryText = buildProjectSettlementShareText(
+  try {
+    const summaryText = buildProjectSettlementShareText(
     props.project,
     effectiveSettleUp.value,
     props.settlements,
@@ -770,18 +781,21 @@ async function handleShareSettlement() {
     // 走最後一層文字複製降級
   }
 
-  try {
-    const textarea = document.createElement('textarea')
-    textarea.value = summaryText
-    textarea.style.position = 'fixed'
-    textarea.style.opacity = '0'
-    document.body.appendChild(textarea)
-    textarea.select()
-    document.execCommand('copy')
-    document.body.removeChild(textarea)
-    emit('toast', t('share.copiedToast'))
-  } catch {
-    emit('toast', t('share.failedToast'))
+    try {
+      const textarea = document.createElement('textarea')
+      textarea.value = summaryText
+      textarea.style.position = 'fixed'
+      textarea.style.opacity = '0'
+      document.body.appendChild(textarea)
+      textarea.select()
+      document.execCommand('copy')
+      document.body.removeChild(textarea)
+      emit('toast', t('share.copiedToast'))
+    } catch {
+      emit('toast', t('share.failedToast'))
+    }
+  } finally {
+    isSharingSummary.value = false
   }
 }
 
@@ -790,75 +804,83 @@ function getCategoryColor(key: string): string {
 }
 
 async function handleExportExcel() {
-  shareSheetOpen.value = false
-  const { buildProjectExcelBytes } = await import('@/core/excelExporter')
-  const { settlementCurrency: targetCur, options } =
-    store.getProjectSettlementOptions(props.project, [
-      ...props.expenses,
-      ...props.settlements,
-    ])
-  const effectiveSettlements = applySettlementRatesToTransactions(
-    props.settlements,
-    targetCur,
-    options.overrideRatesByCurrency,
-    options.projectBaseCurrency,
-    options.baseToSettlementRate,
-  )
-  const allProjectTxs = [...props.expenses, ...effectiveSettlements]
-  const bytes = buildProjectExcelBytes(
-    props.project,
-    allProjectTxs,
-    effectiveSettleUp.value,
-    {
-      sheets: {
-        entries: t('export.excelSheetEntries'),
-        summary: t('export.excelSheetSummary'),
+  if (isExportingExcel.value) return
+  isExportingExcel.value = true
+  try {
+    const { buildProjectExcelBytes } = await import('@/core/excelExporter')
+    const { settlementCurrency: targetCur, options } =
+      store.getProjectSettlementOptions(props.project, [
+        ...props.expenses,
+        ...props.settlements,
+      ])
+    const effectiveSettlements = applySettlementRatesToTransactions(
+      props.settlements,
+      targetCur,
+      options.overrideRatesByCurrency,
+      options.projectBaseCurrency,
+      options.baseToSettlementRate,
+    )
+    const allProjectTxs = [...props.expenses, ...effectiveSettlements]
+    const bytes = buildProjectExcelBytes(
+      props.project,
+      allProjectTxs,
+      effectiveSettleUp.value,
+      {
+        sheets: {
+          entries: t('export.excelSheetEntries'),
+          summary: t('export.excelSheetSummary'),
+        },
+        headers: {
+          date: t('export.csvDate'),
+          time: t('export.csvTime'),
+          type: t('export.csvType'),
+          category: t('export.csvCategory'),
+          note: t('export.csvNote'),
+          originalAmount: t('export.csvOriginalAmount'),
+          currency: t('export.csvCurrency'),
+          exchangeRate: t('export.csvExchangeRate'),
+          baseAmount: t('export.csvBaseAmount'),
+          baseCurrency: t('export.csvBaseCurrency'),
+          payers: t('export.csvPayers'),
+          shares: t('export.csvShares'),
+        },
+        summaryHeaders: {
+          member: t('export.excelMember'),
+          totalExpense: t('settle.memberTotalExpense'),
+          totalPaid: t('settle.memberTotalPaid'),
+          netAmount: t('export.excelNetAmount'),
+          transferFrom: t('settle.fromLabel'),
+          transferTo: t('settle.toLabel'),
+          transferAmount: t('daily.amountLabel'),
+          projectTotal: t('settle.projectTotalSpend'),
+          transfersTitle: t('settle.suggestionsTitle'),
+          poolSectionTitle: t('pool.cardTitle'),
+          poolPaidLabel: t('pool.paidOutLabel'),
+          poolRemainingLabel: t('pool.remainingCashLabel'),
+        },
+        typeNames: {
+          expense: t('project.typeExpense'),
+          refund: t('project.typeRefund'),
+          transfer: t('home.settlementBadge'),
+          income: t('daily.typeIncome'),
+          card_repayment: t('daily.typeCardRepayment'),
+        },
+        resolveCategoryLabel: getCategoryLabel,
       },
-      headers: {
-        date: t('export.csvDate'),
-        time: t('export.csvTime'),
-        type: t('export.csvType'),
-        category: t('export.csvCategory'),
-        note: t('export.csvNote'),
-        originalAmount: t('export.csvOriginalAmount'),
-        currency: t('export.csvCurrency'),
-        exchangeRate: t('export.csvExchangeRate'),
-        baseAmount: t('export.csvBaseAmount'),
-        baseCurrency: t('export.csvBaseCurrency'),
-        payers: t('export.csvPayers'),
-        shares: t('export.csvShares'),
-      },
-      summaryHeaders: {
-        member: t('export.excelMember'),
-        totalExpense: t('settle.memberTotalExpense'),
-        totalPaid: t('settle.memberTotalPaid'),
-        netAmount: t('export.excelNetAmount'),
-        transferFrom: t('settle.fromLabel'),
-        transferTo: t('settle.toLabel'),
-        transferAmount: t('daily.amountLabel'),
-        projectTotal: t('settle.projectTotalSpend'),
-        transfersTitle: t('settle.suggestionsTitle'),
-        poolSectionTitle: t('pool.cardTitle'),
-        poolPaidLabel: t('pool.paidOutLabel'),
-        poolRemainingLabel: t('pool.remainingCashLabel'),
-      },
-      typeNames: {
-        expense: t('project.typeExpense'),
-        refund: t('project.typeRefund'),
-        transfer: t('home.settlementBadge'),
-        income: t('daily.typeIncome'),
-        card_repayment: t('daily.typeCardRepayment'),
-      },
-      resolveCategoryLabel: getCategoryLabel,
-    },
-  )
-  const safeName = sanitizeExportFilename(props.project.name)
-  triggerBinaryFileDownload(
-    bytes,
-    `clearbill-${safeName}-${getTodayIso()}.xlsx`,
-    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  )
-  emit('toast', t('export.excelExportedToast'))
+    )
+    const safeName = sanitizeExportFilename(props.project.name)
+    triggerBinaryFileDownload(
+      bytes,
+      `clearbill-${safeName}-${getTodayIso()}.xlsx`,
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    )
+    emit('toast', t('export.excelExportedToast'))
+  } catch {
+    emit('toast', t('share.failedToast'))
+  } finally {
+    isExportingExcel.value = false
+    shareSheetOpen.value = false
+  }
 }
 
 async function handleExportLongImage() {
@@ -1400,8 +1422,8 @@ async function handleExportLongImage() {
 
           <ul v-else class="divide-y divide-slate-100 dark:divide-white/10">
             <li
-              v-for="(transfer, idx) in visibleTransfers"
-              :key="idx"
+              v-for="transfer in visibleTransfers"
+              :key="`${transfer.fromMemberId}->${transfer.toMemberId}-${transfer.currency}`"
               class="flex items-center justify-between gap-2 py-3 first:pt-1 last:pb-0"
             >
               <div class="min-w-0">
@@ -1896,11 +1918,13 @@ async function handleExportLongImage() {
 
               <button
                 type="button"
-                class="flex w-full items-center gap-3 px-4 py-3.5 text-left text-sm font-semibold text-slate-900 transition hover:bg-slate-50 active:bg-slate-100 dark:text-white dark:hover:bg-white/5"
+                :disabled="isExportingExcel"
+                class="flex w-full items-center gap-3 px-4 py-3.5 text-left text-sm font-semibold text-slate-900 transition hover:bg-slate-50 active:bg-slate-100 disabled:opacity-50 dark:text-white dark:hover:bg-white/5"
                 @click="handleExportExcel"
               >
                 <span class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-teal-500/15 text-teal-600 dark:text-teal-400">
-                  <FileSpreadsheet class="h-4 w-4" />
+                  <Loader2 v-if="isExportingExcel" class="h-4 w-4 animate-spin" />
+                  <FileSpreadsheet v-else class="h-4 w-4" />
                 </span>
                 <span>{{ t('export.excelButton') }}</span>
               </button>

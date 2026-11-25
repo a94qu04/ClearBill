@@ -83,7 +83,11 @@ export function computeCrossRateFromUsdTable(
 
   const rawRate = toPerUsd / fromPerUsd
   if (!Number.isFinite(rawRate) || rawRate <= 0) return null
-  return Number(rawRate.toFixed(4))
+  // 針對 VND / IDR 對 USD / EUR 等極小匯率（< 0.01）保留 6 位有效數字，避免四捨五入歸零或大幅失真
+  const rounded =
+    rawRate < 0.01 ? Number(rawRate.toPrecision(6)) : Number(rawRate.toFixed(4))
+  if (!Number.isFinite(rounded) || rounded <= 0) return null
+  return rounded
 }
 
 /**

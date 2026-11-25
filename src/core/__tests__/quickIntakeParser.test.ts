@@ -104,6 +104,32 @@ describe('quickIntakeParser - iOS 捷徑、Web Share 與刷卡脫敏解析器', 
     expect(params.merchant).toBe('麥當勞')
     expect(params.sourceApp).toBe('LINEPay')
   })
+
+  it('百分比模式專案與含公費袋專案在 #/quick-add 下皆安全降級均攤且排除虛擬公費袋', () => {
+    const pctProject: Project = {
+      id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      schemaVersion: 1,
+      name: '百分比與公費測試團',
+      baseCurrency: 'TWD',
+      members: [
+        { id: 'me', name: '我' },
+        { id: 'bob', name: '小王' },
+        { id: 'pool_1', name: '公費袋', isPool: true },
+      ],
+      defaultSplitMode: 'percentage',
+      defaultPayerId: 'pool_1',
+      isActive: true,
+      createdAt: 1732400000000,
+      updatedAt: 1732400000000,
+    }
+    const res = parseQuickIntake('https://clearbill.app/#/quick-add?amount=500&merchant=拉麵', {
+      activeProject: pctProject,
+      defaultCurrency: 'TWD',
+    })
+    expect(res.amount).toBe(500)
+    expect(res.defaultSplitConfig?.mode).toBe('equal')
+    expect(res.defaultSplitConfig?.shares.map((s) => s.memberId)).toEqual(['me', 'bob'])
+  })
 })
 
 describe('migrationEngine - Schema 版本控管與向下相容', () => {

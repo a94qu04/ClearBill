@@ -8,6 +8,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Clock,
+  Loader2,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -172,6 +173,9 @@ const ratePanelExpanded = ref(false)
 const dateTimePanelExpanded = ref(false)
 const photoPanelExpanded = ref(false)
 const splitPanelExpanded = ref(false)
+const isSubmitting = ref(false)
+const isCompressingImages = ref(false)
+let formSessionId = 0
 const initialSnapshot = ref('')
 const snapshotReady = ref(false)
 
@@ -568,12 +572,38 @@ function hydrateForm() {
   }
 
   snapshotReady.value = false
+  formSessionId += 1
   splitResetKey.value += 1
   void nextTick(() => {
     initialSnapshot.value = captureFormSnapshot()
     snapshotReady.value = true
     updateCategoryScrollButtons()
   })
+}
+
+/** 彈窗已開啟時切換目標專案：保留已填金額、備註、分類、日期與收據照，僅更新新專案的幣別匯率與記憶拆帳配置 */
+function applyProjectSwitchPreservingDraft() {
+  if (!props.project) return
+  errorText.value = ''
+  const nextCur = store.getProjectLastCurrency(
+    props.project.id,
+    props.project.baseCurrency,
+  )
+  // 若尚未填金額，自動切換為新專案上次使用幣別；若已填金額則保留原幣別並針對新專案主幣別重算匯率
+  if ((amount.value ?? 0) <= 0) {
+    currency.value = nextCur
+  }
+  const resolved = resolveExchangeRateForCurrency(
+    currency.value,
+    props.project.baseCurrency,
+  )
+  exchangeRate.value = resolved.rate
+  exchangeRateSource.value = resolved.source
+  splitDraftPreview.value = null
+  splitPreset.value = cloneSplitConfig(
+    store.getProjectLastSplitConfig(props.project.id) ?? undefined,
+  )
+  splitResetKey.value += 1
 }
 
 watch(
@@ -585,10 +615,30 @@ watch(
       props.prefill,
       props.project?.id,
     ] as const,
-  ([isOpen]) => {
+  (
+    [isOpen, editId, dupId, prefillVal, projId],
+    prev,
+  ) => {
+    const wasOpen = prev?.[0] ?? false
+    const sameModeOnlyProjectChanged =
+      wasOpen &&
+      isOpen &&
+      !editId &&
+      !dupId &&
+      !prefillVal &&
+      prev?.[1] === editId &&
+      prev?.[2] === dupId &&
+      prev?.[3] === prefillVal &&
+      prev?.[4] !== projId
+
     if (isOpen) {
-      hydrateForm()
+      if (sameModeOnlyProjectChanged) {
+        applyProjectSwitchPreservingDraft()
+      } else {
+        hydrateForm()
+      }
     } else {
+      formSessionId += 1
       snapshotReady.value = false
     }
   },
@@ -628,15 +678,22 @@ async function handleImageFilesSelected(event: Event) {
     return
   }
 
+  const capturedSession = formSessionId
+  isCompressingImages.value = true
   try {
     const selected = Array.from(files).slice(0, remainingSlots)
     const compressed = await Promise.all(
       selected.map((file) => compressImageFileToDataUrl(file)),
     )
+    // 若壓縮期間已關閉彈窗或進入下一筆，直接丟棄避免圖片錯貼
+    if (capturedSession !== formSessionId || !props.open) return
     receiptImages.value = [...receiptImages.value, ...compressed].slice(0, 3)
   } catch {
-    emit('toast', t('photo.uploadError'))
+    if (capturedSession === formSessionId) {
+      emit('toast', t('photo.uploadError'))
+    }
   } finally {
+    isCompressingImages.value = false
     input.value = ''
   }
 }
@@ -653,6 +710,7 @@ function showValidationError(message: string) {
 }
 
 async function handleSubmit(continueAdding = false) {
+  if (isSubmitting.value || isCompressingImages.value) return
   errorText.value = ''
   if (!props.project) return
 
@@ -690,47 +748,48 @@ async function handleSubmit(continueAdding = false) {
     splitConfig: splitConfig.value,
   }
 
-  // 多人協作疑似重複記帳防呆：略過主動「複製再記」，且若兩筆均有填寫不同備註則不誤報重複
-  if (!props.editingTx && !props.duplicateTx) {
-    const incomingNote = payload.note.trim().toLowerCase()
-    const duplicate = store.visibleTransactions.find((existing) => {
-      if (
-        existing.projectId !== props.project!.id ||
-        existing.type !== payload.type ||
-        existing.date !== payload.date ||
-        existing.currency.trim().toUpperCase() !== payload.currency.trim().toUpperCase() ||
-        Math.abs(existing.amount - payload.amount) >= 0.005
-      ) {
-        return false
-      }
-      const existingNote = (existing.note ?? '').trim().toLowerCase()
-      if (incomingNote && existingNote && incomingNote !== existingNote) {
-        return false
-      }
-      if (!incomingNote && !existingNote && existing.categoryKey !== payload.categoryKey) {
-        return false
-      }
-      return true
-    })
-    if (duplicate) {
-      const dupLabel =
-        duplicate.note?.trim() ||
-        allCategories.value.find((c) => c.key === duplicate.categoryKey)?.label ||
-        duplicate.categoryKey
-      const confirmed = await askConfirm({
-        title: t('project.duplicateWarnTitle'),
-        message: t('project.duplicateWarnMessage', {
-          note: dupLabel,
-          amount: fmt(duplicate.amount, duplicate.currency),
-        }),
-        confirmText: t('project.duplicateWarnConfirm'),
-        tone: 'primary',
-      })
-      if (!confirmed) return
-    }
-  }
-
+  isSubmitting.value = true
   try {
+    // 多人協作疑似重複記帳防呆：略過主動「複製再記」，且若兩筆均有填寫不同備註則不誤報重複
+    if (!props.editingTx && !props.duplicateTx) {
+      const incomingNote = payload.note.trim().toLowerCase()
+      const duplicate = store.visibleTransactions.find((existing) => {
+        if (
+          existing.projectId !== props.project!.id ||
+          existing.type !== payload.type ||
+          existing.date !== payload.date ||
+          existing.currency.trim().toUpperCase() !== payload.currency.trim().toUpperCase() ||
+          Math.abs(existing.amount - payload.amount) >= 0.005
+        ) {
+          return false
+        }
+        const existingNote = (existing.note ?? '').trim().toLowerCase()
+        if (incomingNote && existingNote && incomingNote !== existingNote) {
+          return false
+        }
+        if (!incomingNote && !existingNote && existing.categoryKey !== payload.categoryKey) {
+          return false
+        }
+        return true
+      })
+      if (duplicate) {
+        const dupLabel =
+          duplicate.note?.trim() ||
+          allCategories.value.find((c) => c.key === duplicate.categoryKey)?.label ||
+          duplicate.categoryKey
+        const confirmed = await askConfirm({
+          title: t('project.duplicateWarnTitle'),
+          message: t('project.duplicateWarnMessage', {
+            note: dupLabel,
+            amount: fmt(duplicate.amount, duplicate.currency),
+          }),
+          confirmText: t('project.duplicateWarnConfirm'),
+          tone: 'primary',
+        })
+        if (!confirmed) return
+      }
+    }
+
     store.rememberLastExpenseProject(props.project.id)
     store.rememberProjectLastCurrency(props.project.id, currency.value)
     store.rememberProjectLastSplitConfig(props.project.id, splitConfig.value)
@@ -755,6 +814,7 @@ async function handleSubmit(continueAdding = false) {
       splitPreset.value = cloneSplitConfig(
         store.getProjectLastSplitConfig(props.project.id) ?? undefined,
       )
+      formSessionId += 1
       snapshotReady.value = false
       splitResetKey.value += 1
       void nextTick(() => {
@@ -768,6 +828,8 @@ async function handleSubmit(continueAdding = false) {
     emit('close')
   } catch {
     errorText.value = t('home.saveFailed')
+  } finally {
+    isSubmitting.value = false
   }
 }
 </script>
@@ -933,9 +995,10 @@ async function handleSubmit(continueAdding = false) {
                     <CurrencyAmountInput
                       v-model="exchangeRate"
                       :allow-decimals="true"
+                      :max-decimals="8"
                       size="sm"
                       placeholder="1"
-                      class="w-24"
+                      class="w-28"
                     />
                     <span class="font-semibold text-slate-600 dark:text-slate-300">
                       {{ project.baseCurrency }}
@@ -1399,28 +1462,34 @@ async function handleSubmit(continueAdding = false) {
               <button
                 v-if="!editingTx"
                 type="button"
-                class="shrink-0 rounded-2xl bg-slate-100 px-3.5 py-3 text-xs font-bold text-slate-700 transition hover:bg-slate-200 dark:bg-[#2C2C2E] dark:text-slate-200"
+                :disabled="isSubmitting"
+                class="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-2xl bg-slate-100 px-3.5 py-3 text-xs font-bold text-slate-700 transition hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-[#2C2C2E] dark:text-slate-200"
                 :class="!splitValid || (amount ?? 0) <= 0 ? 'opacity-65' : ''"
                 @click="handleSubmit(true)"
               >
-                {{ t('project.saveAndContinueButton') }}
+                <Loader2 v-if="isSubmitting" class="h-3.5 w-3.5 animate-spin" />
+                <span>{{ t('project.saveAndContinueButton') }}</span>
               </button>
               <button
                 type="submit"
                 form="project-expense-form"
-                class="flex-1 rounded-2xl bg-emerald-600 py-3 text-sm font-bold text-white shadow-sm transition hover:bg-emerald-700 active:scale-[0.99] dark:bg-emerald-500 dark:text-slate-950"
+                :disabled="isSubmitting"
+                class="inline-flex flex-1 items-center justify-center gap-1.5 rounded-2xl bg-emerald-600 py-3 text-sm font-bold text-white shadow-sm transition hover:bg-emerald-700 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60 dark:bg-emerald-500 dark:text-slate-950"
                 :class="!splitValid || (amount ?? 0) <= 0 ? 'opacity-70' : ''"
               >
-                {{
-                  editingTx
-                    ? t('project.updateExpenseButton')
-                    : txType === 'refund'
-                      ? t('project.saveRefundButton')
-                      : t('project.saveExpenseButton')
-                }}
+                <Loader2 v-if="isSubmitting" class="h-4 w-4 animate-spin" />
+                <span>
+                  {{
+                    editingTx
+                      ? t('project.updateExpenseButton')
+                      : txType === 'refund'
+                        ? t('project.saveRefundButton')
+                        : t('project.saveExpenseButton')
+                  }}
+                </span>
                 <span
                   v-if="(amount ?? 0) > 0"
-                  class="ml-1 tabular-nums opacity-90"
+                  class="tabular-nums opacity-90"
                 >
                   · {{ fmt(amount ?? 0, currency) }}
                 </span>
