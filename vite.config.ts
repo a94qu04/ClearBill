@@ -1,4 +1,6 @@
 /// <reference types="vitest/config" />
+import { execSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
@@ -7,8 +9,37 @@ import { VitePWA } from 'vite-plugin-pwa'
 const rawBase = process.env.VITE_BASE_PATH?.trim() || '/'
 const basePath = rawBase.endsWith('/') ? rawBase : `${rawBase}/`
 
+function resolveAppVersion(): string {
+  try {
+    const pkgPath = fileURLToPath(new URL('./package.json', import.meta.url))
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8')) as { version?: string }
+    return pkg.version?.trim() || '0.1.0'
+  } catch {
+    return '0.1.0'
+  }
+}
+
+function resolveAppCommit(): string {
+  const ciSha = process.env.GITHUB_SHA?.trim()
+  if (ciSha) return ciSha.slice(0, 7)
+  try {
+    return execSync('git rev-parse --short HEAD', { stdio: ['ignore', 'pipe', 'ignore'] })
+      .toString()
+      .trim()
+  } catch {
+    return ''
+  }
+}
+
+const appVersion = resolveAppVersion()
+const appCommit = resolveAppCommit()
+
 export default defineConfig({
   base: basePath,
+  define: {
+    __APP_VERSION__: JSON.stringify(appVersion),
+    __APP_COMMIT__: JSON.stringify(appCommit),
+  },
   plugins: [
     vue(),
     VitePWA({
@@ -57,6 +88,8 @@ export default defineConfig({
       workbox: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg,json}'],
         cleanupOutdatedCaches: true,
+        skipWaiting: true,
+        clientsClaim: true,
       },
     }),
   ],

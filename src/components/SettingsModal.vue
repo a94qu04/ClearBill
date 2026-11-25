@@ -90,6 +90,10 @@ const emit = defineEmits<{
 const { t, locale } = useI18n()
 const store = useLedgerStore()
 
+const appVersionLabel = __APP_COMMIT__
+  ? `v${__APP_VERSION__} · ${__APP_COMMIT__}`
+  : `v${__APP_VERSION__}`
+
 const dialogRef = ref<HTMLElement | null>(null)
 
 useModalLayer(
@@ -756,21 +760,28 @@ function fmt(amount: number, currency: string): string {
         <aside
           class="safe-top flex h-full w-full max-w-sm flex-col border-l border-slate-200 bg-white shadow-2xl dark:border-slate-800 dark:bg-slate-900"
         >
-          <!-- 標題列 -->
+          <!-- 標題列（右上顯示版本號與關閉鈕） -->
           <div
-            class="flex items-center justify-between border-b border-slate-200 px-5 py-4 dark:border-slate-800"
+            class="flex items-center justify-between gap-2 border-b border-slate-200 px-5 py-4 dark:border-slate-800"
           >
-            <h2 class="text-base font-bold text-slate-900 dark:text-white">
+            <h2 class="truncate text-base font-bold text-slate-900 dark:text-white">
               {{ t('settings.title') }}
             </h2>
-            <button
-              type="button"
-              :aria-label="t('settings.close')"
-              class="rounded-full p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800 dark:hover:text-slate-200"
-              @click="emit('close')"
-            >
-              <X class="h-5 w-5" />
-            </button>
+            <div class="flex shrink-0 items-center gap-2">
+              <span
+                class="rounded-full bg-slate-100 px-2 py-0.5 font-mono text-[10px] font-semibold tracking-tight text-slate-500 dark:bg-slate-800 dark:text-slate-400"
+              >
+                {{ appVersionLabel }}
+              </span>
+              <button
+                type="button"
+                :aria-label="t('settings.close')"
+                class="rounded-full p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800 dark:hover:text-slate-200"
+                @click="emit('close')"
+              >
+                <X class="h-5 w-5" />
+              </button>
+            </div>
           </div>
 
           <!-- 四大同級分頁導覽：個人 / 匯率 / 分類 / 資料 -->

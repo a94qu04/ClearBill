@@ -27,6 +27,16 @@ async function requestPersistentStorage(): Promise<void> {
   }
 }
 
+if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+  const hadController = Boolean(navigator.serviceWorker.controller)
+  let reloadedForSwUpdate = false
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController || reloadedForSwUpdate) return
+    reloadedForSwUpdate = true
+    window.location.reload()
+  })
+}
+
 registerSW({ immediate: true })
 void requestPersistentStorage()
 
