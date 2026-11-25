@@ -1,7 +1,6 @@
 {
   "app": {
     "name": "ClearBill",
-    "tagline": "3秒記録・オフライン優先・登録不要",
     "localOnlyBadge": "ローカル保存",
     "storagePersisted": "オフライン保護",
     "openSettings": "アプリアイコンから設定を開く"
@@ -297,7 +296,11 @@
     "defaultMember2": "メンバーA",
     "defaultMember3": "メンバーB",
     "fabAdd": "記録",
-    "splitIndicatorTooltip": "{count} 名で割り勘：{names}"
+    "splitIndicatorTooltip": "{count} 名で割り勘：{names}",
+    "cardBgLabel": "カード背景（カラーまたは写真）",
+    "cardBgUploadPhoto": "写真を設定",
+    "cardBgReset": "既定に戻す",
+    "cardBgPreviewHint": "カード背景プレビュー"
   },
   "profile": {
     "sectionTitle": "マイプロフィール・アイコン",
@@ -361,11 +364,11 @@
     "cat_food": "飲食",
     "cat_transport": "交通",
     "cat_lodging": "宿泊",
-    "cat_shopping": "買い物",
+    "cat_shopping": "買物",
     "cat_entertainment": "娯楽",
     "cat_daily": "日用品",
     "cat_other": "その他",
-    "cat_settlement": "返済精算"
+    "cat_settlement": "精算"
   },
   "stats": {
     "title": "カテゴリ別支出グラフ",
@@ -435,8 +438,8 @@
     "advancedConfigToggle": "詳細：Firebase 設定を確認・上書き",
     "resetBuiltInConfig": "既定設定に戻す",
     "clearCustomConfig": "設定を削除",
-    "introTitle": "登録不要リアルタイム同期・オフライン対応",
-    "introDesc": "専用の招待リンクを発行します。仲間はリンクから自分の名前を選ぶだけで一緒に記録でき、大量削除防止ガードも自動作動します。",
+    "introTitle": "リアルタイム共同記録",
+    "introDesc": "招待リンクを仲間に送るだけで、みんなで一緒に記録・同期できます。",
     "selectMyIdentityLabel": "このグループでのあなたは？（既定の立替者に設定されます）",
     "syncImagesLabel": "レシート写真もクラウド同期する",
     "syncImagesHint": "容量が大きい写真は自動的に端末内のみ保持されます",

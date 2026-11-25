@@ -556,14 +556,9 @@ function fmt(amount: number, currency: string): string {
           <div
             class="flex items-center justify-between border-b border-slate-200 px-5 py-4 dark:border-slate-800"
           >
-            <div>
-              <h2 class="text-base font-bold text-slate-900 dark:text-white">
-                {{ t('settings.title') }}
-              </h2>
-              <p class="text-[11px] text-slate-400">
-                {{ t('app.tagline') }}
-              </p>
-            </div>
+            <h2 class="text-base font-bold text-slate-900 dark:text-white">
+              {{ t('settings.title') }}
+            </h2>
             <button
               type="button"
               :aria-label="t('settings.close')"

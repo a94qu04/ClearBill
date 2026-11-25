@@ -134,6 +134,12 @@ export function migrateLedgerBackup(raw: unknown): LedgerBackup {
   const rawCategories = Array.isArray(payload.categories)
     ? payload.categories
     : undefined
+  const rawUserProfile =
+    payload.userProfile &&
+    typeof payload.userProfile === 'object' &&
+    !Array.isArray(payload.userProfile)
+      ? payload.userProfile
+      : undefined
 
   return LedgerBackupSchema.parse({
     schemaVersion: CURRENT_SCHEMA_VERSION,
@@ -142,5 +148,6 @@ export function migrateLedgerBackup(raw: unknown): LedgerBackup {
     projects: migratedProjects,
     transactions: migratedTransactions,
     ...(rawCategories ? { categories: rawCategories } : {}),
+    ...(rawUserProfile ? { userProfile: rawUserProfile } : {}),
   })
 }

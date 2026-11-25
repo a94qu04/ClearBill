@@ -1,7 +1,6 @@
 {
   "app": {
     "name": "ClearBill",
-    "tagline": "3-Second Logging · Local-First · No Sign-up",
     "localOnlyBadge": "Local Vault",
     "storagePersisted": "Offline Safe",
     "openSettings": "Tap App Icon for Settings"
@@ -297,7 +296,11 @@
     "defaultMember2": "Friend A",
     "defaultMember3": "Friend B",
     "fabAdd": "Add",
-    "splitIndicatorTooltip": "Split among {count}: {names}"
+    "splitIndicatorTooltip": "Split among {count}: {names}",
+    "cardBgLabel": "Card Background (Color or Cover Photo)",
+    "cardBgUploadPhoto": "Upload Photo",
+    "cardBgReset": "Reset",
+    "cardBgPreviewHint": "Card preview"
   },
   "profile": {
     "sectionTitle": "My Member Profile & Avatar",
@@ -359,13 +362,13 @@
   },
   "categories": {
     "cat_food": "Food",
-    "cat_transport": "Transport",
-    "cat_lodging": "Lodging",
-    "cat_shopping": "Shopping",
-    "cat_entertainment": "Activities",
+    "cat_transport": "Transit",
+    "cat_lodging": "Stay",
+    "cat_shopping": "Shop",
+    "cat_entertainment": "Fun",
     "cat_daily": "Daily",
     "cat_other": "Other",
-    "cat_settlement": "Settlement"
+    "cat_settlement": "Settle"
   },
   "stats": {
     "title": "Spending Breakdown",
@@ -435,8 +438,8 @@
     "advancedConfigToggle": "Advanced: View or override Firebase config",
     "resetBuiltInConfig": "Use Built-in Config",
     "clearCustomConfig": "Clear Custom Config",
-    "introTitle": "Zero-Signup Live Sync · Local-First",
-    "introDesc": "Generates a private invite link. Trip mates tap the link, pick their name, and log expenses together in real time with mass-deletion protection.",
+    "introTitle": "Real-Time Group Sync",
+    "introDesc": "Create an invite link for trip mates to log and sync expenses together.",
     "selectMyIdentityLabel": "Who are you in this group? (Sets your default payer)",
     "syncImagesLabel": "Sync receipt photos to cloud",
     "syncImagesHint": "Oversized photos automatically stay local so syncing never blocks",

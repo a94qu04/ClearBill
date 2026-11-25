@@ -8,6 +8,7 @@ import {
   FileJson,
   FileSpreadsheet,
   ImageDown,
+  ImagePlus,
   Loader2,
   Pencil,
   Plus,
@@ -16,9 +17,13 @@ import {
   X,
 } from 'lucide-vue-next'
 import MemberAvatar from '@/components/MemberAvatar.vue'
-import { compressAvatarImageFileToDataUrl } from '@/core/imageCompressor'
+import {
+  compressAvatarImageFileToDataUrl,
+  compressCoverImageFileToDataUrl,
+} from '@/core/imageCompressor'
 import {
   AVATAR_PALETTE,
+  PROJECT_CARD_PALETTE,
   useLedgerStore,
   type ManagedCategory,
 } from '@/stores/ledgerStore'
@@ -55,6 +60,10 @@ const editProjectDefaultSplitMode = ref<SplitMode>(props.project.defaultSplitMod
 const editProjectDefaultPayerId = ref(
   props.project.defaultPayerId || props.project.members[0]?.id || '',
 )
+const editProjectCardColor = ref<string | undefined>(props.project.cardColor)
+const editProjectCardCoverImage = ref<string | undefined>(
+  props.project.cardCoverImage,
+)
 
 const newMemberName = ref('')
 const editingMemberId = ref<string | null>(null)
@@ -70,9 +79,42 @@ watch(
     editProjectDefaultSplitMode.value = proj.defaultSplitMode
     editProjectDefaultPayerId.value =
       proj.defaultPayerId || proj.members[0]?.id || ''
+    editProjectCardColor.value = proj.cardColor
+    editProjectCardCoverImage.value = proj.cardCoverImage
   },
   { deep: true },
 )
+
+async function handleProjectCoverUpload(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  try {
+    editProjectCardCoverImage.value = await compressCoverImageFileToDataUrl(file)
+  } catch {
+    emit('toast', t('photo.uploadError'))
+  } finally {
+    input.value = ''
+  }
+}
+
+function getPreviewCardStyle(): Record<string, string> | undefined {
+  if (editProjectCardCoverImage.value) {
+    return {
+      backgroundImage: `url(${editProjectCardCoverImage.value})`,
+      backgroundSize: 'cover',
+      backgroundPosition: 'center',
+    }
+  }
+  if (editProjectCardColor.value) {
+    return {
+      backgroundColor: editProjectCardColor.value,
+      backgroundImage:
+        'linear-gradient(135deg, rgba(255,255,255,0.14) 0%, rgba(0,0,0,0.22) 100%)',
+    }
+  }
+  return undefined
+}
 
 async function handleSaveProjectSettings() {
   if (!editProjectName.value.trim()) return
@@ -104,6 +146,8 @@ async function handleSaveProjectSettings() {
       baseCurrency: editProjectCurrency.value,
       defaultSplitMode: editProjectDefaultSplitMode.value,
       defaultPayerId: editProjectDefaultPayerId.value,
+      cardColor: editProjectCardColor.value ?? null,
+      cardCoverImage: editProjectCardCoverImage.value ?? null,
     })
     emit('toast', t('project.projectUpdatedToast'))
   } catch {
@@ -572,6 +616,79 @@ function handleExportProjectJson() {
             <option value="equal">{{ t('split.tabEqual') }}</option>
             <option value="custom_plus_equal">{{ t('split.tabCustomPlusEqual') }}</option>
           </select>
+        </div>
+
+        <!-- 專案卡片背景（自訂色票或上傳封面照片） -->
+        <div class="space-y-2 border-t border-slate-100 pt-3 dark:border-slate-800">
+          <div class="flex items-center justify-between">
+            <label class="text-[11px] font-semibold text-slate-500">
+              {{ t('project.cardBgLabel') }}
+            </label>
+            <button
+              v-if="editProjectCardColor || editProjectCardCoverImage"
+              type="button"
+              class="text-[11px] font-semibold text-slate-400 hover:text-rose-500"
+              @click="
+                editProjectCardColor = undefined;
+                editProjectCardCoverImage = undefined
+              "
+            >
+              {{ t('project.cardBgReset') }}
+            </button>
+          </div>
+
+          <div class="flex flex-wrap items-center gap-2">
+            <button
+              v-for="color in PROJECT_CARD_PALETTE"
+              :key="color"
+              type="button"
+              class="h-6 w-6 rounded-full transition"
+              :style="{ backgroundColor: color }"
+              :class="
+                !editProjectCardCoverImage && editProjectCardColor === color
+                  ? 'ring-2 ring-emerald-500 ring-offset-2 dark:ring-offset-slate-900'
+                  : 'opacity-80 hover:opacity-100'
+              "
+              @click="
+                editProjectCardColor = color;
+                editProjectCardCoverImage = undefined
+              "
+            />
+            <label
+              class="inline-flex cursor-pointer items-center gap-1 rounded-full border border-dashed border-slate-300 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:border-emerald-500 hover:text-emerald-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+            >
+              <ImagePlus class="h-3.5 w-3.5" />
+              <span>{{ t('project.cardBgUploadPhoto') }}</span>
+              <input
+                type="file"
+                accept="image/*"
+                class="hidden"
+                @change="handleProjectCoverUpload"
+              />
+            </label>
+          </div>
+
+          <div
+            v-if="editProjectCardColor || editProjectCardCoverImage"
+            class="relative h-20 overflow-hidden rounded-2xl border border-white/15 px-3.5 py-2.5 text-white shadow-sm"
+            :style="getPreviewCardStyle()"
+          >
+            <div
+              v-if="editProjectCardCoverImage"
+              class="pointer-events-none absolute inset-0 bg-gradient-to-t from-slate-950/80 via-slate-950/40 to-slate-950/30"
+            />
+            <div class="relative z-10 flex h-full flex-col justify-between">
+              <div class="flex items-center justify-between text-xs font-bold">
+                <span class="truncate">{{ editProjectName || project.name }}</span>
+                <span class="rounded bg-black/35 px-1.5 py-0.5 text-[10px]">
+                  {{ editProjectCurrency }}
+                </span>
+              </div>
+              <div class="text-[11px] font-semibold text-emerald-300">
+                {{ t('project.cardBgPreviewHint') }}
+              </div>
+            </div>
+          </div>
         </div>
 
         <button

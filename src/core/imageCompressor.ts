@@ -92,3 +92,62 @@ export async function compressAvatarImageFileToDataUrl(
     img.src = rawDataUrl
   })
 }
+
+/**
+ * 將專案小卡封面照片自動依指定長寬比（預設 16:9、640x360）做中心裁切並壓縮為輕量 JPEG Data URL
+ * 單張約 20~45 KB，適合同步至 Google Drive 與 Firestore。
+ */
+export async function compressCoverImageFileToDataUrl(
+  file: File,
+  targetWidth = 640,
+  targetHeight = 360,
+  quality = 0.74,
+): Promise<string> {
+  const rawDataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result ?? ''))
+    reader.onerror = () => reject(new Error('ERR_IMAGE_READ_FAILED'))
+    reader.readAsDataURL(file)
+  })
+
+  if (typeof document === 'undefined' || typeof Image === 'undefined') {
+    return rawDataUrl
+  }
+
+  return new Promise<string>((resolve) => {
+    const img = new Image()
+    img.onload = () => {
+      const targetRatio = targetWidth / targetHeight
+      const imgRatio = img.width / img.height
+      let sx = 0
+      let sy = 0
+      let sw = img.width
+      let sh = img.height
+
+      if (imgRatio > targetRatio) {
+        sw = Math.round(img.height * targetRatio)
+        sx = Math.max(0, Math.floor((img.width - sw) / 2))
+      } else {
+        sh = Math.round(img.width / targetRatio)
+        sy = Math.max(0, Math.floor((img.height - sh) / 2))
+      }
+
+      const canvas = document.createElement('canvas')
+      canvas.width = targetWidth
+      canvas.height = targetHeight
+      const ctx = canvas.getContext('2d')
+      if (!ctx) {
+        resolve(rawDataUrl)
+        return
+      }
+      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, targetWidth, targetHeight)
+      try {
+        resolve(canvas.toDataURL('image/jpeg', quality))
+      } catch {
+        resolve(rawDataUrl)
+      }
+    }
+    img.onerror = () => resolve(rawDataUrl)
+    img.src = rawDataUrl
+  })
+}

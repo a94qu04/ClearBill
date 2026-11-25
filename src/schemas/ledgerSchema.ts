@@ -124,11 +124,12 @@ export const ProjectMemberSchema = z.object({
 })
 export type ProjectMember = z.infer<typeof ProjectMemberSchema>
 
-/** 使用者個人成員檔案（用於預設成員名稱與大頭貼顯示） */
+/** 使用者個人成員檔案（用於預設成員名稱與大頭貼顯示，支援跨裝置同步） */
 export const UserProfileSchema = z.object({
   displayName: z.string().trim().max(50).default(''),
   avatarColor: z.string().trim().max(32).default('#10b981'),
   avatarImage: z.string().max(180_000).optional(),
+  updatedAt: z.number().int().nonnegative().optional(),
 })
 export type UserProfile = z.infer<typeof UserProfileSchema>
 
@@ -157,6 +158,10 @@ export const ProjectSchema = z.object({
   defaultPayerId: z.string().trim().min(1).optional(),
   isActive: z.boolean().default(true),
   isArchived: z.boolean().optional(),
+  /** 選填：專案小卡自訂背景色（Hex 色碼） */
+  cardColor: z.string().trim().max(32).optional(),
+  /** 選填：專案小卡自訂封面照片（16:9 輕量壓縮 Data URL） */
+  cardCoverImage: z.string().max(280_000).optional(),
   syncMeta: ProjectSyncMetaSchema.optional(),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
@@ -219,12 +224,13 @@ export const QuickIntakeParamsSchema = z.object({
 })
 export type QuickIntakeParams = z.infer<typeof QuickIntakeParamsSchema>
 
-/** 完整 JSON 備份與同步封包結構（categories 為選填，完整向下相容舊版備份檔） */
+/** 完整 JSON 備份與同步封包結構（categories 與 userProfile 為選填，完整向下相容舊版備份檔） */
 export const LedgerBackupSchema = z.object({
   schemaVersion: z.literal(CURRENT_SCHEMA_VERSION),
   exportedAt: z.number().int().nonnegative(),
   projects: z.array(ProjectSchema),
   transactions: z.array(TransactionSchema),
   categories: z.array(ManagedCategoryBackupSchema).optional(),
+  userProfile: UserProfileSchema.optional(),
 })
 export type LedgerBackup = z.infer<typeof LedgerBackupSchema>

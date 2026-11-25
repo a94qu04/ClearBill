@@ -100,8 +100,11 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
-      <!-- 主圖與左右切換箭頭 -->
-      <div class="relative flex max-h-[76vh] w-full max-w-3xl items-center justify-center">
+      <!-- 主圖與左右切換箭頭（點擊圖片本體或周圍空白處皆可關閉） -->
+      <div
+        class="relative flex max-h-[76vh] w-full max-w-3xl items-center justify-center"
+        @click.self="emit('close')"
+      >
         <button
           v-if="hasMultiple"
           type="button"
@@ -115,7 +118,8 @@ onBeforeUnmount(() => {
         <img
           :src="currentPhotoUrl"
           :alt="t('photo.viewerTitle')"
-          class="max-h-[76vh] max-w-full rounded-2xl object-contain shadow-2xl"
+          class="max-h-[76vh] max-w-full cursor-pointer rounded-2xl object-contain shadow-2xl"
+          @click.stop="emit('close')"
         />
 
         <button

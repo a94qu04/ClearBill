@@ -4,6 +4,7 @@ import {
   type ManagedCategoryBackup,
   type Project,
   type Transaction,
+  type UserProfile,
 } from '@/schemas/ledgerSchema'
 import { migrateLedgerBackup } from '@/core/migrationEngine'
 
@@ -21,6 +22,8 @@ export interface LedgerMergeResult {
   projects: Project[]
   transactions: Transaction[]
   categories: ManagedCategoryBackup[]
+  userProfile?: UserProfile
+  userProfileUpdated: boolean
   stats: LedgerMergeStats
 }
 
@@ -29,12 +32,14 @@ export interface LedgerMergeResult {
  * - 遠端/備份檔中有本地缺少的 UUID ➔ 新增
  * - 兩端皆有相同 UUID ➔ 保留 updatedAt 較新的版本（時間戳較新才覆寫）
  * - 若備份含自訂分類清單，會自動補入本地缺少的分類鍵值，避免跨裝置顯示原始 key
+ * - 若備份含個人成員名稱與大頭貼（userProfile），依 updatedAt 保留最新版本實現跨裝置同步
  */
 export function mergeLedgerData(
   local: {
     projects: Project[]
     transactions: Transaction[]
     categories?: ManagedCategoryBackup[]
+    userProfile?: UserProfile
   },
   incomingBackup: LedgerBackup,
 ): LedgerMergeResult {
@@ -101,10 +106,36 @@ export function mergeLedgerData(
     }
   }
 
+  // 合併個人成員檔案（名稱、大頭貼與頭像色票）：以 updatedAt 較新者為準
+  let mergedUserProfile: UserProfile | undefined = local.userProfile
+    ? { ...local.userProfile }
+    : undefined
+  let userProfileUpdated = false
+  const incomingProfile = incomingBackup.userProfile
+  if (incomingProfile) {
+    const incomingTs = incomingProfile.updatedAt ?? 0
+    const localTs = local.userProfile?.updatedAt ?? 0
+    const localHasContent = Boolean(
+      local.userProfile?.displayName || local.userProfile?.avatarImage,
+    )
+    const incomingHasContent = Boolean(
+      incomingProfile.displayName || incomingProfile.avatarImage,
+    )
+    if (
+      incomingTs > localTs ||
+      (!localHasContent && incomingHasContent && localTs === 0)
+    ) {
+      mergedUserProfile = { ...incomingProfile }
+      userProfileUpdated = true
+    }
+  }
+
   return {
     projects: Array.from(projectMap.values()),
     transactions: Array.from(txMap.values()),
     categories: Array.from(categoryMap.values()),
+    userProfile: mergedUserProfile,
+    userProfileUpdated,
     stats: {
       projectsAdded,
       projectsUpdated,
@@ -118,13 +149,14 @@ export function mergeLedgerData(
 }
 
 /**
- * 建立符合 schemaVersion: 1 規格之標準 JSON 備份物件
+ * 建立符合 schemaVersion: 1 規格之標準備份物件
  */
 export function createLedgerBackupPayload(
   projects: Project[],
   transactions: Transaction[],
   exportedAt = Date.now(),
   categories?: ManagedCategoryBackup[],
+  userProfile?: UserProfile,
 ): LedgerBackup {
   return migrateLedgerBackup({
     schemaVersion: CURRENT_SCHEMA_VERSION,
@@ -132,11 +164,12 @@ export function createLedgerBackupPayload(
     projects,
     transactions,
     ...(categories && categories.length > 0 ? { categories } : {}),
+    ...(userProfile ? { userProfile } : {}),
   })
 }
 
 /**
- * 建立單一專案之輕量協作 JSON 備份（僅包含該專案、關聯交易與使用到的自訂分類）
+ * 建立單一專案之輕量協作備份（僅包含該專案、關聯交易與使用到的自訂分類）
  */
 export function createSingleProjectBackupPayload(
   project: Project,
@@ -163,13 +196,14 @@ export function createSingleProjectBackupPayload(
 }
 
 /**
- * 解析外部 JSON 字串或物件，強制經過 Schema 遷移與 Zod 安檢後，與本地資料合併
+ * 解析外部備份字串或物件，強制經過 Schema 遷移與 Zod 安檢後，與本地資料合併
  */
 export function parseAndMergeLedgerBackup(
   local: {
     projects: Project[]
     transactions: Transaction[]
     categories?: ManagedCategoryBackup[]
+    userProfile?: UserProfile
   },
   rawInput: string | unknown,
 ): LedgerMergeResult {

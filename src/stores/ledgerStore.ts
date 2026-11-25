@@ -71,6 +71,17 @@ export const AVATAR_PALETTE = [
   '#14b8a6',
 ] as const
 
+export const PROJECT_CARD_PALETTE = [
+  '#0f172a',
+  '#065f46',
+  '#1e3a8a',
+  '#0e7490',
+  '#581c87',
+  '#9d174d',
+  '#9a3412',
+  '#854d0e',
+] as const
+
 export interface ManagedCategory {
   key: string
   /** 若使用者未修改過內建分類，維持 undefined 以便自動套用當前語系翻譯；修改過則顯示此自訂名稱 */
@@ -130,6 +141,8 @@ export interface CreateProjectPayload {
   baseCurrency: string
   memberNames: string[]
   defaultSplitMode?: SplitMode
+  cardColor?: string
+  cardCoverImage?: string
 }
 
 export interface UpdateProjectPayload {
@@ -137,6 +150,8 @@ export interface UpdateProjectPayload {
   baseCurrency?: string
   defaultSplitMode?: SplitMode
   defaultPayerId?: string
+  cardColor?: string | null
+  cardCoverImage?: string | null
 }
 
 export interface CreateTransactionPayload {
@@ -272,6 +287,12 @@ function loadUserPrefs(): PersistedUserPrefsV2 {
                 typeof rawProfile.avatarImage === 'string' &&
                 rawProfile.avatarImage.startsWith('data:image/')
                   ? rawProfile.avatarImage
+                  : undefined,
+              updatedAt:
+                typeof rawProfile.updatedAt === 'number' &&
+                Number.isFinite(rawProfile.updatedAt) &&
+                rawProfile.updatedAt >= 0
+                  ? Math.floor(rawProfile.updatedAt)
                   : undefined,
             }
           : createDefaultUserProfile()
@@ -422,9 +443,11 @@ export const useLedgerStore = defineStore('ledger', () => {
           : patch.avatarImage !== undefined
             ? patch.avatarImage
             : userProfile.value.avatarImage,
+      updatedAt: Date.now(),
     }
     userProfile.value = next
     saveUserPrefs()
+    markGoogleDriveDirty()
 
     let updatedProjectsCount = 0
     if (options?.applyToExistingProjects) {
@@ -1508,6 +1531,8 @@ export const useLedgerStore = defineStore('ledger', () => {
       defaultSplitMode: payload.defaultSplitMode ?? 'equal',
       defaultPayerId: members[0]?.id,
       isActive: true,
+      ...(payload.cardColor ? { cardColor: payload.cardColor } : {}),
+      ...(payload.cardCoverImage ? { cardCoverImage: payload.cardCoverImage } : {}),
       createdAt: now,
       updatedAt: now,
     }
@@ -1532,6 +1557,19 @@ export const useLedgerStore = defineStore('ledger', () => {
     const existing = projects.value.find((p) => p.id === projectId && !p.isDeleted)
     if (!existing) return null
 
+    const nextCardColor =
+      patch.cardColor === null
+        ? undefined
+        : patch.cardColor !== undefined
+          ? patch.cardColor.trim() || undefined
+          : existing.cardColor
+    const nextCardCoverImage =
+      patch.cardCoverImage === null
+        ? undefined
+        : patch.cardCoverImage !== undefined
+          ? patch.cardCoverImage
+          : existing.cardCoverImage
+
     const updated: Project = {
       ...existing,
       name: patch.name !== undefined ? patch.name.trim() : existing.name,
@@ -1541,6 +1579,8 @@ export const useLedgerStore = defineStore('ledger', () => {
           : existing.baseCurrency,
       defaultSplitMode: patch.defaultSplitMode ?? existing.defaultSplitMode,
       defaultPayerId: patch.defaultPayerId ?? existing.defaultPayerId,
+      cardColor: nextCardColor,
+      cardCoverImage: nextCardCoverImage,
       members: existing.members.map((m) => ({ ...m })),
       updatedAt: Date.now(),
     }
@@ -2112,6 +2152,7 @@ export const useLedgerStore = defineStore('ledger', () => {
       cloneTransactionsForBackup(transactions.value),
       Date.now(),
       toPlainClone(categories.value),
+      toPlainClone(userProfile.value),
     )
   }
 
@@ -2137,6 +2178,7 @@ export const useLedgerStore = defineStore('ledger', () => {
         projects: cloneProjectsForBackup(projects.value),
         transactions: cloneTransactionsForBackup(transactions.value),
         categories: toPlainClone(categories.value),
+        userProfile: toPlainClone(userProfile.value),
       },
       raw,
     )
@@ -2154,8 +2196,16 @@ export const useLedgerStore = defineStore('ledger', () => {
     projects.value = plainProjects
     transactions.value = plainTransactions
 
+    let prefsChanged = false
     if (merged.categories.length > 0) {
       categories.value = toPlainClone(merged.categories)
+      prefsChanged = true
+    }
+    if (merged.userProfileUpdated && merged.userProfile) {
+      userProfile.value = toPlainClone(merged.userProfile)
+      prefsChanged = true
+    }
+    if (prefsChanged) {
       saveUserPrefs()
     }
 

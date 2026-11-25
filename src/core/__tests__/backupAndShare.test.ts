@@ -146,6 +146,58 @@ describe('backupMergeEngine - JSON 備份匯出與 UUID + updatedAt 合併', () 
     expect(added?.note).toBeUndefined()
   })
 
+  it('能依 updatedAt 跨裝置同步並合併個人成員名稱與大頭貼', () => {
+    const remoteNewerBackup = createLedgerBackupPayload(
+      [projectA],
+      [txLocalOld],
+      1700000020000,
+      undefined,
+      {
+        displayName: '阿明',
+        avatarColor: '#3b82f6',
+        avatarImage: 'data:image/jpeg;base64,/9j/4AAQSkZJRg==',
+        updatedAt: 1700000020000,
+      },
+    )
+
+    // 情境 A：遠端較新 -> 覆寫更新本地個人名稱與大頭貼
+    const mergedNewer = parseAndMergeLedgerBackup(
+      {
+        projects: [projectA],
+        transactions: [txLocalOld],
+        userProfile: {
+          displayName: '舊名字',
+          avatarColor: '#10b981',
+          updatedAt: 1700000010000,
+        },
+      },
+      JSON.stringify(remoteNewerBackup),
+    )
+
+    expect(mergedNewer.userProfileUpdated).toBe(true)
+    expect(mergedNewer.userProfile?.displayName).toBe('阿明')
+    expect(mergedNewer.userProfile?.avatarImage).toBe(
+      'data:image/jpeg;base64,/9j/4AAQSkZJRg==',
+    )
+
+    // 情境 B：本地較新 -> 不被遠端舊大頭貼倒退覆蓋
+    const mergedOlder = parseAndMergeLedgerBackup(
+      {
+        projects: [projectA],
+        transactions: [txLocalOld],
+        userProfile: {
+          displayName: '最新暱稱',
+          avatarColor: '#ec4899',
+          updatedAt: 1700000099999,
+        },
+      },
+      JSON.stringify(remoteNewerBackup),
+    )
+
+    expect(mergedOlder.userProfileUpdated).toBe(false)
+    expect(mergedOlder.userProfile?.displayName).toBe('最新暱稱')
+  })
+
   it('拒絕無效的 JSON 字串與結構損毀之備份資料', () => {
     expect(() =>
       parseAndMergeLedgerBackup(

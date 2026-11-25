@@ -8,6 +8,7 @@ import {
   Cloud,
   CloudOff,
   GripVertical,
+  ImagePlus,
   LayoutGrid,
   Loader2,
   Plus,
@@ -18,9 +19,14 @@ import {
   Users,
   X,
 } from 'lucide-vue-next'
-import { AVATAR_PALETTE, useLedgerStore } from '@/stores/ledgerStore'
+import {
+  AVATAR_PALETTE,
+  PROJECT_CARD_PALETTE,
+  useLedgerStore,
+} from '@/stores/ledgerStore'
 import { formatCurrencyAmount } from '@/core/currency'
 import { parseGoogleConnectHash } from '@/core/googleConnectLink'
+import { compressCoverImageFileToDataUrl } from '@/core/imageCompressor'
 import { parseShareInviteHash } from '@/core/realtimeSyncEngine'
 import { refreshLiveExchangeRates } from '@/services/exchangeRateService'
 import {
@@ -168,13 +174,56 @@ let toastTimer: ReturnType<typeof setTimeout> | null = null
 const draggingProjectId = ref<string | null>(null)
 const dragOverProjectId = ref<string | null>(null)
 
-// 建立新專案表單狀態（現代成員膠囊 Tag Chip）
+// 建立新專案表單狀態（現代成員膠囊 Tag Chip + 自訂小卡背景色/封面圖）
 const projectName = ref('')
 const projectCurrency = ref(store.defaultCurrency)
 const projectDefaultSplitMode = ref<SplitMode>('equal')
 const projectMembersList = ref<string[]>([])
 const newProjectMemberInput = ref('')
+const projectCardColor = ref<string | undefined>(undefined)
+const projectCardCoverImage = ref<string | undefined>(undefined)
 const projectFormError = ref('')
+
+async function handleCreateProjectCoverUpload(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  try {
+    projectCardCoverImage.value = await compressCoverImageFileToDataUrl(file)
+  } catch {
+    showToast(t('photo.uploadError'))
+  } finally {
+    input.value = ''
+  }
+}
+
+function getProjectCardStyle(proj: {
+  cardColor?: string
+  cardCoverImage?: string
+}): Record<string, string> | undefined {
+  if (proj.cardCoverImage) {
+    return {
+      backgroundImage: `url(${proj.cardCoverImage})`,
+      backgroundSize: 'cover',
+      backgroundPosition: 'center',
+    }
+  }
+  if (proj.cardColor) {
+    return {
+      backgroundColor: proj.cardColor,
+      backgroundImage:
+        'linear-gradient(135deg, rgba(255,255,255,0.14) 0%, rgba(0,0,0,0.22) 100%)',
+    }
+  }
+  return undefined
+}
+
+function hasCustomProjectCardBg(proj: {
+  cardColor?: string
+  cardCoverImage?: string
+}): boolean {
+  return Boolean(proj.cardCoverImage || proj.cardColor)
+}
 
 function commitNewMemberChips() {
   const raw = newProjectMemberInput.value
@@ -343,6 +392,8 @@ function openCreateProjectView() {
     t('project.defaultMember3'),
   ]
   newProjectMemberInput.value = ''
+  projectCardColor.value = undefined
+  projectCardCoverImage.value = undefined
   activeView.value = 'project_create'
 }
 
@@ -373,6 +424,8 @@ async function handleCreateProject() {
       baseCurrency: projectCurrency.value,
       memberNames: members,
       defaultSplitMode: projectDefaultSplitMode.value,
+      cardColor: projectCardColor.value,
+      cardCoverImage: projectCardCoverImage.value,
     })
     projectTab.value = 'expenses'
     activeView.value = 'project_workspace'
@@ -799,11 +852,16 @@ onBeforeUnmount(() => {
               :key="proj.id"
               draggable="true"
               :data-project-id="proj.id"
-              class="flex items-start gap-1.5 rounded-2xl border px-2.5 py-3 text-left transition"
+              class="relative flex items-start gap-1.5 overflow-hidden rounded-2xl border px-2.5 py-3 text-left transition"
+              :style="getProjectCardStyle(proj)"
               :class="[
-                store.activeProject?.id === proj.id
-                  ? 'border-emerald-500 bg-emerald-50 text-emerald-900 dark:border-emerald-500/70 dark:bg-emerald-950/60 dark:text-emerald-200'
-                  : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200',
+                hasCustomProjectCardBg(proj)
+                  ? store.activeProject?.id === proj.id
+                    ? 'border-emerald-400 text-white ring-2 ring-emerald-400/50'
+                    : 'border-white/15 text-white hover:brightness-105'
+                  : store.activeProject?.id === proj.id
+                    ? 'border-emerald-500 bg-emerald-50 text-emerald-900 dark:border-emerald-500/70 dark:bg-emerald-950/60 dark:text-emerald-200'
+                    : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200',
                 dragOverProjectId === proj.id
                   ? 'border-dashed border-emerald-500 ring-2 ring-emerald-500/30'
                   : '',
@@ -814,30 +872,59 @@ onBeforeUnmount(() => {
               @drop="onProjectDrop(proj.id, $event)"
               @dragend="onProjectDragEnd"
             >
+              <!-- 封面照片暗色漸層遮罩，確保白色字體清晰可讀 -->
+              <div
+                v-if="proj.cardCoverImage"
+                class="pointer-events-none absolute inset-0 bg-gradient-to-t from-slate-950/85 via-slate-950/45 to-slate-950/35"
+              />
               <span
-                class="mt-0.5 shrink-0 cursor-grab text-slate-300 active:cursor-grabbing dark:text-slate-600"
+                class="relative z-10 mt-0.5 shrink-0 cursor-grab active:cursor-grabbing"
+                :class="
+                  hasCustomProjectCardBg(proj)
+                    ? 'text-white/55'
+                    : 'text-slate-300 dark:text-slate-600'
+                "
                 :title="t('home.dragProjectHint')"
               >
                 <GripVertical class="h-3.5 w-3.5" />
               </span>
               <button
                 type="button"
-                class="flex min-w-0 flex-1 flex-col gap-1.5 text-left"
+                class="relative z-10 flex min-w-0 flex-1 flex-col gap-1.5 text-left"
                 @click="openProjectWorkspace(proj.id)"
               >
                 <div class="flex w-full items-center justify-between gap-1.5">
                   <span class="flex min-w-0 items-center gap-1">
                     <Cloud
                       v-if="proj.syncMeta?.mode === 'firestore'"
-                      class="h-3 w-3 shrink-0 text-emerald-600 dark:text-emerald-400"
+                      class="h-3 w-3 shrink-0"
+                      :class="
+                        hasCustomProjectCardBg(proj)
+                          ? 'text-emerald-300'
+                          : 'text-emerald-600 dark:text-emerald-400'
+                      "
                     />
                     <span class="truncate text-xs font-bold">{{ proj.name }}</span>
                   </span>
-                  <span class="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+                  <span
+                    class="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold"
+                    :class="
+                      hasCustomProjectCardBg(proj)
+                        ? 'bg-black/35 text-white/90 backdrop-blur-sm'
+                        : 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'
+                    "
+                  >
                     {{ proj.baseCurrency }}
                   </span>
                 </div>
-                <div class="truncate text-sm font-extrabold tabular-nums text-emerald-700 dark:text-emerald-400">
+                <div
+                  class="truncate text-sm font-extrabold tabular-nums"
+                  :class="
+                    hasCustomProjectCardBg(proj)
+                      ? 'text-emerald-300 drop-shadow-sm'
+                      : 'text-emerald-700 dark:text-emerald-400'
+                  "
+                >
                   {{ fmt(store.getProjectTotalExpense(proj.id), proj.baseCurrency) }}
                 </div>
                 <div
@@ -861,7 +948,14 @@ onBeforeUnmount(() => {
                       +{{ proj.members.length - 4 }}
                     </span>
                   </div>
-                  <span class="shrink-0 text-[10px] font-medium text-slate-400 dark:text-slate-500">
+                  <span
+                    class="shrink-0 text-[10px] font-medium"
+                    :class="
+                      hasCustomProjectCardBg(proj)
+                        ? 'text-white/85'
+                        : 'text-slate-400 dark:text-slate-500'
+                    "
+                  >
                     {{ t('project.memberCount', { count: proj.members.length }) }}
                   </span>
                 </div>
@@ -1016,6 +1110,84 @@ onBeforeUnmount(() => {
               </div>
             </div>
 
+            <!-- 專案小卡背景自訂（選色或上傳封面照片） -->
+            <div class="space-y-2">
+              <div class="flex items-center justify-between">
+                <label class="text-xs font-semibold text-slate-600 dark:text-slate-300">
+                  {{ t('project.cardBgLabel') }}
+                </label>
+                <button
+                  v-if="projectCardColor || projectCardCoverImage"
+                  type="button"
+                  class="text-[11px] font-semibold text-slate-400 hover:text-rose-500"
+                  @click="
+                    projectCardColor = undefined;
+                    projectCardCoverImage = undefined
+                  "
+                >
+                  {{ t('project.cardBgReset') }}
+                </button>
+              </div>
+
+              <div class="flex flex-wrap items-center gap-2">
+                <button
+                  v-for="color in PROJECT_CARD_PALETTE"
+                  :key="color"
+                  type="button"
+                  class="h-6 w-6 rounded-full transition"
+                  :style="{ backgroundColor: color }"
+                  :class="
+                    !projectCardCoverImage && projectCardColor === color
+                      ? 'ring-2 ring-emerald-500 ring-offset-2 dark:ring-offset-slate-900'
+                      : 'opacity-80 hover:opacity-100'
+                  "
+                  @click="
+                    projectCardColor = color;
+                    projectCardCoverImage = undefined
+                  "
+                />
+                <label
+                  class="inline-flex cursor-pointer items-center gap-1 rounded-full border border-dashed border-slate-300 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:border-emerald-500 hover:text-emerald-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+                >
+                  <ImagePlus class="h-3.5 w-3.5" />
+                  <span>{{ t('project.cardBgUploadPhoto') }}</span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    class="hidden"
+                    @change="handleCreateProjectCoverUpload"
+                  />
+                </label>
+              </div>
+
+              <div
+                v-if="projectCardColor || projectCardCoverImage"
+                class="relative h-20 overflow-hidden rounded-2xl border border-white/15 px-3.5 py-2.5 text-white shadow-sm"
+                :style="
+                  getProjectCardStyle({
+                    cardColor: projectCardColor,
+                    cardCoverImage: projectCardCoverImage,
+                  })
+                "
+              >
+                <div
+                  v-if="projectCardCoverImage"
+                  class="pointer-events-none absolute inset-0 bg-gradient-to-t from-slate-950/80 via-slate-950/40 to-slate-950/30"
+                />
+                <div class="relative z-10 flex h-full flex-col justify-between">
+                  <div class="flex items-center justify-between text-xs font-bold">
+                    <span class="truncate">{{ projectName || t('project.namePlaceholder') }}</span>
+                    <span class="rounded bg-black/35 px-1.5 py-0.5 text-[10px]">
+                      {{ projectCurrency }}
+                    </span>
+                  </div>
+                  <div class="text-[11px] font-semibold text-emerald-300">
+                    {{ t('project.cardBgPreviewHint') }}
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <p v-if="projectFormError" class="text-xs font-medium text-rose-500">
               {{ projectFormError }}
             </p>
@@ -1036,15 +1208,44 @@ onBeforeUnmount(() => {
         class="space-y-4"
       >
         <section
-          class="space-y-3 rounded-2xl bg-slate-900 px-5 py-4 text-white dark:border dark:border-slate-800"
+          class="relative space-y-3 overflow-hidden rounded-2xl bg-slate-900 px-5 py-4 text-white dark:border dark:border-slate-800"
+          :style="getProjectCardStyle(store.activeProject)"
         >
-          <div class="flex items-center justify-between gap-3">
+          <div
+            v-if="store.activeProject.cardCoverImage"
+            class="pointer-events-none absolute inset-0 bg-gradient-to-t from-slate-950/85 via-slate-950/55 to-slate-950/45"
+          />
+          <div class="relative z-10 flex items-center justify-between gap-3">
             <div class="min-w-0">
-              <div class="flex flex-wrap items-center gap-1.5 text-xs font-medium text-emerald-400">
-                <span>
-                  {{ t('project.memberCount', { count: store.activeProject.members.length }) }}
-                  · {{ store.activeProject.baseCurrency }}
-                </span>
+              <div class="flex flex-wrap items-center gap-2 text-xs font-medium text-emerald-400">
+                <button
+                  type="button"
+                  :title="store.activeProject.members.map((m) => m.name).join('、')"
+                  class="inline-flex items-center gap-1.5 rounded-full transition hover:opacity-90"
+                  @click="projectTab = 'settings'"
+                >
+                  <span class="inline-flex items-center -space-x-1">
+                    <MemberAvatar
+                      v-for="m in store.activeProject.members.slice(0, 6)"
+                      :key="m.id"
+                      :name="m.name"
+                      :color="m.avatarColor"
+                      :image="m.avatarImage"
+                      size="xs"
+                      ring
+                    />
+                    <span
+                      v-if="store.activeProject.members.length > 6"
+                      class="inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-slate-700 px-1 text-[9px] font-bold text-slate-100 ring-1 ring-slate-900"
+                    >
+                      +{{ store.activeProject.members.length - 6 }}
+                    </span>
+                  </span>
+                  <span>
+                    {{ t('project.memberCount', { count: store.activeProject.members.length }) }}
+                    · {{ store.activeProject.baseCurrency }}
+                  </span>
+                </button>
                 <span
                   v-if="store.activeProject.isArchived"
                   class="inline-flex items-center gap-1 rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-bold text-amber-300"
@@ -1056,7 +1257,7 @@ onBeforeUnmount(() => {
               <div class="mt-0.5 truncate text-lg font-bold">{{ store.activeProject.name }}</div>
             </div>
             <div class="shrink-0 text-right">
-              <div class="text-[11px] text-slate-400">{{ t('project.totalSpent') }}</div>
+              <div class="text-[11px] text-slate-300">{{ t('project.totalSpent') }}</div>
               <div class="text-xl font-extrabold tabular-nums text-emerald-400">
                 {{ fmt(activeProjectTotalSpent, store.activeProject.baseCurrency) }}
               </div>
@@ -1064,7 +1265,7 @@ onBeforeUnmount(() => {
           </div>
 
           <!-- 多人即時協作共享狀態與邀請入口 -->
-          <div class="flex items-center justify-between gap-2 border-t border-white/10 pt-2.5">
+          <div class="relative z-10 flex items-center justify-between gap-2 border-t border-white/15 pt-2.5">
             <button
               type="button"
               class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-bold transition"
@@ -1103,15 +1304,38 @@ onBeforeUnmount(() => {
             <span
               v-if="
                 store.activeProject.syncMeta?.mode === 'firestore' &&
-                store.activeProject.syncMeta.myMemberId
-              "
-              class="truncate text-[11px] text-slate-400"
-            >
-              {{
+                store.activeProject.syncMeta.myMemberId &&
                 store.activeProject.members.find(
                   (m) => m.id === store.activeProject?.syncMeta?.myMemberId,
-                )?.name
-              }}
+                )
+              "
+              class="inline-flex max-w-[140px] items-center gap-1.5 truncate text-[11px] text-slate-300"
+            >
+              <MemberAvatar
+                :name="
+                  store.activeProject.members.find(
+                    (m) => m.id === store.activeProject?.syncMeta?.myMemberId,
+                  )!.name
+                "
+                :color="
+                  store.activeProject.members.find(
+                    (m) => m.id === store.activeProject?.syncMeta?.myMemberId,
+                  )?.avatarColor
+                "
+                :image="
+                  store.activeProject.members.find(
+                    (m) => m.id === store.activeProject?.syncMeta?.myMemberId,
+                  )?.avatarImage
+                "
+                size="xxs"
+              />
+              <span class="truncate">
+                {{
+                  store.activeProject.members.find(
+                    (m) => m.id === store.activeProject?.syncMeta?.myMemberId,
+                  )?.name
+                }}
+              </span>
             </span>
           </div>
         </section>

@@ -1,7 +1,6 @@
 {
   "app": {
     "name": "ClearBill 清帳",
-    "tagline": "3 秒記帳・離線優先・免註冊",
     "localOnlyBadge": "本地儲存",
     "storagePersisted": "離線保護",
     "openSettings": "點擊 App 圖示開啟設定"
@@ -297,7 +296,11 @@
     "defaultMember2": "旅伴 A",
     "defaultMember3": "旅伴 B",
     "fabAdd": "記一筆",
-    "splitIndicatorTooltip": "{count} 人分攤：{names}"
+    "splitIndicatorTooltip": "{count} 人分攤：{names}",
+    "cardBgLabel": "專案小卡背景（選色或上傳照片）",
+    "cardBgUploadPhoto": "上傳封面照",
+    "cardBgReset": "恢復預設",
+    "cardBgPreviewHint": "小卡背景預覽"
   },
   "profile": {
     "sectionTitle": "我的成員名稱與大頭貼",
@@ -358,14 +361,14 @@
     "errInvalidAmount": "請輸入有效的金額。"
   },
   "categories": {
-    "cat_food": "餐飲美食",
-    "cat_transport": "交通移動",
-    "cat_lodging": "住宿飯店",
-    "cat_shopping": "購物採買",
-    "cat_entertainment": "娛樂門票",
-    "cat_daily": "生活日用",
+    "cat_food": "餐飲",
+    "cat_transport": "交通",
+    "cat_lodging": "住宿",
+    "cat_shopping": "購物",
+    "cat_entertainment": "娛樂",
+    "cat_daily": "日用",
     "cat_other": "其他",
-    "cat_settlement": "還款結算"
+    "cat_settlement": "還款"
   },
   "stats": {
     "title": "消費結構統計",
@@ -435,8 +438,8 @@
     "advancedConfigToggle": "進階：檢視或覆寫 Firebase 設定",
     "resetBuiltInConfig": "恢復內建預設",
     "clearCustomConfig": "清除自訂設定",
-    "introTitle": "免註冊即時同步・保留離線優先",
-    "introDesc": "開啟後將產生專屬加密邀請連結。旅伴點開連結選取自己的名字即可共同記帳，0.2 秒自動同步且內建異常大量刪除熔斷保護。",
+    "introTitle": "多人即時共同記帳",
+    "introDesc": "產生邀請連結分享給旅伴，點開即可一起記帳並即時同步。",
     "selectMyIdentityLabel": "你在這團是哪一位成員？（自動設為本機預設墊付人）",
     "syncImagesLabel": "同步收據照片至雲端",
     "syncImagesHint": "單筆圖片過大時會自動僅同步文字，確保記帳不中斷",
