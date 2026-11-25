@@ -1066,10 +1066,11 @@ export const useLedgerStore = defineStore('ledger', () => {
   ): Promise<void> {
     if (txList.length === 0) return
 
-    const localMap = new Map(transactions.value.map((t) => [t.id, t]))
+    const plainIncomingList = toPlainClone(txList)
+    const localMap = new Map(transactions.value.map((t) => [t.id, toPlainClone(t)]))
     const toPersist: Transaction[] = []
 
-    for (const incoming of txList) {
+    for (const incoming of plainIncomingList) {
       const existing = localMap.get(incoming.id)
       // 若遠端因圖片體積過大略過圖片，保留本地既有圖片避免遺失
       const preservedImages =
@@ -1088,7 +1089,8 @@ export const useLedgerStore = defineStore('ledger', () => {
       localMap.set(normalized.id, normalized)
     }
 
-    await normalVaultDb.transactions.bulkPut(toPersist)
+    const plainToPersist = toPlainClone(toPersist)
+    await normalVaultDb.transactions.bulkPut(plainToPersist)
     transactions.value = Array.from(localMap.values())
   }
 
@@ -1305,7 +1307,10 @@ export const useLedgerStore = defineStore('ledger', () => {
     applyMyProfile?: boolean
   }): Promise<Project> {
     const now = Date.now()
-    let members = params.remoteProject.members.map((m) => ({ ...m }))
+    const plainRemoteProject = toPlainClone(params.remoteProject)
+    const plainRemoteTransactions = toPlainClone(params.remoteTransactions)
+
+    let members = plainRemoteProject.members.map((m) => ({ ...m }))
     let claimedMemberId = params.selectedMemberId
     let projectMemberChanged = false
 
@@ -1346,19 +1351,19 @@ export const useLedgerStore = defineStore('ledger', () => {
     }
 
     const existingLocal = projects.value.find(
-      (p) => p.id === params.remoteProject.id,
+      (p) => p.id === plainRemoteProject.id,
     )
 
     const joinedProject: Project = {
-      ...params.remoteProject,
+      ...plainRemoteProject,
       members,
       isActive: true,
       isDeleted: false,
       isArchived: false,
       defaultPayerId: claimedMemberId || members[0]?.id,
       updatedAt: projectMemberChanged
-        ? Math.max(now, params.remoteProject.updatedAt + 1)
-        : params.remoteProject.updatedAt,
+        ? Math.max(now, plainRemoteProject.updatedAt + 1)
+        : plainRemoteProject.updatedAt,
       syncMeta: {
         mode: 'firestore',
         shareId: params.shareId,
@@ -1384,7 +1389,7 @@ export const useLedgerStore = defineStore('ledger', () => {
       saveUserPrefs()
     }
 
-    await applyRemoteTransactionsList(savedProj.id, params.remoteTransactions)
+    await applyRemoteTransactionsList(savedProj.id, plainRemoteTransactions)
 
     if (projectMemberChanged) {
       await enqueueAndFlushProjectChange(

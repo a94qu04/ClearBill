@@ -36,7 +36,7 @@ const remoteProject = ref<Project | null>(null)
 const remoteTransactions = ref<Transaction[]>([])
 const selectedMemberId = ref<string>('')
 const customNewMemberName = ref('')
-const applyMyProfileOnJoin = ref(true)
+const applyMyProfileOnJoin = ref(false)
 
 const hasCustomUserProfile = computed(() =>
   Boolean(store.userProfile.displayName || store.userProfile.avatarImage),
@@ -58,7 +58,7 @@ async function loadInvitePreview() {
   remoteTransactions.value = []
   selectedMemberId.value = ''
   customNewMemberName.value = ''
-  applyMyProfileOnJoin.value = hasCustomUserProfile.value
+  applyMyProfileOnJoin.value = false
 
   if (!isFirebaseConfigured()) {
     needsConfig.value = true
@@ -79,6 +79,8 @@ async function loadInvitePreview() {
       ? res.project.members.find((m) => m.name.trim().toLowerCase() === myName)
       : undefined
     selectedMemberId.value = matched?.id ?? res.project.members[0]?.id ?? ''
+    // 僅在預選成員與使用者個人名稱一致時才預設勾選套用頭像，避免不小心覆寫別人名字
+    applyMyProfileOnJoin.value = Boolean(matched && hasCustomUserProfile.value)
   } catch (err) {
     errorText.value = resolveSyncError(err)
   } finally {
@@ -246,7 +248,13 @@ async function handleConfirmJoin() {
                 "
                 @click="
                   selectedMemberId = m.id;
-                  customNewMemberName = ''
+                  customNewMemberName = '';
+                  applyMyProfileOnJoin =
+                    Boolean(
+                      store.userProfile.displayName &&
+                      m.name.trim().toLowerCase() ===
+                        store.userProfile.displayName.trim().toLowerCase(),
+                    )
                 "
               >
                 <MemberAvatar
