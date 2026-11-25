@@ -119,8 +119,18 @@ export const ProjectMemberSchema = z.object({
   id: z.string().trim().min(1, '成員 ID 不可為空'),
   name: z.string().trim().min(1, '成員名稱不可為空').max(50),
   avatarColor: z.string().trim().max(32).optional(),
+  /** 選填：正方形裁切壓縮後之大頭貼 Data URL（輕量小圖，完全向下相容） */
+  avatarImage: z.string().max(180_000).optional(),
 })
 export type ProjectMember = z.infer<typeof ProjectMemberSchema>
+
+/** 使用者個人成員檔案（用於預設成員名稱與大頭貼顯示） */
+export const UserProfileSchema = z.object({
+  displayName: z.string().trim().max(50).default(''),
+  avatarColor: z.string().trim().max(32).default('#10b981'),
+  avatarImage: z.string().max(180_000).optional(),
+})
+export type UserProfile = z.infer<typeof UserProfileSchema>
 
 /** 專案即時協作同步中繼資訊（未開啟共享時省略，維持 100% 本地） */
 export const ProjectSyncMetaSchema = z.object({

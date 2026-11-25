@@ -19,6 +19,7 @@ import {
 } from 'lucide-vue-next'
 import type { Project } from '@/schemas/ledgerSchema'
 import { useLedgerStore } from '@/stores/ledgerStore'
+import MemberAvatar from '@/components/MemberAvatar.vue'
 import { buildShareInviteUrl } from '@/core/realtimeSyncEngine'
 import {
   clearCustomFirebaseConfig,
@@ -341,7 +342,7 @@ async function handleStopSync() {
                 v-for="m in project.members"
                 :key="m.id"
                 type="button"
-                class="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold transition"
+                class="inline-flex items-center gap-1.5 rounded-full py-1 pl-1.5 pr-3 text-xs font-semibold transition"
                 :class="
                   selectedMyMemberId === m.id
                     ? 'bg-slate-900 text-white shadow-sm dark:bg-emerald-500 dark:text-slate-950'
@@ -349,9 +350,12 @@ async function handleStopSync() {
                 "
                 @click="selectedMyMemberId = m.id"
               >
-                <span
-                  class="h-2 w-2 rounded-full"
-                  :style="{ backgroundColor: m.avatarColor || '#10b981' }"
+                <MemberAvatar
+                  :name="m.name"
+                  :color="m.avatarColor"
+                  :image="m.avatarImage"
+                  size="xs"
+                  ring
                 />
                 <span>{{ m.name }}</span>
                 <Check v-if="selectedMyMemberId === m.id" class="h-3 w-3" />
@@ -483,7 +487,7 @@ async function handleStopSync() {
                 v-for="m in project.members"
                 :key="m.id"
                 type="button"
-                class="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold transition"
+                class="inline-flex items-center gap-1.5 rounded-full py-1 pl-1.5 pr-3 text-xs font-semibold transition"
                 :class="
                   selectedMyMemberId === m.id
                     ? 'bg-emerald-600 text-white dark:bg-emerald-500 dark:text-slate-950'
@@ -491,9 +495,12 @@ async function handleStopSync() {
                 "
                 @click="handleSelectMyMember(m.id)"
               >
-                <span
-                  class="h-2 w-2 rounded-full"
-                  :style="{ backgroundColor: selectedMyMemberId === m.id ? '#ffffff' : m.avatarColor || '#10b981' }"
+                <MemberAvatar
+                  :name="m.name"
+                  :color="m.avatarColor"
+                  :image="m.avatarImage"
+                  size="xs"
+                  ring
                 />
                 <span>{{ m.name }}</span>
               </button>

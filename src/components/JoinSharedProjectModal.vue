@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Check, Loader2, UserPlus, Users, X } from 'lucide-vue-next'
 import type { Project, ShareInviteParams, Transaction } from '@/schemas/ledgerSchema'
 import { useLedgerStore } from '@/stores/ledgerStore'
+import MemberAvatar from '@/components/MemberAvatar.vue'
 import {
   FirestoreSyncError,
   isFirebaseConfigured,
@@ -35,6 +36,11 @@ const remoteProject = ref<Project | null>(null)
 const remoteTransactions = ref<Transaction[]>([])
 const selectedMemberId = ref<string>('')
 const customNewMemberName = ref('')
+const applyMyProfileOnJoin = ref(true)
+
+const hasCustomUserProfile = computed(() =>
+  Boolean(store.userProfile.displayName || store.userProfile.avatarImage),
+)
 
 function resolveSyncError(err: unknown): string {
   if (err instanceof FirestoreSyncError) {
@@ -52,6 +58,7 @@ async function loadInvitePreview() {
   remoteTransactions.value = []
   selectedMemberId.value = ''
   customNewMemberName.value = ''
+  applyMyProfileOnJoin.value = hasCustomUserProfile.value
 
   if (!isFirebaseConfigured()) {
     needsConfig.value = true
@@ -67,7 +74,11 @@ async function loadInvitePreview() {
     )
     remoteProject.value = res.project
     remoteTransactions.value = res.transactions
-    selectedMemberId.value = res.project.members[0]?.id ?? ''
+    const myName = store.userProfile.displayName.trim().toLowerCase()
+    const matched = myName
+      ? res.project.members.find((m) => m.name.trim().toLowerCase() === myName)
+      : undefined
+    selectedMemberId.value = matched?.id ?? res.project.members[0]?.id ?? ''
   } catch (err) {
     errorText.value = resolveSyncError(err)
   } finally {
@@ -113,6 +124,7 @@ async function handleConfirmJoin() {
       remoteTransactions: remoteTransactions.value,
       selectedMemberId: selectedMemberId.value || undefined,
       newMemberName: useNewMember ? customNewMemberName.value.trim() : undefined,
+      applyMyProfile: Boolean(selectedMemberId.value && applyMyProfileOnJoin.value),
     })
     emit('toast', t('realtime.joinedToast', { name: joined.name }))
     emit('joined', joined.id)
@@ -218,15 +230,18 @@ async function handleConfirmJoin() {
             <div class="text-xs font-bold text-slate-700 dark:text-slate-200">
               {{ t('realtime.joinWhoAreYou') }}
             </div>
+            <p class="text-[11px] text-slate-500 dark:text-slate-400">
+              {{ t('realtime.joinWhoAreYouHint') }}
+            </p>
             <div class="flex flex-wrap gap-2">
               <button
                 v-for="m in remoteProject.members"
                 :key="m.id"
                 type="button"
-                class="inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-bold transition"
+                class="inline-flex items-center gap-1.5 rounded-full py-1 pl-1.5 pr-3 text-xs font-bold transition"
                 :class="
                   selectedMemberId === m.id
-                    ? 'bg-emerald-600 text-white shadow-sm dark:bg-emerald-500 dark:text-slate-950'
+                    ? 'bg-emerald-600 text-white shadow-sm ring-2 ring-emerald-500/30 dark:bg-emerald-500 dark:text-slate-950'
                     : 'bg-slate-100 text-slate-700 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-200'
                 "
                 @click="
@@ -234,21 +249,56 @@ async function handleConfirmJoin() {
                   customNewMemberName = ''
                 "
               >
-                <span
-                  class="h-2.5 w-2.5 rounded-full"
-                  :style="{ backgroundColor: selectedMemberId === m.id ? '#ffffff' : m.avatarColor || '#10b981' }"
+                <MemberAvatar
+                  :name="m.name"
+                  :color="m.avatarColor"
+                  :image="m.avatarImage"
+                  size="xs"
+                  ring
                 />
                 <span>{{ m.name }}</span>
                 <Check v-if="selectedMemberId === m.id" class="h-3.5 w-3.5" />
               </button>
             </div>
+
+            <!-- 認領既有成員時可一併套用自己的個人名稱與大頭貼 -->
+            <label
+              v-if="selectedMemberId && hasCustomUserProfile"
+              class="mt-1.5 flex cursor-pointer items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-600 dark:border-slate-800 dark:bg-slate-800/60 dark:text-slate-300"
+            >
+              <input
+                v-model="applyMyProfileOnJoin"
+                type="checkbox"
+                class="h-3.5 w-3.5 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+              />
+              <MemberAvatar
+                :name="store.userProfile.displayName || t('project.defaultMember1')"
+                :color="store.userProfile.avatarColor"
+                :image="store.userProfile.avatarImage"
+                size="xs"
+              />
+              <span>{{ t('realtime.joinApplyMyProfile') }}</span>
+            </label>
           </div>
 
           <!-- 或是新增自己成為新團員 -->
           <div class="space-y-1.5 border-t border-slate-100 pt-3 dark:border-slate-800">
-            <div class="flex items-center gap-1 text-[11px] font-semibold text-slate-500 dark:text-slate-400">
-              <UserPlus class="h-3.5 w-3.5" />
-              <span>{{ t('realtime.joinAsNewMemberLabel') }}</span>
+            <div class="flex items-center justify-between gap-2 text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+              <span class="flex items-center gap-1">
+                <UserPlus class="h-3.5 w-3.5" />
+                <span>{{ t('realtime.joinAsNewMemberLabel') }}</span>
+              </span>
+              <button
+                v-if="store.userProfile.displayName && customNewMemberName !== store.userProfile.displayName"
+                type="button"
+                class="text-emerald-600 hover:underline dark:text-emerald-400"
+                @click="
+                  customNewMemberName = store.userProfile.displayName;
+                  selectedMemberId = ''
+                "
+              >
+                {{ t('realtime.joinUseMyName', { name: store.userProfile.displayName }) }}
+              </button>
             </div>
             <input
               v-model="customNewMemberName"

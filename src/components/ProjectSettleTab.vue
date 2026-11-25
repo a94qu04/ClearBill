@@ -23,6 +23,7 @@ import {
 } from '@/core/ledgerHelpers'
 import { useLedgerStore, type ManagedCategory } from '@/stores/ledgerStore'
 import CategoryPieChart from '@/components/CategoryPieChart.vue'
+import MemberAvatar from '@/components/MemberAvatar.vue'
 
 interface Props {
   project: Project
@@ -336,12 +337,12 @@ async function handleExportLongImage() {
           <div class="p-3">
             <div class="flex items-center justify-between gap-2">
               <div class="flex min-w-0 items-center gap-2">
-                <span
-                  class="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white"
-                  :style="{ backgroundColor: getMemberColor(bal.memberId) }"
-                >
-                  {{ getMemberName(bal.memberId).slice(0, 1).toUpperCase() }}
-                </span>
+                <MemberAvatar
+                  :name="getMemberName(bal.memberId)"
+                  :color="getMemberColor(bal.memberId)"
+                  :image="project.members.find((m) => m.id === bal.memberId)?.avatarImage"
+                  size="sm"
+                />
                 <span class="truncate text-sm font-bold text-slate-800 dark:text-slate-100">
                   {{ getMemberName(bal.memberId) }}
                 </span>

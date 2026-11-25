@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
+  Camera,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -29,8 +30,11 @@ import {
   Trash2,
   Undo2,
   Upload,
+  User,
   X,
 } from 'lucide-vue-next'
+import MemberAvatar from '@/components/MemberAvatar.vue'
+import { compressAvatarImageFileToDataUrl } from '@/core/imageCompressor'
 import { SUPPORTED_LOCALES, setAppLocale, type SupportedLocale } from '@/i18n'
 import {
   AVATAR_PALETTE,
@@ -88,6 +92,13 @@ const editingCatKey = ref<string | null>(null)
 const editingCatName = ref('')
 const editingCatColor = ref<string>(AVATAR_PALETTE[0])
 
+// 我的成員檔案（預設成員名稱與大頭貼）
+const profileDisplayName = ref(store.userProfile.displayName)
+const profileAvatarColor = ref(store.userProfile.avatarColor || AVATAR_PALETTE[0])
+const profileAvatarImage = ref<string | undefined>(store.userProfile.avatarImage)
+const applyProfileToExisting = ref(true)
+const isSavingProfile = ref(false)
+
 // 幣別搜尋新增狀態
 const currencySearchQuery = ref('')
 
@@ -106,9 +117,48 @@ watch(
     if (isOpen) {
       activeTab.value = props.initialTab
       customGoogleClientId.value = getCustomGoogleClientId()
+      profileDisplayName.value = store.userProfile.displayName
+      profileAvatarColor.value =
+        store.userProfile.avatarColor || AVATAR_PALETTE[0]
+      profileAvatarImage.value = store.userProfile.avatarImage
     }
   },
 )
+
+async function handleProfileAvatarUpload(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  try {
+    profileAvatarImage.value = await compressAvatarImageFileToDataUrl(file, 160, 0.78)
+  } catch {
+    emit('toast', t('photo.uploadError'))
+  } finally {
+    input.value = ''
+  }
+}
+
+function handleRemoveProfileAvatar() {
+  profileAvatarImage.value = undefined
+}
+
+async function handleSaveProfile() {
+  if (isSavingProfile.value) return
+  isSavingProfile.value = true
+  try {
+    await store.updateUserProfile(
+      {
+        displayName: profileDisplayName.value,
+        avatarColor: profileAvatarColor.value,
+        avatarImage: profileAvatarImage.value ?? null,
+      },
+      { applyToExistingProjects: applyProfileToExisting.value },
+    )
+    emit('toast', t('profile.savedToast'))
+  } finally {
+    isSavingProfile.value = false
+  }
+}
 
 const effectiveGoogleClientId = computed(
   () => customGoogleClientId.value.trim() || builtInGoogleClientId,
@@ -598,8 +648,112 @@ function fmt(amount: number, currency: string): string {
 
           <!-- 分頁內容區 -->
           <div class="flex-1 overflow-y-auto p-5">
-            <!-- 分頁 1：一般（外觀深淺色 ＋ 介面語言） -->
+            <!-- 分頁 1：一般（我的成員檔案 ＋ 外觀深淺色 ＋ 介面語言） -->
             <div v-if="activeTab === 'general'" class="space-y-6">
+              <!-- 我的成員名稱與大頭貼設定 -->
+              <section class="space-y-3 rounded-2xl border border-slate-200 bg-slate-50/70 p-4 dark:border-slate-800 dark:bg-slate-950/50">
+                <div class="flex items-center gap-1.5 text-xs font-bold text-slate-800 dark:text-slate-100">
+                  <User class="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
+                  <span>{{ t('profile.sectionTitle') }}</span>
+                </div>
+                <p class="text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
+                  {{ t('profile.sectionDesc') }}
+                </p>
+
+                <div class="flex items-center gap-3.5">
+                  <div class="relative shrink-0">
+                    <MemberAvatar
+                      :name="profileDisplayName || t('project.defaultMember1')"
+                      :color="profileAvatarColor"
+                      :image="profileAvatarImage"
+                      size="lg"
+                    />
+                    <label
+                      class="absolute -bottom-1 -right-1 flex h-6 w-6 cursor-pointer items-center justify-center rounded-full border-2 border-white bg-slate-900 text-white shadow transition hover:bg-emerald-600 dark:border-slate-900 dark:bg-emerald-500 dark:text-slate-950"
+                      :title="t('profile.uploadAvatar')"
+                    >
+                      <Camera class="h-3 w-3" />
+                      <input
+                        type="file"
+                        accept="image/*"
+                        class="hidden"
+                        @change="handleProfileAvatarUpload"
+                      />
+                    </label>
+                  </div>
+
+                  <div class="min-w-0 flex-1 space-y-1.5">
+                    <input
+                      v-model="profileDisplayName"
+                      type="text"
+                      maxlength="32"
+                      :placeholder="t('profile.namePlaceholder')"
+                      class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-900 focus:border-emerald-500 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+                      @keyup.enter="handleSaveProfile"
+                    />
+                    <div class="flex items-center gap-2">
+                      <label
+                        class="cursor-pointer text-[11px] font-semibold text-emerald-600 hover:underline dark:text-emerald-400"
+                      >
+                        <span>{{ t('profile.uploadAvatar') }}</span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          class="hidden"
+                          @change="handleProfileAvatarUpload"
+                        />
+                      </label>
+                      <button
+                        v-if="profileAvatarImage"
+                        type="button"
+                        class="text-[11px] font-semibold text-rose-500 hover:underline"
+                        @click="handleRemoveProfileAvatar"
+                      >
+                        {{ t('profile.removeAvatar') }}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 頭像預設色票 -->
+                <div class="flex items-center gap-1.5 pt-0.5">
+                  <button
+                    v-for="color in AVATAR_PALETTE"
+                    :key="color"
+                    type="button"
+                    class="h-5 w-5 rounded-full transition"
+                    :style="{ backgroundColor: color }"
+                    :class="
+                      profileAvatarColor === color
+                        ? 'ring-2 ring-slate-900 ring-offset-2 dark:ring-white dark:ring-offset-slate-900'
+                        : 'opacity-70 hover:opacity-100'
+                    "
+                    @click="profileAvatarColor = color"
+                  />
+                </div>
+
+                <label
+                  v-if="store.allNonDeletedProjects.length > 0"
+                  class="flex cursor-pointer items-center gap-2 text-[11px] text-slate-600 dark:text-slate-300"
+                >
+                  <input
+                    v-model="applyProfileToExisting"
+                    type="checkbox"
+                    class="h-3.5 w-3.5 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 dark:border-slate-600 dark:bg-slate-800"
+                  />
+                  <span>{{ t('profile.applyToExistingProjects') }}</span>
+                </label>
+
+                <button
+                  type="button"
+                  :disabled="isSavingProfile"
+                  class="w-full rounded-xl bg-slate-900 py-2 text-xs font-bold text-white transition hover:bg-slate-800 disabled:opacity-50 dark:bg-emerald-500 dark:text-slate-950 dark:hover:bg-emerald-400"
+                  @click="handleSaveProfile"
+                >
+                  {{ t('profile.saveButton') }}
+                </button>
+              </section>
+
               <section>
                 <div
                   class="mb-2.5 flex items-center gap-1.5 text-xs font-semibold text-slate-500 dark:text-slate-400"

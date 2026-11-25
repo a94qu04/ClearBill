@@ -337,7 +337,7 @@ function openCreateProjectView() {
   projectCurrency.value = store.defaultCurrency
   projectDefaultSplitMode.value = 'equal'
   projectMembersList.value = [
-    t('project.defaultMember1'),
+    store.userProfile.displayName || t('project.defaultMember1'),
     t('project.defaultMember2'),
     t('project.defaultMember3'),
   ]

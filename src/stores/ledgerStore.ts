@@ -10,6 +10,7 @@ import {
   type SplitMode,
   type Transaction,
   type TransactionType,
+  type UserProfile,
 } from '@/schemas/ledgerSchema'
 import {
   clearProjectSyncOutbox,
@@ -171,6 +172,15 @@ interface PersistedUserPrefsV2 {
   categories: ManagedCategory[]
   projectOrder?: string[]
   exchangeRates?: Record<string, number>
+  userProfile?: UserProfile
+}
+
+function createDefaultUserProfile(): UserProfile {
+  return {
+    displayName: '',
+    avatarColor: AVATAR_PALETTE[0],
+    avatarImage: undefined,
+  }
 }
 
 function cloneDefaultCategories(): ManagedCategory[] {
@@ -245,12 +255,34 @@ function loadUserPrefs(): PersistedUserPrefsV2 {
         }
       }
 
+      const rawProfile = parsed.userProfile
+      const userProfile: UserProfile =
+        rawProfile && typeof rawProfile === 'object'
+          ? {
+              displayName:
+                typeof rawProfile.displayName === 'string'
+                  ? rawProfile.displayName.trim().slice(0, 50)
+                  : '',
+              avatarColor:
+                typeof rawProfile.avatarColor === 'string' &&
+                rawProfile.avatarColor.trim()
+                  ? rawProfile.avatarColor.trim()
+                  : AVATAR_PALETTE[0],
+              avatarImage:
+                typeof rawProfile.avatarImage === 'string' &&
+                rawProfile.avatarImage.startsWith('data:image/')
+                  ? rawProfile.avatarImage
+                  : undefined,
+            }
+          : createDefaultUserProfile()
+
       return {
         defaultCurrency,
         enabledCurrencies: Array.from(enabledSet),
         categories,
         projectOrder,
         exchangeRates,
+        userProfile,
       }
     }
 
@@ -338,13 +370,16 @@ export const useLedgerStore = defineStore('ledger', () => {
     return 'disconnected'
   }
 
-  // 使用者自訂偏好（預設幣別、可自由增刪的常用幣別、可自由增刪改的消費分類、專案排序、記憶匯率）
+  // 使用者自訂偏好（預設幣別、可自由增刪的常用幣別、可自由增刪改的消費分類、專案排序、記憶匯率、個人成員檔案）
   const defaultCurrency = ref<string>(initialPrefs.defaultCurrency)
   const enabledCurrencies = ref<string[]>(initialPrefs.enabledCurrencies)
   const categories = ref<ManagedCategory[]>(initialPrefs.categories)
   const projectOrder = ref<string[]>(initialPrefs.projectOrder ?? [])
   const rememberedExchangeRates = ref<Record<string, number>>(
     initialPrefs.exchangeRates ?? {},
+  )
+  const userProfile = ref<UserProfile>(
+    initialPrefs.userProfile ?? createDefaultUserProfile(),
   )
 
   function saveUserPrefs() {
@@ -356,11 +391,61 @@ export const useLedgerStore = defineStore('ledger', () => {
         categories: categories.value,
         projectOrder: projectOrder.value,
         exchangeRates: rememberedExchangeRates.value,
+        userProfile: userProfile.value,
       }
       window.localStorage.setItem(PREFS_STORAGE_KEY, JSON.stringify(data))
     } catch {
       // 忽略受限儲存環境
     }
+  }
+
+  async function updateUserProfile(
+    patch: {
+      displayName?: string
+      avatarColor?: string
+      avatarImage?: string | null
+    },
+    options?: { applyToExistingProjects?: boolean },
+  ): Promise<number> {
+    const next: UserProfile = {
+      displayName:
+        patch.displayName !== undefined
+          ? patch.displayName.trim().slice(0, 50)
+          : userProfile.value.displayName,
+      avatarColor:
+        patch.avatarColor !== undefined && patch.avatarColor.trim()
+          ? patch.avatarColor.trim()
+          : userProfile.value.avatarColor || AVATAR_PALETTE[0],
+      avatarImage:
+        patch.avatarImage === null
+          ? undefined
+          : patch.avatarImage !== undefined
+            ? patch.avatarImage
+            : userProfile.value.avatarImage,
+    }
+    userProfile.value = next
+    saveUserPrefs()
+
+    let updatedProjectsCount = 0
+    if (options?.applyToExistingProjects) {
+      const nonDeleted = projects.value.filter((p) => !p.isDeleted)
+      for (const proj of nonDeleted) {
+        const myId =
+          proj.syncMeta?.myMemberId ||
+          proj.defaultPayerId ||
+          proj.members[0]?.id
+        if (!myId) continue
+        const targetMember = proj.members.find((m) => m.id === myId)
+        if (!targetMember) continue
+        await updateProjectMember(proj.id, myId, {
+          name: next.displayName || targetMember.name,
+          avatarColor: next.avatarColor,
+          avatarImage: next.avatarImage ?? null,
+        })
+        updatedProjectsCount += 1
+      }
+    }
+    return updatedProjectsCount
   }
 
   function getRememberedExchangeRate(from: string, to: string): number | null {
@@ -1217,22 +1302,47 @@ export const useLedgerStore = defineStore('ledger', () => {
     remoteTransactions: Transaction[]
     selectedMemberId?: string
     newMemberName?: string
+    applyMyProfile?: boolean
   }): Promise<Project> {
     const now = Date.now()
     let members = params.remoteProject.members.map((m) => ({ ...m }))
     let claimedMemberId = params.selectedMemberId
-    let addedNewMember = false
+    let projectMemberChanged = false
 
     const trimmedNewName = params.newMemberName?.trim()
     if (!claimedMemberId && trimmedNewName) {
       const createdMember: ProjectMember = {
         id: `m_${members.length + 1}_${now.toString(36)}`,
         name: trimmedNewName,
-        avatarColor: AVATAR_PALETTE[members.length % AVATAR_PALETTE.length],
+        avatarColor:
+          userProfile.value.avatarColor ||
+          AVATAR_PALETTE[members.length % AVATAR_PALETTE.length],
+        ...(userProfile.value.avatarImage
+          ? { avatarImage: userProfile.value.avatarImage }
+          : {}),
       }
       members = [...members, createdMember]
       claimedMemberId = createdMember.id
-      addedNewMember = true
+      projectMemberChanged = true
+    } else if (claimedMemberId && params.applyMyProfile) {
+      const profile = userProfile.value
+      const hasProfileCustom = Boolean(
+        profile.displayName || profile.avatarImage || profile.avatarColor,
+      )
+      if (hasProfileCustom) {
+        members = members.map((m) => {
+          if (m.id !== claimedMemberId) return m
+          return {
+            ...m,
+            name: profile.displayName || m.name,
+            avatarColor: profile.avatarColor || m.avatarColor,
+            ...(profile.avatarImage
+              ? { avatarImage: profile.avatarImage }
+              : {}),
+          }
+        })
+        projectMemberChanged = true
+      }
     }
 
     const existingLocal = projects.value.find(
@@ -1246,7 +1356,7 @@ export const useLedgerStore = defineStore('ledger', () => {
       isDeleted: false,
       isArchived: false,
       defaultPayerId: claimedMemberId || members[0]?.id,
-      updatedAt: addedNewMember
+      updatedAt: projectMemberChanged
         ? Math.max(now, params.remoteProject.updatedAt + 1)
         : params.remoteProject.updatedAt,
       syncMeta: {
@@ -1276,7 +1386,7 @@ export const useLedgerStore = defineStore('ledger', () => {
 
     await applyRemoteTransactionsList(savedProj.id, params.remoteTransactions)
 
-    if (addedNewMember) {
+    if (projectMemberChanged) {
       await enqueueAndFlushProjectChange(
         savedProj.id,
         'project',
@@ -1368,11 +1478,21 @@ export const useLedgerStore = defineStore('ledger', () => {
     const members: ProjectMember[] = payload.memberNames
       .map((name) => name.trim())
       .filter(Boolean)
-      .map((name, idx) => ({
-        id: `m_${idx + 1}_${now.toString(36)}`,
-        name,
-        avatarColor: AVATAR_PALETTE[idx % AVATAR_PALETTE.length],
-      }))
+      .map((name, idx) => {
+        const isFirstSelf = idx === 0
+        const profile = userProfile.value
+        return {
+          id: `m_${idx + 1}_${now.toString(36)}`,
+          name,
+          avatarColor:
+            isFirstSelf && profile.avatarColor
+              ? profile.avatarColor
+              : AVATAR_PALETTE[idx % AVATAR_PALETTE.length],
+          ...(isFirstSelf && profile.avatarImage
+            ? { avatarImage: profile.avatarImage }
+            : {}),
+        }
+      })
 
     const project: Project = {
       id: generateUuid(),
@@ -1431,6 +1551,7 @@ export const useLedgerStore = defineStore('ledger', () => {
     projectId: string,
     memberName: string,
     avatarColor?: string,
+    avatarImage?: string,
   ): Promise<Project | null> {
     const existing = projects.value.find((p) => p.id === projectId && !p.isDeleted)
     const trimmed = memberName.trim()
@@ -1443,6 +1564,7 @@ export const useLedgerStore = defineStore('ledger', () => {
       avatarColor:
         avatarColor ||
         AVATAR_PALETTE[existing.members.length % AVATAR_PALETTE.length],
+      ...(avatarImage ? { avatarImage } : {}),
     }
 
     const updated: Project = {
@@ -1461,17 +1583,24 @@ export const useLedgerStore = defineStore('ledger', () => {
   async function updateProjectMember(
     projectId: string,
     memberId: string,
-    patch: { name?: string; avatarColor?: string },
+    patch: { name?: string; avatarColor?: string; avatarImage?: string | null },
   ): Promise<Project | null> {
     const existing = projects.value.find((p) => p.id === projectId && !p.isDeleted)
     if (!existing) return null
 
     const nextMembers = existing.members.map((m) => {
       if (m.id !== memberId) return { ...m }
+      const nextAvatarImage =
+        patch.avatarImage === null
+          ? undefined
+          : patch.avatarImage !== undefined
+            ? patch.avatarImage
+            : m.avatarImage
       return {
         ...m,
         name: patch.name !== undefined ? patch.name.trim() || m.name : m.name,
         avatarColor: patch.avatarColor ?? m.avatarColor,
+        ...(nextAvatarImage ? { avatarImage: nextAvatarImage } : { avatarImage: undefined }),
       }
     })
 
@@ -2052,6 +2181,7 @@ export const useLedgerStore = defineStore('ledger', () => {
     defaultCurrency,
     enabledCurrencies,
     categories,
+    userProfile,
     availableCurrencies,
     allNonDeletedProjects,
     activeProjects,
@@ -2078,6 +2208,7 @@ export const useLedgerStore = defineStore('ledger', () => {
     updateCategory,
     removeCategory,
     resetDefaultCategories,
+    updateUserProfile,
     initFromIndexedDb,
     setStoragePersisted,
     createProject,

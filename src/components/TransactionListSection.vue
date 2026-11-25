@@ -14,6 +14,7 @@ import { useLedgerStore, type ManagedCategory } from '@/stores/ledgerStore'
 import { formatCurrencyAmount, fromMinorUnits, toMinorUnits } from '@/core/currency'
 import { matchesDateQuery } from '@/core/ledgerHelpers'
 import type { Transaction } from '@/schemas/ledgerSchema'
+import MemberAvatar from '@/components/MemberAvatar.vue'
 import SwipeableTxRow from '@/components/SwipeableTxRow.vue'
 
 interface Props {
@@ -90,6 +91,36 @@ function getMemberColor(memberId: string, projectId?: string): string {
     ? store.getProjectById(projectId)
     : store.activeProject
   return proj?.members.find((m) => m.id === memberId)?.avatarColor ?? '#10b981'
+}
+
+function getMemberAvatar(memberId: string, projectId?: string): string | undefined {
+  const proj = projectId
+    ? store.getProjectById(projectId)
+    : store.activeProject
+  return proj?.members.find((m) => m.id === memberId)?.avatarImage
+}
+
+function getSplitIndicatorMembers(
+  tx: Transaction,
+): Array<{ memberId: string; name: string; color: string; image?: string }> {
+  if (tx.type === 'transfer' || !tx.splitConfig) return []
+  const activeShares = tx.splitConfig.shares.filter((s) => s.finalAmount > 0)
+  if (activeShares.length === 0) return []
+  return activeShares.map((s) => ({
+    memberId: s.memberId,
+    name: getMemberName(s.memberId, tx.projectId),
+    color: getMemberColor(s.memberId, tx.projectId),
+    image: getMemberAvatar(s.memberId, tx.projectId),
+  }))
+}
+
+function getSplitIndicatorTooltip(tx: Transaction): string {
+  const members = getSplitIndicatorMembers(tx)
+  if (members.length === 0) return ''
+  return t('project.splitIndicatorTooltip', {
+    count: members.length,
+    names: members.map((m) => m.name).join('、'),
+  })
 }
 
 function getPayerColors(tx: Transaction): string[] {
@@ -534,25 +565,52 @@ defineExpose({ resetFilters })
                     </div>
                   </div>
 
-                  <div class="flex shrink-0 items-center gap-1">
-                    <span
-                      class="mr-0.5 text-sm font-bold tabular-nums"
-                      :class="
-                        tx.type === 'income'
-                          ? 'text-emerald-600 dark:text-emerald-400'
-                          : tx.type === 'refund'
-                            ? 'text-teal-600 dark:text-teal-400'
-                            : 'text-slate-900 dark:text-white'
-                      "
-                    >
-                      {{
-                        tx.type === 'income'
-                          ? '+'
-                          : tx.type === 'refund'
-                            ? '-'
-                            : ''
-                      }}{{ fmt(tx.amount, tx.currency) }}
-                    </span>
+                  <div class="flex shrink-0 items-center gap-1.5">
+                    <div class="flex flex-col items-end">
+                      <span
+                        class="text-sm font-bold tabular-nums leading-tight"
+                        :class="
+                          tx.type === 'income'
+                            ? 'text-emerald-600 dark:text-emerald-400'
+                            : tx.type === 'refund'
+                              ? 'text-teal-600 dark:text-teal-400'
+                              : 'text-slate-900 dark:text-white'
+                        "
+                      >
+                        {{
+                          tx.type === 'income'
+                            ? '+'
+                            : tx.type === 'refund'
+                              ? '-'
+                              : ''
+                        }}{{ fmt(tx.amount, tx.currency) }}
+                      </span>
+
+                      <!-- 金額下方分攤成員小圈圈：一眼辨識此筆有做金額分攤與參與對象 -->
+                      <div
+                        v-if="getSplitIndicatorMembers(tx).length > 0"
+                        :title="getSplitIndicatorTooltip(tx)"
+                        class="mt-1 flex items-center justify-end"
+                      >
+                        <div class="flex items-center -space-x-1">
+                          <MemberAvatar
+                            v-for="m in getSplitIndicatorMembers(tx).slice(0, 4)"
+                            :key="m.memberId"
+                            :name="m.name"
+                            :color="m.color"
+                            :image="m.image"
+                            size="xxs"
+                            ring
+                          />
+                          <span
+                            v-if="getSplitIndicatorMembers(tx).length > 4"
+                            class="inline-flex h-3.5 min-w-[14px] items-center justify-center rounded-full bg-slate-200 px-1 text-[8px] font-bold text-slate-700 ring-1 ring-white dark:bg-slate-700 dark:text-slate-200 dark:ring-slate-900"
+                          >
+                            +{{ getSplitIndicatorMembers(tx).length - 4 }}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
                     <ChevronDown
                       class="h-3.5 w-3.5 text-slate-400 transition-transform"
                       :class="expandedTxId === tx.id ? 'rotate-180 text-emerald-600 dark:text-emerald-400' : ''"
@@ -577,9 +635,11 @@ defineExpose({ resetFilters })
                         :key="payer.memberId"
                         class="inline-flex items-center gap-1.5 rounded-lg bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 shadow-sm dark:bg-slate-900 dark:text-slate-200"
                       >
-                        <span
-                          class="h-2 w-2 rounded-full"
-                          :style="{ backgroundColor: getMemberColor(payer.memberId, tx.projectId) }"
+                        <MemberAvatar
+                          :name="getMemberName(payer.memberId, tx.projectId)"
+                          :color="getMemberColor(payer.memberId, tx.projectId)"
+                          :image="getMemberAvatar(payer.memberId, tx.projectId)"
+                          size="xs"
                         />
                         <span>{{ getMemberName(payer.memberId, tx.projectId) }}</span>
                         <span class="tabular-nums font-bold text-emerald-700 dark:text-emerald-400">
@@ -601,9 +661,11 @@ defineExpose({ resetFilters })
                         class="flex items-center justify-between gap-1.5 rounded-lg bg-white px-2 py-1 text-[11px] dark:bg-slate-900"
                       >
                         <span class="flex min-w-0 items-center gap-1.5">
-                          <span
-                            class="h-2 w-2 shrink-0 rounded-full"
-                            :style="{ backgroundColor: getMemberColor(share.memberId, tx.projectId) }"
+                          <MemberAvatar
+                            :name="getMemberName(share.memberId, tx.projectId)"
+                            :color="getMemberColor(share.memberId, tx.projectId)"
+                            :image="getMemberAvatar(share.memberId, tx.projectId)"
+                            size="xs"
                           />
                           <span class="truncate font-medium text-slate-700 dark:text-slate-200">
                             {{ getMemberName(share.memberId, tx.projectId) }}

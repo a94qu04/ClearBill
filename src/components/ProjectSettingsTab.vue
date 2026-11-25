@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n'
 import {
   Archive,
   ArchiveRestore,
+  Camera,
   FileJson,
   FileSpreadsheet,
   ImageDown,
@@ -14,6 +15,8 @@ import {
   UserPlus,
   X,
 } from 'lucide-vue-next'
+import MemberAvatar from '@/components/MemberAvatar.vue'
+import { compressAvatarImageFileToDataUrl } from '@/core/imageCompressor'
 import {
   AVATAR_PALETTE,
   useLedgerStore,
@@ -57,6 +60,7 @@ const newMemberName = ref('')
 const editingMemberId = ref<string | null>(null)
 const editingMemberName = ref('')
 const editingMemberColor = ref<string>(AVATAR_PALETTE[0])
+const editingMemberAvatarImage = ref<string | undefined>(undefined)
 
 watch(
   () => props.project,
@@ -125,6 +129,33 @@ function startEditMember(member: ProjectMember) {
   editingMemberId.value = member.id
   editingMemberName.value = member.name
   editingMemberColor.value = member.avatarColor || AVATAR_PALETTE[0]
+  editingMemberAvatarImage.value = member.avatarImage
+}
+
+async function handleMemberAvatarUpload(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  try {
+    editingMemberAvatarImage.value = await compressAvatarImageFileToDataUrl(
+      file,
+      160,
+      0.78,
+    )
+  } catch {
+    emit('toast', t('photo.uploadError'))
+  } finally {
+    input.value = ''
+  }
+}
+
+function handleApplyMyProfileToEditingMember() {
+  if (store.userProfile.displayName) {
+    editingMemberName.value = store.userProfile.displayName
+  }
+  editingMemberColor.value =
+    store.userProfile.avatarColor || editingMemberColor.value
+  editingMemberAvatarImage.value = store.userProfile.avatarImage
 }
 
 async function handleSaveMemberEdit() {
@@ -134,6 +165,7 @@ async function handleSaveMemberEdit() {
   await store.updateProjectMember(props.project.id, editingMemberId.value, {
     name: trimmed,
     avatarColor: editingMemberColor.value,
+    avatarImage: editingMemberAvatarImage.value ?? null,
   })
   editingMemberId.value = null
   emit('toast', t('project.memberUpdatedToast'))
@@ -338,9 +370,29 @@ function handleExportProjectJson() {
         >
           <div
             v-if="editingMemberId === member.id"
-            class="space-y-2 rounded-xl bg-slate-50 p-2.5 dark:bg-slate-800/70"
+            class="space-y-2.5 rounded-xl bg-slate-50 p-3 dark:bg-slate-800/70"
           >
-            <div class="flex gap-2">
+            <div class="flex items-center gap-2.5">
+              <div class="relative shrink-0">
+                <MemberAvatar
+                  :name="editingMemberName || member.name"
+                  :color="editingMemberColor"
+                  :image="editingMemberAvatarImage"
+                  size="md"
+                />
+                <label
+                  class="absolute -bottom-1 -right-1 flex h-4 w-4 cursor-pointer items-center justify-center rounded-full bg-slate-900 text-white shadow dark:bg-emerald-500 dark:text-slate-950"
+                  :title="t('profile.uploadAvatar')"
+                >
+                  <Camera class="h-2.5 w-2.5" />
+                  <input
+                    type="file"
+                    accept="image/*"
+                    class="hidden"
+                    @change="handleMemberAvatarUpload"
+                  />
+                </label>
+              </div>
               <input
                 v-model="editingMemberName"
                 type="text"
@@ -362,31 +414,51 @@ function handleExportProjectJson() {
                 <X class="h-3.5 w-3.5" />
               </button>
             </div>
-            <div class="flex items-center gap-1.5">
-              <button
-                v-for="color in AVATAR_PALETTE"
-                :key="color"
-                type="button"
-                class="h-5 w-5 rounded-full"
-                :style="{ backgroundColor: color }"
-                :class="
-                  editingMemberColor === color
-                    ? 'ring-2 ring-slate-900 ring-offset-1 dark:ring-white'
-                    : 'opacity-70'
-                "
-                @click="editingMemberColor = color"
-              />
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <div class="flex items-center gap-1.5">
+                <button
+                  v-for="color in AVATAR_PALETTE"
+                  :key="color"
+                  type="button"
+                  class="h-5 w-5 rounded-full"
+                  :style="{ backgroundColor: color }"
+                  :class="
+                    editingMemberColor === color
+                      ? 'ring-2 ring-slate-900 ring-offset-1 dark:ring-white'
+                      : 'opacity-70'
+                  "
+                  @click="editingMemberColor = color"
+                />
+              </div>
+              <div class="flex items-center gap-2 text-[11px] font-semibold">
+                <button
+                  v-if="store.userProfile.displayName || store.userProfile.avatarImage"
+                  type="button"
+                  class="text-emerald-600 hover:underline dark:text-emerald-400"
+                  @click="handleApplyMyProfileToEditingMember"
+                >
+                  {{ t('profile.useMyProfile') }}
+                </button>
+                <button
+                  v-if="editingMemberAvatarImage"
+                  type="button"
+                  class="text-rose-500 hover:underline"
+                  @click="editingMemberAvatarImage = undefined"
+                >
+                  {{ t('profile.removeAvatar') }}
+                </button>
+              </div>
             </div>
           </div>
 
           <div v-else class="flex items-center justify-between gap-2">
             <div class="flex items-center gap-2.5">
-              <span
-                class="inline-flex h-7 w-7 items-center justify-center rounded-full text-xs font-bold text-white"
-                :style="{ backgroundColor: member.avatarColor || '#0f172a' }"
-              >
-                {{ member.name.slice(0, 1).toUpperCase() }}
-              </span>
+              <MemberAvatar
+                :name="member.name"
+                :color="member.avatarColor"
+                :image="member.avatarImage"
+                size="md"
+              />
               <span class="text-sm font-medium text-slate-800 dark:text-slate-100">
                 {{ member.name }}
               </span>
