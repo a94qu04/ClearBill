@@ -64,6 +64,9 @@ const JoinSharedProjectModal = defineAsyncComponent(
 const PhotoLightboxModal = defineAsyncComponent(
   () => import('@/components/PhotoLightboxModal.vue'),
 )
+const PoolCollectModal = defineAsyncComponent(
+  () => import('@/components/PoolCollectModal.vue'),
+)
 const ProjectShareModal = defineAsyncComponent(
   () => import('@/components/ProjectShareModal.vue'),
 )
@@ -87,6 +90,7 @@ const settingsOpen = ref(false)
 const settingsInitialTab = ref<SettingsTab>('profile')
 const allProjectsSheetOpen = ref(false)
 const shareModalOpen = ref(false)
+const poolCollectModalOpen = ref(false)
 const pendingJoinInvite = ref<ShareInviteParams | null>(null)
 const isDark = ref(false)
 const isTouchDevice = ref(false)
@@ -232,6 +236,21 @@ const newProjectMemberInput = ref('')
 const projectCardColor = ref<string | undefined>(undefined)
 const projectCardCoverImage = ref<string | undefined>(undefined)
 const projectFormError = ref('')
+const createNewCurrencyOpen = ref(false)
+const createNewCurrencyCode = ref('')
+
+function confirmCreateProjectAddCurrency() {
+  const code = createNewCurrencyCode.value.trim().toUpperCase()
+  if (!/^[A-Z]{3}$/.test(code)) {
+    showToast(t('settings.invalidCurrencyCode'))
+    return
+  }
+  const added = store.addCurrency(code)
+  projectCurrency.value = added
+  createNewCurrencyCode.value = ''
+  createNewCurrencyOpen.value = false
+  showToast(t('settings.currencyAddedToast', { code: added }))
+}
 
 async function handleCreateProjectCoverUpload(event: Event) {
   const input = event.target as HTMLInputElement
@@ -406,6 +425,12 @@ const activeProjectTotalSpent = computed(() =>
   store.activeProject ? store.getProjectTotalExpense(store.activeProject.id) : 0,
 )
 
+const activeProjectMyMemberId = computed<string | undefined>(() => {
+  const proj = store.activeProject
+  if (!proj) return undefined
+  return proj.syncMeta?.myMemberId || proj.defaultPayerId || undefined
+})
+
 const topBarTitle = computed(() => {
   if (activeView.value === 'project_create') return t('project.createTitle')
   if (activeView.value === 'project_workspace' && store.activeProject) {
@@ -445,6 +470,8 @@ function openCreateProjectView() {
   newProjectMemberInput.value = ''
   projectCardColor.value = undefined
   projectCardCoverImage.value = undefined
+  createNewCurrencyOpen.value = false
+  createNewCurrencyCode.value = ''
   activeView.value = 'project_create'
 }
 
@@ -1122,9 +1149,18 @@ onBeforeUnmount(() => {
 
             <div class="grid grid-cols-2 gap-3">
               <div>
-                <label class="mb-1.5 block text-xs font-semibold text-slate-600 dark:text-slate-300">
-                  {{ t('project.currencyLabel') }}
-                </label>
+                <div class="mb-1.5 flex items-center justify-between gap-1">
+                  <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300">
+                    {{ t('project.currencyLabel') }}
+                  </label>
+                  <button
+                    type="button"
+                    class="text-[11px] font-semibold text-emerald-600 hover:underline dark:text-emerald-400"
+                    @click="createNewCurrencyOpen = !createNewCurrencyOpen"
+                  >
+                    + {{ t('project.quickAddCurrencyShort') }}
+                  </button>
+                </div>
                 <select
                   v-model="projectCurrency"
                   class="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm font-semibold text-slate-900 focus:border-emerald-500 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white"
@@ -1152,6 +1188,32 @@ onBeforeUnmount(() => {
                   <option value="percentage">{{ t('split.tabPercent') }}</option>
                 </select>
               </div>
+            </div>
+
+            <!-- 建專案現場新增 3 碼幣別（不必跳離頁面遺失已輸入之成員名單） -->
+            <div v-if="createNewCurrencyOpen" class="flex items-center gap-1.5">
+              <input
+                v-model="createNewCurrencyCode"
+                type="text"
+                maxlength="3"
+                :placeholder="t('project.quickAddCurrencyPlaceholder')"
+                class="min-w-0 flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold uppercase text-slate-900 focus:border-emerald-500 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                @keyup.enter.prevent="confirmCreateProjectAddCurrency"
+              />
+              <button
+                type="button"
+                class="shrink-0 rounded-xl bg-emerald-600 px-3 py-2 text-xs font-bold text-white dark:bg-emerald-500 dark:text-slate-950"
+                @click="confirmCreateProjectAddCurrency"
+              >
+                {{ t('settings.add') }}
+              </button>
+              <button
+                type="button"
+                class="shrink-0 rounded-xl p-1.5 text-slate-400 hover:text-slate-600"
+                @click="createNewCurrencyOpen = false"
+              >
+                <X class="h-4 w-4" />
+              </button>
             </div>
 
             <div class="space-y-2">
@@ -1497,6 +1559,7 @@ onBeforeUnmount(() => {
           :empty-text="t('project.noProjectTransactions')"
           :project-base-currency="store.activeProject.baseCurrency"
           :project-members="store.activeProject.members"
+          :my-member-id="activeProjectMyMemberId"
           @edit="startEditTransaction"
           @duplicate="startDuplicateTransaction"
           @delete="handleDeleteTransaction"
@@ -1511,7 +1574,9 @@ onBeforeUnmount(() => {
           :settle-up="store.activeProjectSettleUp"
           :expenses="store.activeProjectEffectiveExpenses"
           :settlements="store.activeProjectSettlements"
+          :my-member-id="activeProjectMyMemberId"
           @record-payment="openRecordSettlementModal"
+          @open-pool-collect="poolCollectModalOpen = true"
           @edit-settlement="startEditTransaction"
           @edit-expense="startEditTransaction"
           @inspect-member="handleInspectMemberInExpenses"
@@ -1591,6 +1656,14 @@ onBeforeUnmount(() => {
       :suggested-amount="settleSuggestedAmount"
       :currency="settleCurrency"
       @close="settleSheetOpen = false"
+      @saved="showToast($event)"
+    />
+
+    <!-- 大團公費袋／批次收公費彈窗 -->
+    <PoolCollectModal
+      :open="poolCollectModalOpen"
+      :project="store.activeProject"
+      @close="poolCollectModalOpen = false"
       @saved="showToast($event)"
     />
 

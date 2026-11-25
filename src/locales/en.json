@@ -285,7 +285,13 @@
     "cardBgLabel": "Card Background (Color or Cover Photo)",
     "cardBgUploadPhoto": "Upload Photo",
     "cardBgReset": "Reset",
-    "cardBgPreviewHint": "Card preview"
+    "cardBgPreviewHint": "Card preview",
+    "quickAddCurrencyShort": "Add",
+    "quickAddCurrencyButton": "Need another currency? Add here",
+    "quickAddCurrencyPlaceholder": "3-letter code (e.g. THB, SGD, VND)",
+    "duplicateWarnTitle": "Possible Duplicate Entry",
+    "duplicateWarnMessage": "An entry with the same amount already exists today: \"{note}\" ({amount}). Save anyway?",
+    "duplicateWarnConfirm": "Save Anyway"
   },
   "profile": {
     "sectionTitle": "My Member Profile & Avatar",
@@ -327,7 +333,17 @@
     "hideMemberDetails": "Hide breakdown",
     "memberStatementTitle": "{name}'s Breakdown",
     "openInEntriesButton": "Filter in Entries",
-    "memberStatementEmpty": "No entries involving this member yet."
+    "memberStatementEmpty": "No entries involving this member yet.",
+    "meBadge": "You",
+    "sortByMemberOrder": "Member Order",
+    "sortByNetAmount": "By Balance",
+    "copyMemberStatementButton": "Copy Statement",
+    "memberStatementCopiedToast": "Copied statement for \"{name}\"!",
+    "planModeMin": "Min Transfers",
+    "planModeHub": "Central Hub",
+    "hubMemberLabel": "Collector / Treasurer",
+    "onlyMyTransfersButton": "Mine Only",
+    "noMyTransfers": "No pending transfers involving you!"
   },
   "split": {
     "payerLabel": "Paid by",
@@ -359,7 +375,15 @@
     "errUnallocatedRemainder": "{remainder} unallocated. Check at least one member.",
     "errInvalidWeights": "Total shares must be greater than 0.",
     "errPercentTotal": "Percentages must add up to 100% (currently {total}%).",
-    "errInvalidAmount": "Please enter a valid amount."
+    "errInvalidAmount": "Please enter a valid amount.",
+    "quickSelectAll": "All",
+    "quickSelectNone": "None",
+    "quickSelectInvert": "Invert",
+    "quickSelectPayerOnly": "Payer Only",
+    "saveAsGroupButton": "Save Group",
+    "groupNamePlaceholder": "Subgroup name (e.g. Car A, Drinks)...",
+    "groupSavedToast": "Saved split group \"{name}\"",
+    "groupRemovedToast": "Removed split group"
   },
   "categories": {
     "cat_food": "Food",
@@ -403,7 +427,8 @@
     "csvPayers": "Paid By",
     "csvShares": "Split Shares",
     "projectBackupTitle": "Project Local Backup",
-    "projectBackupDesc": "Export this project as a JSON backup file to share & merge offline. Excel and PNG reports are in the Settle Up tab."
+    "projectBackupDesc": "Export this project as a JSON backup file to share & merge offline. Excel and PNG reports are in the Settle Up tab.",
+    "longImageOmittedNotice": "{count} more entries omitted to keep image crisp on mobile. Export Excel (.xlsx) for full list."
   },
   "demo": {
     "tryButton": "Load Sample Trip to Try Splitting & Pie Chart",
@@ -514,7 +539,13 @@
     "modeLive": "Live Rate",
     "modeCustom": "Custom Rate",
     "applySettleCustomButton": "Apply Custom Settlement Rate",
-    "settleCustomAppliedToast": "Applied custom settlement rates!"
+    "settleCustomAppliedToast": "Applied custom settlement rates!",
+    "cashPresetLabel": "Cash {rate}",
+    "cardPresetLabel": "Card {rate}",
+    "saveAsCashPreset": "+ Cash Rate",
+    "saveAsCardPreset": "+ Card Rate",
+    "cashPresetSavedToast": "Saved cash rate: {rate}",
+    "cardPresetSavedToast": "Saved card rate: {rate}"
   },
   "confirm": {
     "defaultTitle": "Please Confirm",
@@ -533,5 +564,26 @@
     "projectNameRequired": "Enter a project name",
     "membersRequired": "Enter at least 2 members",
     "sameMemberSettlement": "Payer and recipient cannot be the same member"
+  },
+  "pool": {
+    "cardTitle": "Group Fund (Pool) Balance",
+    "collectButtonShort": "Collect Pool",
+    "paidOutLabel": "Spent from pool",
+    "remainingCashLabel": "Pool cash left",
+    "overdrawnLabel": "Pool overdrawn",
+    "modalTitle": "Batch Collect Group Pool",
+    "modalSubtitle": "Record everyone’s shared fund deposit in one step",
+    "modeVirtualPool": "Dedicated Pool",
+    "modeTreasurer": "To Member",
+    "virtualPoolHint": "Creates a virtual \"Group Pool\" wallet so pooled cash & balance stay separate from the treasurer’s personal balance.",
+    "defaultName": "Group Pool",
+    "defaultNote": "Pool deposit",
+    "selectTreasurerLabel": "Treasurer",
+    "amountPerPersonLabel": "Deposit Per Person",
+    "contributorsLabel": "Contributors",
+    "totalPreviewLabel": "{count} members · Total collected",
+    "confirmButton": "Record Pool Collection",
+    "errNoContributors": "Select at least one contributing member",
+    "collectedToast": "Recorded pool deposits for {count} members!"
   }
 }

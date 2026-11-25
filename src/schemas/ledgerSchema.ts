@@ -136,8 +136,18 @@ export const ProjectMemberSchema = z.object({
   avatarImage: z.string().max(180_000).optional(),
   /** 選填：收款帳號或轉帳資訊（如銀行代碼＋帳號、LINE Pay 連結），供結算頁一鍵複製 */
   paymentInfo: z.string().trim().max(120).optional(),
+  /** 選填：是否為專案「公費袋（公積金）」虛擬成員 */
+  isPool: z.boolean().optional(),
 })
 export type ProjectMember = z.infer<typeof ProjectMemberSchema>
+
+/** 專案常用拆帳子群組（例如：A 車 4 人、喝酒組、情侶檔） */
+export const ProjectSplitGroupSchema = z.object({
+  id: z.string().trim().min(1).max(64),
+  name: z.string().trim().min(1).max(32),
+  memberIds: z.array(z.string().trim().min(1)).min(1),
+})
+export type ProjectSplitGroup = z.infer<typeof ProjectSplitGroupSchema>
 
 /** 使用者個人成員檔案（用於預設成員名稱、大頭貼與收款帳號，支援跨裝置同步） */
 export const UserProfileSchema = z.object({
@@ -185,6 +195,8 @@ export const ProjectSchema = z.object({
   settlementRateMode: z.enum(['per_tx', 'live', 'custom']).optional(),
   /** 選填：當 settlementRateMode 為 custom 時，各幣別折合結帳幣別之自訂結算匯率 */
   settlementCustomRates: z.record(z.string(), z.number().finite().positive()).optional(),
+  /** 選填：大團常用拆帳子群組（如「A 車」「喝酒組」），完整向下相容 */
+  splitGroups: z.array(ProjectSplitGroupSchema).max(20).optional(),
   syncMeta: ProjectSyncMetaSchema.optional(),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),

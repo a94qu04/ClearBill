@@ -8,8 +8,16 @@ import {
   buildGoogleConnectLink,
   parseGoogleConnectHash,
 } from '@/core/googleConnectLink'
+import { formatCurrencyAmount } from '@/core/currency'
+import {
+  applyPercentFees,
+  computeEffectiveCompoundFeePercent,
+} from '@/core/ledgerHelpers'
 import { SchemaMigrationError } from '@/core/migrationEngine'
-import { buildProjectSettlementShareText } from '@/core/shareFormatter'
+import {
+  buildMemberStatementShareText,
+  buildProjectSettlementShareText,
+} from '@/core/shareFormatter'
 import { calculateSettleUp } from '@/core/settleUpEngine'
 import type { Project, Transaction } from '@/schemas/ledgerSchema'
 import zhTW from '@/locales/zh-TW.json'
@@ -376,6 +384,57 @@ describe('shareFormatter - 一鍵分享結算摘要文字產生器', () => {
     expect(text).toContain('已記錄還款：')
     expect(text).toContain('2026-11-25 小林 已付給 我')
     expect(text).toContain('300')
+  })
+
+  it('能產生單一成員專屬對帳單並驗證泰國複利加成與 THB 整數格式省略 .00', () => {
+    expect(computeEffectiveCompoundFeePercent(10, 7)).toBe(17.7)
+    expect(applyPercentFees(1000, 10, 7, 0)).toBe(1177)
+    expect(formatCurrencyAmount(100, 'THB', 'en')).not.toContain('.00')
+    expect(formatCurrencyAmount(100.5, 'THB', 'en')).toContain('.50')
+
+    const settleUp = calculateSettleUp([txLocalOld], 'JPY', ['me', 'lin'])
+    const memberText = buildMemberStatementShareText(
+      {
+        ...projectA,
+        members: [
+          { id: 'me', name: '我', paymentInfo: '國泰世華 013-999' },
+          { id: 'lin', name: '小林' },
+        ],
+      },
+      'lin',
+      settleUp,
+      [
+        {
+          date: '2026-11-24',
+          title: '拉麵（舊版）',
+          isRefund: false,
+          shareInSettle: 1000,
+          paidInSettle: 0,
+        },
+      ],
+      {
+        headerPrefix: '【ClearBill 結算】',
+        statementTitle: '小林 的分攤與墊付明細',
+        spentLabel: '總支出',
+        paidLabel: '已墊付',
+        netLabel: '淨收支',
+        shouldReceive: '應收回',
+        shouldPay: '應支付',
+        settled: '已結清',
+        transfersTitle: '▎待還款建議',
+        allSettledText: '已結清',
+        entriesTitle: '▎消費與退款明細',
+        refundTag: '退款',
+        transferLine: (from, to, amt) => `${from} ➔ ${to}：${amt}`,
+        footerTagline: '— ClearBill',
+      },
+      'zh-TW',
+    )
+
+    expect(memberText).toContain('小林 的分攤與墊付明細')
+    expect(memberText).toContain('小林 ➔ 我')
+    expect(memberText).toContain('國泰世華 013-999')
+    expect(memberText).toContain('拉麵（舊版）')
   })
 })
 

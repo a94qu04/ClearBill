@@ -285,7 +285,13 @@
     "cardBgLabel": "專案小卡背景（選色或上傳照片）",
     "cardBgUploadPhoto": "上傳封面照",
     "cardBgReset": "恢復預設",
-    "cardBgPreviewHint": "小卡背景預覽"
+    "cardBgPreviewHint": "小卡背景預覽",
+    "quickAddCurrencyShort": "新增幣別",
+    "quickAddCurrencyButton": "找不到幣別？點此快速新增",
+    "quickAddCurrencyPlaceholder": "輸入 3 碼幣別（如 THB、SGD、VND）",
+    "duplicateWarnTitle": "偵測到疑似重複帳目",
+    "duplicateWarnMessage": "今天已有金額相同的紀錄「{note}」（{amount}），確定要再新增一筆嗎？",
+    "duplicateWarnConfirm": "仍要儲存"
   },
   "profile": {
     "sectionTitle": "我的成員名稱與大頭貼",
@@ -327,7 +333,17 @@
     "hideMemberDetails": "收合明細",
     "memberStatementTitle": "{name} 的分攤與墊付明細",
     "openInEntriesButton": "去明細篩選",
-    "memberStatementEmpty": "目前尚無此成員的消費與分攤紀錄。"
+    "memberStatementEmpty": "目前尚無此成員的消費與分攤紀錄。",
+    "meBadge": "你",
+    "sortByMemberOrder": "成員順序",
+    "sortByNetAmount": "金額排序",
+    "copyMemberStatementButton": "複製對帳單",
+    "memberStatementCopiedToast": "已複製「{name}」的專屬對帳單！",
+    "planModeMin": "最少轉帳",
+    "planModeHub": "集中收付",
+    "hubMemberLabel": "收付窗口（財務長）",
+    "onlyMyTransfersButton": "只看我",
+    "noMyTransfers": "目前沒有與你相關的待轉帳項目！"
   },
   "split": {
     "payerLabel": "誰先墊付",
@@ -359,7 +375,15 @@
     "errUnallocatedRemainder": "尚有 {remainder} 未分配，請至少勾選一位「均攤剩餘」。",
     "errInvalidWeights": "所有成員的份數總和必須大於 0。",
     "errPercentTotal": "百分比總和須為 100%（目前為 {total}%）。",
-    "errInvalidAmount": "請輸入有效的金額。"
+    "errInvalidAmount": "請輸入有效的金額。",
+    "quickSelectAll": "全選",
+    "quickSelectNone": "全不選",
+    "quickSelectInvert": "反選",
+    "quickSelectPayerOnly": "僅墊付人",
+    "saveAsGroupButton": "存群組",
+    "groupNamePlaceholder": "子群組名稱（如：A 車、喝酒組）...",
+    "groupSavedToast": "已儲存常用群組「{name}」",
+    "groupRemovedToast": "已移除該子群組"
   },
   "categories": {
     "cat_food": "餐飲",
@@ -403,7 +427,8 @@
     "csvPayers": "墊付人",
     "csvShares": "分攤明細",
     "projectBackupTitle": "專案本地備份",
-    "projectBackupDesc": "匯出此專案的本地 JSON 備份檔，可私下傳給旅伴匯入合併。Excel 與長截圖報表請至「結算」頁匯出。"
+    "projectBackupDesc": "匯出此專案的本地 JSON 備份檔，可私下傳給旅伴匯入合併。Excel 與長截圖報表請至「結算」頁匯出。",
+    "longImageOmittedNotice": "另有 {count} 筆明細未繪入長圖（避免手機記憶體上限），完整明細請匯出 Excel (.xlsx)"
   },
   "demo": {
     "tryButton": "載入範例旅遊帳本，1 秒體驗分帳與圓餅圖",
@@ -514,7 +539,13 @@
     "modeLive": "即時匯率",
     "modeCustom": "自訂匯率",
     "applySettleCustomButton": "套用自訂結算匯率",
-    "settleCustomAppliedToast": "已套用自訂結算匯率並重新試算！"
+    "settleCustomAppliedToast": "已套用自訂結算匯率並重新試算！",
+    "cashPresetLabel": "現金價 {rate}",
+    "cardPresetLabel": "刷卡價 {rate}",
+    "saveAsCashPreset": "+ 存現金價",
+    "saveAsCardPreset": "+ 存刷卡價",
+    "cashPresetSavedToast": "已記住現金匯率：{rate}",
+    "cardPresetSavedToast": "已記住刷卡匯率：{rate}"
   },
   "confirm": {
     "defaultTitle": "請確認操作",
@@ -533,5 +564,26 @@
     "projectNameRequired": "請輸入專案名稱",
     "membersRequired": "請至少輸入 2 位成員",
     "sameMemberSettlement": "付款人與收款人不可為同一人"
+  },
+  "pool": {
+    "cardTitle": "公費袋（公積金）餘額",
+    "collectButtonShort": "收公費",
+    "paidOutLabel": "公費已支出",
+    "remainingCashLabel": "公費剩餘現金",
+    "overdrawnLabel": "公費超支待補",
+    "modalTitle": "大團批次收公費",
+    "modalSubtitle": "一鍵記錄每人預繳公費，不用逐筆手動輸入",
+    "modeVirtualPool": "獨立公費袋",
+    "modeTreasurer": "指定財務長",
+    "virtualPoolHint": "系統會建立專屬「公費袋」虛擬成員來記錄公費進出與剩餘現金，不會把財務長標成負債大戶。",
+    "defaultName": "公費袋",
+    "defaultNote": "預繳公費",
+    "selectTreasurerLabel": "收款財務長",
+    "amountPerPersonLabel": "每人預繳金額",
+    "contributorsLabel": "繳交公費成員",
+    "totalPreviewLabel": "本次共收 {count} 人，預計入袋",
+    "confirmButton": "確認批次記錄公費",
+    "errNoContributors": "請至少選擇一位繳交公費的成員",
+    "collectedToast": "已完成 {count} 位成員的公費收款紀錄！"
   }
 }

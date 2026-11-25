@@ -9,6 +9,7 @@ import {
   Plus,
   Search,
   Trash2,
+  Wallet,
   X,
 } from 'lucide-vue-next'
 import { useLedgerStore, type ManagedCategory } from '@/stores/ledgerStore'
@@ -25,6 +26,7 @@ interface Props {
   emptyText: string
   projectBaseCurrency?: string
   projectMembers?: ProjectMember[]
+  myMemberId?: string
   filterProjects?: Array<{ id: string; name: string }>
   collapsibleLimit?: number
 }
@@ -33,6 +35,7 @@ const props = withDefaults(defineProps<Props>(), {
   title: undefined,
   projectBaseCurrency: undefined,
   projectMembers: undefined,
+  myMemberId: undefined,
   filterProjects: undefined,
   collapsibleLimit: 0,
 })
@@ -67,6 +70,14 @@ function resolveCategoryLabel(cat: ManagedCategory): string {
   const translated = t(`categories.${cat.key}`)
   return translated === `categories.${cat.key}` ? cat.key : translated
 }
+
+const orderedFilterMembers = computed<ProjectMember[]>(() => {
+  const list = props.projectMembers ?? []
+  if (!props.myMemberId) return list
+  const mine = list.find((m) => m.id === props.myMemberId)
+  if (!mine) return list
+  return [mine, ...list.filter((m) => m.id !== props.myMemberId)]
+})
 
 const allCategories = computed(() =>
   store.categories.map((cat) => ({
@@ -542,7 +553,7 @@ defineExpose({ resetFilters, setMemberFilter })
         {{ t('search.allMembers') }}
       </button>
       <button
-        v-for="m in projectMembers"
+        v-for="m in orderedFilterMembers"
         :key="m.id"
         type="button"
         class="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full py-0.5 pl-1 pr-2.5 text-[11px] font-semibold transition"
@@ -555,7 +566,9 @@ defineExpose({ resetFilters, setMemberFilter })
           selectedMemberFilter = selectedMemberFilter === m.id ? 'all' : m.id
         "
       >
+        <Wallet v-if="m.isPool" class="ml-0.5 h-3 w-3 shrink-0" />
         <MemberAvatar
+          v-else
           :name="m.name"
           :color="m.avatarColor"
           :image="m.avatarImage"
@@ -563,6 +576,17 @@ defineExpose({ resetFilters, setMemberFilter })
           ring
         />
         <span>{{ m.name }}</span>
+        <span
+          v-if="myMemberId && m.id === myMemberId"
+          class="rounded-full bg-emerald-500/20 px-1 text-[9px] font-bold"
+          :class="
+            selectedMemberFilter === m.id
+              ? 'bg-white/25 text-white dark:bg-slate-950/20 dark:text-slate-950'
+              : 'text-emerald-700 dark:text-emerald-300'
+          "
+        >
+          {{ t('settle.meBadge') }}
+        </span>
       </button>
     </div>
 

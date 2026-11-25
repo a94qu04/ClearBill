@@ -11,7 +11,10 @@ import {
   evaluateAmountExpression,
   hasMathExpression,
 } from '@/core/expressionEvaluator'
-import { applyPercentFees } from '@/core/ledgerHelpers'
+import {
+  applyPercentFees,
+  computeEffectiveCompoundFeePercent,
+} from '@/core/ledgerHelpers'
 
 const FEE_RATES_STORAGE_KEY = 'clearbill_custom_fee_rates_v1'
 
@@ -165,11 +168,17 @@ const hasPositiveInput = computed(() => {
 
 const appliedFeeSummary = computed(() => {
   const parts: string[] = []
-  if (serviceFeeEnabled.value && parsedServiceFeePercent.value > 0) {
-    parts.push(`${t('project.serviceFeeShort')} +${parsedServiceFeePercent.value}%`)
+  const s = serviceFeeEnabled.value && parsedServiceFeePercent.value > 0 ? parsedServiceFeePercent.value : null
+  const f = fxFeeEnabled.value && parsedFxFeePercent.value > 0 ? parsedFxFeePercent.value : null
+  if (s !== null) {
+    parts.push(`${t('project.serviceFeeShort')} +${s}%`)
   }
-  if (fxFeeEnabled.value && parsedFxFeePercent.value > 0) {
-    parts.push(`${t('project.fxFeeShort')} +${parsedFxFeePercent.value}%`)
+  if (f !== null) {
+    parts.push(`${t('project.fxFeeShort')} +${f}%`)
+  }
+  if (s !== null && f !== null) {
+    const compoundPct = computeEffectiveCompoundFeePercent(s, f)
+    return `${parts.join(' × ')} (= +${compoundPct}%)`
   }
   return parts.join('、')
 })

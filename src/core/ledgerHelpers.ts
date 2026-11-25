@@ -55,6 +55,32 @@ export function applyPercentFees(
   return Math.round(total * factor) / factor
 }
 
+/**
+ * 計算兩項百分比依商業複利依序疊加後的有效總加成百分比
+ * 例如：服務費 10% ＋ 泰國 VAT 7% ➔ (1.10 × 1.07 - 1) × 100 = 17.7%
+ */
+export function computeEffectiveCompoundFeePercent(
+  serviceFeePercent: number | null,
+  fxFeePercent: number | null,
+): number {
+  let multiplier = 1
+  if (
+    typeof serviceFeePercent === 'number' &&
+    Number.isFinite(serviceFeePercent) &&
+    serviceFeePercent > 0
+  ) {
+    multiplier *= 1 + serviceFeePercent / 100
+  }
+  if (
+    typeof fxFeePercent === 'number' &&
+    Number.isFinite(fxFeePercent) &&
+    fxFeePercent > 0
+  ) {
+    multiplier *= 1 + fxFeePercent / 100
+  }
+  return Number(((multiplier - 1) * 100).toFixed(2))
+}
+
 export function getTodayIso(): string {
   const now = new Date()
   const y = now.getFullYear()

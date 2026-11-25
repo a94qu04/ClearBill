@@ -6,6 +6,7 @@ import {
   type LedgerBackup,
   type Project,
   type ProjectMember,
+  type ProjectSplitGroup,
   type SplitConfig,
   type SplitMode,
   type Transaction,
@@ -70,7 +71,15 @@ import {
 const ACTIVE_PROJECT_STORAGE_KEY = 'clearbill_active_project_id'
 const PREFS_STORAGE_KEY = 'clearbill_user_prefs_v2'
 
-export const INITIAL_CURRENCIES = ['TWD', 'JPY', 'USD', 'KRW', 'EUR', 'HKD'] as const
+export const INITIAL_CURRENCIES = [
+  'TWD',
+  'JPY',
+  'THB',
+  'USD',
+  'KRW',
+  'EUR',
+  'HKD',
+] as const
 
 export const AVATAR_PALETTE = [
   '#10b981',
@@ -81,6 +90,12 @@ export const AVATAR_PALETTE = [
   '#06b6d4',
   '#f97316',
   '#14b8a6',
+  '#ef4444',
+  '#6366f1',
+  '#84cc16',
+  '#d946ef',
+  '#0284c7',
+  '#b45309',
 ] as const
 
 export const PROJECT_CARD_PALETTE = [
@@ -194,6 +209,11 @@ export interface RecordSettlementPayload {
   note?: string
 }
 
+interface QuickExchangeRatePresets {
+  cash?: number
+  card?: number
+}
+
 interface PersistedUserPrefsV2 {
   defaultCurrency: string
   enabledCurrencies: string[]
@@ -201,6 +221,7 @@ interface PersistedUserPrefsV2 {
   projectOrder?: string[]
   projectOrderUpdatedAt?: number
   exchangeRates?: Record<string, number>
+  quickExchangeRates?: Record<string, QuickExchangeRatePresets>
   lastCurrencyByProject?: Record<string, string>
   userProfile?: UserProfile
 }
@@ -292,6 +313,28 @@ function loadUserPrefs(): PersistedUserPrefsV2 {
         }
       }
 
+      const quickExchangeRates: Record<string, QuickExchangeRatePresets> = {}
+      if (
+        parsed.quickExchangeRates &&
+        typeof parsed.quickExchangeRates === 'object'
+      ) {
+        for (const [pairKey, preset] of Object.entries(parsed.quickExchangeRates)) {
+          if (!/^[A-Z]{3}_[A-Z]{3}$/.test(pairKey) || !preset || typeof preset !== 'object') {
+            continue
+          }
+          const clean: QuickExchangeRatePresets = {}
+          if (typeof preset.cash === 'number' && Number.isFinite(preset.cash) && preset.cash > 0) {
+            clean.cash = preset.cash
+          }
+          if (typeof preset.card === 'number' && Number.isFinite(preset.card) && preset.card > 0) {
+            clean.card = preset.card
+          }
+          if (clean.cash !== undefined || clean.card !== undefined) {
+            quickExchangeRates[pairKey] = clean
+          }
+        }
+      }
+
       const lastCurrencyByProject: Record<string, string> = {}
       if (
         parsed.lastCurrencyByProject &&
@@ -348,6 +391,7 @@ function loadUserPrefs(): PersistedUserPrefsV2 {
         projectOrder,
         projectOrderUpdatedAt,
         exchangeRates,
+        quickExchangeRates,
         lastCurrencyByProject,
         userProfile,
       }
@@ -449,6 +493,9 @@ export const useLedgerStore = defineStore('ledger', () => {
   const rememberedExchangeRates = ref<Record<string, number>>(
     initialPrefs.exchangeRates ?? {},
   )
+  const quickExchangeRates = ref<Record<string, QuickExchangeRatePresets>>(
+    initialPrefs.quickExchangeRates ?? {},
+  )
   const lastCurrencyByProject = ref<Record<string, string>>(
     initialPrefs.lastCurrencyByProject ?? {},
   )
@@ -500,6 +547,7 @@ export const useLedgerStore = defineStore('ledger', () => {
         projectOrder: projectOrder.value,
         projectOrderUpdatedAt: projectOrderUpdatedAt.value || undefined,
         exchangeRates: rememberedExchangeRates.value,
+        quickExchangeRates: quickExchangeRates.value,
         lastCurrencyByProject: lastCurrencyByProject.value,
         userProfile: userProfile.value,
       }
@@ -598,6 +646,37 @@ export const useLedgerStore = defineStore('ledger', () => {
     const next = { ...rememberedExchangeRates.value }
     delete next[key]
     rememberedExchangeRates.value = next
+    saveUserPrefs()
+  }
+
+  function getQuickExchangeRatePresets(
+    from: string,
+    to: string,
+  ): QuickExchangeRatePresets {
+    const f = from.trim().toUpperCase()
+    const tCode = to.trim().toUpperCase()
+    if (!f || !tCode || f === tCode) return {}
+    return quickExchangeRates.value[`${f}_${tCode}`] ?? {}
+  }
+
+  function saveQuickExchangeRatePreset(
+    from: string,
+    to: string,
+    slot: 'cash' | 'card',
+    rate: number,
+  ): void {
+    const f = from.trim().toUpperCase()
+    const tCode = to.trim().toUpperCase()
+    if (!f || !tCode || f === tCode) return
+    if (!Number.isFinite(rate) || rate <= 0) return
+    const key = `${f}_${tCode}`
+    quickExchangeRates.value = {
+      ...quickExchangeRates.value,
+      [key]: {
+        ...(quickExchangeRates.value[key] ?? {}),
+        [slot]: rate,
+      },
+    }
     saveUserPrefs()
   }
 
@@ -2366,6 +2445,134 @@ export const useLedgerStore = defineStore('ledger', () => {
     return saved
   }
 
+  async function saveProjectSplitGroup(
+    projectId: string,
+    name: string,
+    memberIds: string[],
+  ): Promise<ProjectSplitGroup | null> {
+    const existing = projects.value.find((p) => p.id === projectId && !p.isDeleted)
+    if (!existing) return null
+    const trimmed = name.trim().slice(0, 32)
+    const validIds = new Set(existing.members.map((m) => m.id))
+    const cleanIds = Array.from(new Set(memberIds.filter((id) => validIds.has(id))))
+    if (!trimmed || cleanIds.length === 0) return null
+
+    const currentGroups = existing.splitGroups ? existing.splitGroups.map((g) => ({ ...g, memberIds: [...g.memberIds] })) : []
+    const existingIdx = currentGroups.findIndex(
+      (g) => g.name.toLowerCase() === trimmed.toLowerCase(),
+    )
+    let savedGroup: ProjectSplitGroup
+    if (existingIdx >= 0) {
+      savedGroup = { ...currentGroups[existingIdx], name: trimmed, memberIds: cleanIds }
+      currentGroups[existingIdx] = savedGroup
+    } else {
+      if (currentGroups.length >= 20) return null
+      savedGroup = {
+        id: `grp_${Date.now().toString(36)}`,
+        name: trimmed,
+        memberIds: cleanIds,
+      }
+      currentGroups.push(savedGroup)
+    }
+
+    const updated: Project = {
+      ...existing,
+      splitGroups: currentGroups,
+      members: existing.members.map((m) => ({ ...m })),
+      updatedAt: Date.now(),
+    }
+    const saved = await saveProjectToNormalVault(updated)
+    projects.value = projects.value.map((p) => (p.id === projectId ? saved : p))
+    await enqueueAndFlushProjectChange(projectId, 'project', saved.id, saved.updatedAt)
+    markGoogleDriveDirty()
+    return savedGroup
+  }
+
+  async function removeProjectSplitGroup(
+    projectId: string,
+    groupId: string,
+  ): Promise<void> {
+    const existing = projects.value.find((p) => p.id === projectId && !p.isDeleted)
+    if (!existing || !existing.splitGroups?.length) return
+
+    const nextGroups = existing.splitGroups.filter((g) => g.id !== groupId)
+    const updated: Project = {
+      ...existing,
+      splitGroups: nextGroups.length > 0 ? nextGroups : undefined,
+      members: existing.members.map((m) => ({ ...m })),
+      updatedAt: Date.now(),
+    }
+    const saved = await saveProjectToNormalVault(updated)
+    projects.value = projects.value.map((p) => (p.id === projectId ? saved : p))
+    await enqueueAndFlushProjectChange(projectId, 'project', saved.id, saved.updatedAt)
+    markGoogleDriveDirty()
+  }
+
+  async function ensureProjectPoolMember(
+    projectId: string,
+    poolName: string,
+  ): Promise<ProjectMember | null> {
+    const existing = projects.value.find((p) => p.id === projectId && !p.isDeleted)
+    if (!existing) return null
+
+    const already = existing.members.find((m) => m.isPool)
+    if (already) return already
+
+    const poolMember: ProjectMember = {
+      id: `pool_${Date.now().toString(36)}`,
+      name: poolName.trim().slice(0, 50) || '公費袋',
+      avatarColor: '#0f766e',
+      isPool: true,
+    }
+
+    const updated: Project = {
+      ...existing,
+      members: [...existing.members.map((m) => ({ ...m })), poolMember],
+      updatedAt: Date.now(),
+    }
+    const saved = await saveProjectToNormalVault(updated)
+    projects.value = projects.value.map((p) => (p.id === projectId ? saved : p))
+    await enqueueAndFlushProjectChange(projectId, 'project', saved.id, saved.updatedAt)
+    markGoogleDriveDirty()
+    return poolMember
+  }
+
+  async function batchCollectPoolFund(params: {
+    projectId: string
+    collectorMemberId: string
+    contributorMemberIds: string[]
+    amountPerMember: number
+    currency: string
+    exchangeRateToBase?: number
+    date: string
+    note?: string
+  }): Promise<number> {
+    const validContributors = Array.from(
+      new Set(
+        params.contributorMemberIds.filter(
+          (id) => id && id !== params.collectorMemberId,
+        ),
+      ),
+    )
+    if (validContributors.length === 0 || params.amountPerMember <= 0) return 0
+
+    let count = 0
+    for (const memberId of validContributors) {
+      await recordSettlementPayment({
+        projectId: params.projectId,
+        fromMemberId: memberId,
+        toMemberId: params.collectorMemberId,
+        amount: params.amountPerMember,
+        currency: params.currency,
+        exchangeRateToBase: params.exchangeRateToBase,
+        date: params.date,
+        note: params.note,
+      })
+      count += 1
+    }
+    return count
+  }
+
   async function recordSettlementPayment(
     payload: RecordSettlementPayload,
   ): Promise<Transaction> {
@@ -2740,6 +2947,8 @@ export const useLedgerStore = defineStore('ledger', () => {
     getRememberedExchangeRate,
     rememberExchangeRate,
     clearRememberedExchangeRate,
+    getQuickExchangeRatePresets,
+    saveQuickExchangeRatePreset,
     getProjectLastCurrency,
     rememberProjectLastCurrency,
     getProjectSettlementRateOverrides,
@@ -2766,6 +2975,10 @@ export const useLedgerStore = defineStore('ledger', () => {
     addProjectMember,
     updateProjectMember,
     removeProjectMember,
+    saveProjectSplitGroup,
+    removeProjectSplitGroup,
+    ensureProjectPoolMember,
+    batchCollectPoolFund,
     isMemberUsedInProjectTransactions,
     softDeleteProject,
     selectProject,

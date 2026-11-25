@@ -1,5 +1,14 @@
 /** 零小數點精度之幣別清單（最小幣別單位為 1） */
-export const ZERO_DECIMAL_CURRENCIES = new Set<string>(['TWD', 'JPY', 'KRW'])
+export const ZERO_DECIMAL_CURRENCIES = new Set<string>([
+  'TWD',
+  'JPY',
+  'KRW',
+  'VND',
+  'IDR',
+])
+
+/** 實務上多以整數交易、但偶有小數的旅遊幣別（整數時省略 .00，小數時保留精度） */
+const SMART_INTEGER_CURRENCIES = new Set<string>(['THB', 'HKD', 'CNY', 'PHP', 'MYR'])
 
 /**
  * 取得指定幣別的小數位數（TWD / JPY / KRW 為 0，其餘預設為 2）
@@ -108,17 +117,22 @@ export function formatCurrencyAmount(
 ): string {
   const normalizedCurrency = currency.trim().toUpperCase()
   const decimals = getCurrencyDecimals(normalizedCurrency)
+  const isCleanInt =
+    decimals > 0 &&
+    SMART_INTEGER_CURRENCIES.has(normalizedCurrency) &&
+    Number.isInteger(Number(amount.toFixed(decimals)))
+  const minFractionDigits = isCleanInt ? 0 : decimals
 
   try {
     return new Intl.NumberFormat(locale, {
       style: 'currency',
       currency: normalizedCurrency,
-      minimumFractionDigits: decimals,
+      minimumFractionDigits: minFractionDigits,
       maximumFractionDigits: decimals,
     }).format(amount)
   } catch {
     const numberText = new Intl.NumberFormat(locale, {
-      minimumFractionDigits: decimals,
+      minimumFractionDigits: minFractionDigits,
       maximumFractionDigits: decimals,
     }).format(amount)
     return `${normalizedCurrency} ${numberText}`

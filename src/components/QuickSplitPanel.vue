@@ -5,11 +5,15 @@ import {
   AlertCircle,
   CheckCircle2,
   Info,
+  Plus,
   RotateCcw,
   Users,
+  Wallet,
+  X,
 } from 'lucide-vue-next'
 import type {
   ProjectMember,
+  ProjectSplitGroup,
   SplitConfig,
   SplitMode,
   SplitPayer,
@@ -25,11 +29,13 @@ import {
   toMinorUnits,
 } from '@/core/currency'
 import CurrencyAmountInput from '@/components/CurrencyAmountInput.vue'
+import MemberAvatar from '@/components/MemberAvatar.vue'
 
 interface Props {
   totalAmount: number
   currency: string
   members: ProjectMember[]
+  splitGroups?: ProjectSplitGroup[]
   defaultPayerId?: string
   initialMode?: SplitMode
   initialSplitConfig?: SplitConfig | null
@@ -37,6 +43,7 @@ interface Props {
 }
 
 const props = withDefaults(defineProps<Props>(), {
+  splitGroups: () => [],
   defaultPayerId: undefined,
   initialMode: 'equal',
   initialSplitConfig: null,
@@ -46,6 +53,8 @@ const props = withDefaults(defineProps<Props>(), {
 const emit = defineEmits<{
   (e: 'update:splitConfig', value: SplitConfig | null): void
   (e: 'validityChange', isValid: boolean): void
+  (e: 'saveSplitGroup', payload: { name: string; memberIds: string[] }): void
+  (e: 'removeSplitGroup', groupId: string): void
 }>()
 
 const { t, locale } = useI18n()
@@ -65,12 +74,22 @@ interface MemberRowState {
 const memberStateMap = reactive<Record<string, MemberRowState>>({})
 
 function initEqualPercents(): number[] {
-  const n = props.members.length
-  if (n <= 0) return []
-  const base = Math.floor((10000 / n)) / 100
-  const list = new Array<number>(n).fill(base)
+  const nonPoolIndices = props.members
+    .map((m, idx) => (!m.isPool ? idx : -1))
+    .filter((idx) => idx >= 0)
+  const targetIndices =
+    nonPoolIndices.length > 0
+      ? nonPoolIndices
+      : props.members.map((_, idx) => idx)
+  const n = targetIndices.length
+  const list = new Array<number>(props.members.length).fill(0)
+  if (n <= 0) return list
+  const base = Math.floor(10000 / n) / 100
+  for (const idx of targetIndices) {
+    list[idx] = base
+  }
   const sumOthers = Number((base * (n - 1)).toFixed(2))
-  list[0] = Number((100 - sumOthers).toFixed(2))
+  list[targetIndices[0]] = Number((100 - sumOthers).toFixed(2))
   return list
 }
 
@@ -200,11 +219,14 @@ function applyPresetFromConfig(config: SplitConfig | null | undefined) {
       ? props.defaultPayerId
       : props.members[0]?.id) ?? ''
 
+  const hasNonPoolMember = props.members.some((m) => !m.isPool)
   props.members.forEach((member, idx) => {
+    // 公費袋虛擬成員預設不參與分攤消費（只當墊付人／收款池），若真需要仍可手動勾選
+    const defaultIncluded = hasNonPoolMember ? !member.isPool : true
     memberStateMap[member.id] = {
       customAmount: null,
-      isIncludedInRemainder: true,
-      weight: 1,
+      isIncludedInRemainder: defaultIncluded,
+      weight: defaultIncluded ? 1 : 0,
       percent: defaultPercents[idx] ?? 0,
     }
   })
@@ -262,14 +284,131 @@ function fillRemainingToPayer(memberId: string) {
 
 function resetAllSharesToEqual() {
   const eqPercents = initEqualPercents()
+  const hasNonPoolMember = props.members.some((m) => !m.isPool)
   props.members.forEach((member, idx) => {
+    const defaultIncluded = hasNonPoolMember ? !member.isPool : true
     memberStateMap[member.id] = {
       customAmount: null,
-      isIncludedInRemainder: true,
-      weight: 1,
+      isIncludedInRemainder: defaultIncluded,
+      weight: defaultIncluded ? 1 : 0,
       percent: eqPercents[idx] ?? 0,
     }
   })
+}
+
+// 大團一鍵快選與常用子群組操作
+const saveGroupInputOpen = ref(false)
+const newGroupName = ref('')
+
+const nonPoolMembers = computed(() =>
+  props.members.filter((m) => !m.isPool),
+)
+
+const selectedSplitMemberIds = computed<string[]>(() =>
+  props.members
+    .filter((m) => {
+      const st = memberStateMap[m.id]
+      if (!st) return false
+      if (mode.value === 'weight') return st.weight > 0
+      if (mode.value === 'percentage') return (st.percent ?? 0) > 0
+      return st.isIncludedInRemainder
+    })
+    .map((m) => m.id),
+)
+
+function applyMemberSelection(targetIds: Set<string>) {
+  if (mode.value === 'weight') {
+    for (const m of props.members) {
+      const st = memberStateMap[m.id]
+      if (!st) continue
+      const on = targetIds.has(m.id)
+      st.weight = on ? (st.weight > 0 ? st.weight : 1) : 0
+      st.isIncludedInRemainder = on
+    }
+    return
+  }
+  if (mode.value === 'percentage') {
+    const chosen = props.members.filter((m) => targetIds.has(m.id))
+    const n = chosen.length
+    const base = n > 0 ? Math.floor(10000 / n) / 100 : 0
+    const firstPct = n > 0 ? Number((100 - Number((base * (n - 1)).toFixed(2))).toFixed(2)) : 0
+    let seenFirst = false
+    for (const m of props.members) {
+      const st = memberStateMap[m.id]
+      if (!st) continue
+      if (targetIds.has(m.id)) {
+        st.percent = !seenFirst ? firstPct : base
+        seenFirst = true
+        st.isIncludedInRemainder = true
+      } else {
+        st.percent = 0
+        st.isIncludedInRemainder = false
+      }
+    }
+    return
+  }
+  for (const m of props.members) {
+    const st = memberStateMap[m.id]
+    if (!st) continue
+    st.isIncludedInRemainder = targetIds.has(m.id)
+  }
+}
+
+function selectAllMembers() {
+  const pool = nonPoolMembers.value.length > 0 ? nonPoolMembers.value : props.members
+  applyMemberSelection(new Set(pool.map((m) => m.id)))
+}
+
+function selectNoneMembers() {
+  applyMemberSelection(new Set())
+}
+
+function invertSelectedMembers() {
+  const current = new Set(selectedSplitMemberIds.value)
+  const pool = nonPoolMembers.value.length > 0 ? nonPoolMembers.value : props.members
+  const inverted = new Set(pool.filter((m) => !current.has(m.id)).map((m) => m.id))
+  applyMemberSelection(inverted)
+}
+
+function selectOnlyPayer() {
+  if (isMultiPayer.value) {
+    const ids = new Set(
+      props.members
+        .filter((m) => (multiPayerAmounts[m.id] ?? 0) > 0)
+        .map((m) => m.id),
+    )
+    if (ids.size > 0) applyMemberSelection(ids)
+    return
+  }
+  if (payerId.value) {
+    applyMemberSelection(new Set([payerId.value]))
+  }
+}
+
+function applySplitGroup(group: ProjectSplitGroup) {
+  applyMemberSelection(new Set(group.memberIds))
+}
+
+function isGroupActive(group: ProjectSplitGroup): boolean {
+  const current = new Set(selectedSplitMemberIds.value)
+  const validGroupIds = group.memberIds.filter((id) =>
+    props.members.some((m) => m.id === id),
+  )
+  if (validGroupIds.length === 0 || current.size !== validGroupIds.length) {
+    return false
+  }
+  return validGroupIds.every((id) => current.has(id))
+}
+
+function confirmSaveCurrentAsGroup() {
+  const trimmed = newGroupName.value.trim()
+  if (!trimmed || selectedSplitMemberIds.value.length === 0) return
+  emit('saveSplitGroup', {
+    name: trimmed,
+    memberIds: [...selectedSplitMemberIds.value],
+  })
+  newGroupName.value = ''
+  saveGroupInputOpen.value = false
 }
 
 function stepMemberWeight(memberId: string, delta: number) {
@@ -624,13 +763,21 @@ watch(
         </button>
       </div>
 
-      <!-- 單人墊付膠囊（同步顯示每位成員專屬色標） -->
-      <div v-if="!isMultiPayer" class="flex flex-wrap gap-1.5">
+      <!-- 單人墊付膠囊（6 人以上於手機採單行橫向滑動省高度，平板以上展開） -->
+      <div
+        v-if="!isMultiPayer"
+        class="flex items-center gap-1.5"
+        :class="
+          members.length >= 6
+            ? 'no-scrollbar flex-nowrap overflow-x-auto pb-0.5 sm:flex-wrap'
+            : 'flex-wrap'
+        "
+      >
         <button
           v-for="member in members"
           :key="member.id"
           type="button"
-          class="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold transition"
+          class="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full py-1 pl-1.5 pr-3 text-xs font-semibold transition"
           :class="
             payerId === member.id
               ? 'text-white shadow-sm ring-2 ring-offset-1 ring-slate-900/20 dark:ring-white/30 dark:ring-offset-slate-900'
@@ -643,10 +790,14 @@ watch(
           "
           @click="payerId = member.id"
         >
-          <span
-            v-if="payerId !== member.id"
-            class="h-2 w-2 rounded-full"
-            :style="{ backgroundColor: member.avatarColor || '#10b981' }"
+          <Wallet v-if="member.isPool" class="h-3.5 w-3.5 shrink-0" />
+          <MemberAvatar
+            v-else
+            :name="member.name"
+            :color="member.avatarColor"
+            :image="member.avatarImage"
+            size="xxs"
+            ring
           />
           <span>{{ member.name }}</span>
         </button>
@@ -801,21 +952,138 @@ watch(
       <p>{{ dynamicHint.text }}</p>
     </div>
 
-    <!-- 成員分攤清單（千分位指定金額 + 個別勾選框） -->
+    <!-- 大團一鍵快選與常用子群組工具列（單行橫向滑動，手機不佔高度、10 人點選 2 下完成） -->
+    <div v-if="members.length >= 2" class="mb-2.5 space-y-1.5">
+      <div class="no-scrollbar flex flex-nowrap items-center gap-1.5 overflow-x-auto pb-0.5">
+        <span
+          class="shrink-0 rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold tabular-nums text-slate-500 dark:bg-slate-800 dark:text-slate-400"
+        >
+          {{ selectedSplitMemberIds.length }}/{{ nonPoolMembers.length || members.length }}
+        </span>
+        <button
+          type="button"
+          class="shrink-0 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+          @click="selectAllMembers"
+        >
+          {{ t('split.quickSelectAll') }}
+        </button>
+        <button
+          type="button"
+          class="shrink-0 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+          @click="selectNoneMembers"
+        >
+          {{ t('split.quickSelectNone') }}
+        </button>
+        <button
+          type="button"
+          class="shrink-0 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+          @click="invertSelectedMembers"
+        >
+          {{ t('split.quickSelectInvert') }}
+        </button>
+        <button
+          type="button"
+          class="shrink-0 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+          @click="selectOnlyPayer"
+        >
+          {{ t('split.quickSelectPayerOnly') }}
+        </button>
+
+        <!-- 已存常用拆帳子群組膠囊 -->
+        <span
+          v-for="grp in splitGroups"
+          :key="grp.id"
+          class="inline-flex shrink-0 items-center overflow-hidden rounded-full border text-[11px] font-semibold transition"
+          :class="
+            isGroupActive(grp)
+              ? 'border-emerald-500 bg-emerald-600 text-white dark:border-emerald-400 dark:bg-emerald-500 dark:text-slate-950'
+              : 'border-emerald-200 bg-emerald-50/70 text-emerald-800 dark:border-emerald-800/70 dark:bg-emerald-950/40 dark:text-emerald-300'
+          "
+        >
+          <button
+            type="button"
+            class="whitespace-nowrap py-0.5 pl-2 pr-1"
+            @click="applySplitGroup(grp)"
+          >
+            {{ grp.name }} ({{ grp.memberIds.length }})
+          </button>
+          <button
+            type="button"
+            :aria-label="t('home.deleteTx')"
+            class="px-1 py-0.5 opacity-70 hover:opacity-100"
+            @click.stop="emit('removeSplitGroup', grp.id)"
+          >
+            <X class="h-2.5 w-2.5" />
+          </button>
+        </span>
+
+        <!-- 選取部分成員時可將目前名單存為常用子群組 -->
+        <button
+          v-if="
+            selectedSplitMemberIds.length >= 1 &&
+            selectedSplitMemberIds.length < members.length
+          "
+          type="button"
+          class="inline-flex shrink-0 items-center gap-0.5 whitespace-nowrap rounded-full border border-dashed border-emerald-400 px-2 py-0.5 text-[11px] font-semibold text-emerald-700 hover:bg-emerald-50 dark:border-emerald-600 dark:text-emerald-400 dark:hover:bg-emerald-950/40"
+          @click="saveGroupInputOpen = !saveGroupInputOpen"
+        >
+          <Plus class="h-3 w-3 shrink-0" />
+          <span>{{ t('split.saveAsGroupButton') }}</span>
+        </button>
+      </div>
+
+      <div
+        v-if="saveGroupInputOpen"
+        class="flex items-center gap-1.5 rounded-xl bg-slate-50 p-1.5 dark:bg-slate-800/70"
+      >
+        <input
+          v-model="newGroupName"
+          type="text"
+          maxlength="24"
+          :placeholder="t('split.groupNamePlaceholder')"
+          class="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-900 focus:border-emerald-500 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+          @keyup.enter="confirmSaveCurrentAsGroup"
+        />
+        <button
+          type="button"
+          :disabled="!newGroupName.trim()"
+          class="shrink-0 rounded-lg bg-emerald-600 px-2.5 py-1 text-xs font-bold text-white disabled:opacity-40 dark:bg-emerald-500 dark:text-slate-950"
+          @click="confirmSaveCurrentAsGroup"
+        >
+          {{ t('daily.saveButton') }}
+        </button>
+        <button
+          type="button"
+          class="shrink-0 rounded-lg p-1 text-slate-400 hover:text-slate-600"
+          @click="saveGroupInputOpen = false"
+        >
+          <X class="h-3.5 w-3.5" />
+        </button>
+      </div>
+    </div>
+
+    <!-- 成員分攤清單（改用真實頭像 MemberAvatar ＋ 緊湊單列防爆版） -->
     <ul class="divide-y divide-slate-100 dark:divide-slate-800">
       <li
         v-for="member in members"
         :key="member.id"
-        class="flex flex-wrap items-center justify-between gap-2 py-2.5 first:pt-1 last:pb-0"
+        class="flex flex-wrap items-center justify-between gap-2 py-2 first:pt-1 last:pb-0"
       >
-        <div class="flex min-w-[80px] items-center gap-2">
+        <div class="flex min-w-0 max-w-[140px] items-center gap-2 sm:max-w-[180px]">
           <span
-            class="inline-flex h-7 w-7 items-center justify-center rounded-full text-xs font-bold text-white"
-            :style="{ backgroundColor: member.avatarColor || '#0f172a' }"
+            v-if="member.isPool"
+            class="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-teal-700 text-white"
           >
-            {{ member.name.slice(0, 1).toUpperCase() }}
+            <Wallet class="h-3.5 w-3.5" />
           </span>
-          <span class="text-sm font-medium text-slate-800 dark:text-slate-100">
+          <MemberAvatar
+            v-else
+            :name="member.name"
+            :color="member.avatarColor"
+            :image="member.avatarImage"
+            size="xs"
+          />
+          <span class="truncate text-sm font-medium text-slate-800 dark:text-slate-100">
             {{ member.name }}
           </span>
         </div>

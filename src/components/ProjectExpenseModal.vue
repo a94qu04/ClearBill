@@ -60,7 +60,74 @@ const errorText = ref('')
 
 const inlineNewCategoryOpen = ref(false)
 const inlineNewCategoryName = ref('')
+const inlineNewCurrencyOpen = ref(false)
+const inlineNewCurrencyCode = ref('')
 const initialSnapshot = ref('')
+
+const quickRatePresets = computed(() => {
+  if (!props.project || !needsExchangeRate.value) return {}
+  return store.getQuickExchangeRatePresets(
+    currency.value,
+    props.project.baseCurrency,
+  )
+})
+
+function handleSaveQuickRatePreset(slot: 'cash' | 'card') {
+  if (!props.project || !needsExchangeRate.value) return
+  const val = exchangeRate.value ?? 0
+  if (!Number.isFinite(val) || val <= 0) {
+    emit('toast', t('validation.exchangeRateRequired'))
+    return
+  }
+  store.saveQuickExchangeRatePreset(
+    currency.value,
+    props.project.baseCurrency,
+    slot,
+    val,
+  )
+  emit(
+    'toast',
+    slot === 'cash'
+      ? t('rates.cashPresetSavedToast', { rate: val })
+      : t('rates.cardPresetSavedToast', { rate: val }),
+  )
+}
+
+function handleApplyQuickRatePreset(val: number) {
+  exchangeRate.value = val
+  exchangeRateSource.value = 'custom'
+}
+
+function confirmInlineAddCurrency() {
+  const code = inlineNewCurrencyCode.value.trim().toUpperCase()
+  if (!/^[A-Z]{3}$/.test(code)) {
+    emit('toast', t('settings.invalidCurrencyCode'))
+    return
+  }
+  const added = store.addCurrency(code)
+  currency.value = added
+  inlineNewCurrencyCode.value = ''
+  inlineNewCurrencyOpen.value = false
+  emit('toast', t('settings.currencyAddedToast', { code: added }))
+}
+
+async function handleSaveSplitGroup(payload: { name: string; memberIds: string[] }) {
+  if (!props.project) return
+  const saved = await store.saveProjectSplitGroup(
+    props.project.id,
+    payload.name,
+    payload.memberIds,
+  )
+  if (saved) {
+    emit('toast', t('split.groupSavedToast', { name: saved.name }))
+  }
+}
+
+async function handleRemoveSplitGroup(groupId: string) {
+  if (!props.project) return
+  await store.removeProjectSplitGroup(props.project.id, groupId)
+  emit('toast', t('split.groupRemovedToast'))
+}
 
 function captureFormSnapshot(): string {
   return JSON.stringify({
@@ -207,6 +274,8 @@ function hydrateForm() {
   isHydrating = true
   errorText.value = ''
   inlineNewCategoryOpen.value = false
+  inlineNewCurrencyOpen.value = false
+  inlineNewCurrencyCode.value = ''
 
   if (props.editingTx) {
     const tx = props.editingTx
@@ -399,6 +468,34 @@ async function handleSubmit(continueAdding = false) {
     splitConfig: splitConfig.value,
   }
 
+  // 多人協作疑似重複記帳防呆：新增模式檢查同專案同日、同幣別、同類型且金額完全相同之紀錄
+  if (!props.editingTx) {
+    const duplicate = store.visibleTransactions.find(
+      (existing) =>
+        existing.projectId === props.project!.id &&
+        existing.type === payload.type &&
+        existing.date === payload.date &&
+        existing.currency.trim().toUpperCase() === payload.currency.trim().toUpperCase() &&
+        Math.abs(existing.amount - payload.amount) < 0.005,
+    )
+    if (duplicate) {
+      const dupLabel =
+        duplicate.note?.trim() ||
+        allCategories.value.find((c) => c.key === duplicate.categoryKey)?.label ||
+        duplicate.categoryKey
+      const confirmed = await askConfirm({
+        title: t('project.duplicateWarnTitle'),
+        message: t('project.duplicateWarnMessage', {
+          note: dupLabel,
+          amount: fmt(duplicate.amount, duplicate.currency),
+        }),
+        confirmText: t('project.duplicateWarnConfirm'),
+        tone: 'primary',
+      })
+      if (!confirmed) return
+    }
+  }
+
   try {
     store.rememberProjectLastCurrency(props.project.id, currency.value)
     if (needsExchangeRate.value && rate > 0) {
@@ -517,6 +614,43 @@ async function handleSubmit(continueAdding = false) {
             placeholder="0"
           />
 
+          <!-- 不跳出表單即可現場新增 3 碼幣別（如 THB / SGD / VND） -->
+          <div class="flex flex-wrap items-center justify-end gap-1.5">
+            <button
+              v-if="!inlineNewCurrencyOpen"
+              type="button"
+              class="inline-flex items-center gap-0.5 text-[11px] font-semibold text-slate-400 transition hover:text-emerald-600 dark:text-slate-500 dark:hover:text-emerald-400"
+              @click="inlineNewCurrencyOpen = true"
+            >
+              <Plus class="h-3 w-3" />
+              <span>{{ t('project.quickAddCurrencyButton') }}</span>
+            </button>
+            <div v-else class="flex w-full items-center gap-1.5">
+              <input
+                v-model="inlineNewCurrencyCode"
+                type="text"
+                maxlength="3"
+                :placeholder="t('project.quickAddCurrencyPlaceholder')"
+                class="min-w-0 flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-bold uppercase text-slate-900 focus:border-emerald-500 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                @keyup.enter.prevent="confirmInlineAddCurrency"
+              />
+              <button
+                type="button"
+                class="shrink-0 rounded-xl bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white dark:bg-emerald-500 dark:text-slate-950"
+                @click="confirmInlineAddCurrency"
+              >
+                {{ t('settings.add') }}
+              </button>
+              <button
+                type="button"
+                class="shrink-0 rounded-xl p-1 text-slate-400 hover:text-slate-600"
+                @click="inlineNewCurrencyOpen = false"
+              >
+                <X class="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+
           <div
             v-if="needsExchangeRate"
             class="space-y-1.5 rounded-xl border border-amber-200 bg-amber-50/70 px-3 py-2 text-xs dark:border-amber-800/60 dark:bg-amber-950/30"
@@ -578,6 +712,50 @@ async function handleSubmit(continueAdding = false) {
                   :class="isFetchingLiveRate ? 'animate-spin' : ''"
                 />
                 <span>{{ t('project.refreshLiveRateButton') }}</span>
+              </button>
+            </div>
+
+            <!-- 現金價／刷卡價雙快捷匯率膠囊（單行橫向滑動，一秒切換 SuperRich 現鈔價與刷卡價） -->
+            <div class="no-scrollbar flex flex-nowrap items-center gap-1.5 overflow-x-auto border-t border-amber-200/70 pt-1.5 text-[10px] dark:border-amber-800/50">
+              <button
+                v-if="quickRatePresets.cash"
+                type="button"
+                class="shrink-0 whitespace-nowrap rounded-full border px-2 py-0.5 font-bold tabular-nums transition"
+                :class="
+                  exchangeRate === quickRatePresets.cash
+                    ? 'border-emerald-500 bg-emerald-600 text-white dark:bg-emerald-500 dark:text-slate-950'
+                    : 'border-amber-300/80 bg-white text-amber-900 hover:bg-amber-100 dark:border-amber-800 dark:bg-slate-900 dark:text-amber-200'
+                "
+                @click="handleApplyQuickRatePreset(quickRatePresets.cash)"
+              >
+                {{ t('rates.cashPresetLabel', { rate: quickRatePresets.cash }) }}
+              </button>
+              <button
+                v-if="quickRatePresets.card"
+                type="button"
+                class="shrink-0 whitespace-nowrap rounded-full border px-2 py-0.5 font-bold tabular-nums transition"
+                :class="
+                  exchangeRate === quickRatePresets.card
+                    ? 'border-emerald-500 bg-emerald-600 text-white dark:bg-emerald-500 dark:text-slate-950'
+                    : 'border-amber-300/80 bg-white text-amber-900 hover:bg-amber-100 dark:border-amber-800 dark:bg-slate-900 dark:text-amber-200'
+                "
+                @click="handleApplyQuickRatePreset(quickRatePresets.card)"
+              >
+                {{ t('rates.cardPresetLabel', { rate: quickRatePresets.card }) }}
+              </button>
+              <button
+                type="button"
+                class="shrink-0 whitespace-nowrap rounded-full border border-dashed border-amber-400/80 px-2 py-0.5 font-semibold text-amber-800 hover:bg-amber-100 dark:border-amber-700 dark:text-amber-300"
+                @click="handleSaveQuickRatePreset('cash')"
+              >
+                {{ t('rates.saveAsCashPreset') }}
+              </button>
+              <button
+                type="button"
+                class="shrink-0 whitespace-nowrap rounded-full border border-dashed border-amber-400/80 px-2 py-0.5 font-semibold text-amber-800 hover:bg-amber-100 dark:border-amber-700 dark:text-amber-300"
+                @click="handleSaveQuickRatePreset('card')"
+              >
+                {{ t('rates.saveAsCardPreset') }}
               </button>
             </div>
           </div>
@@ -710,12 +888,15 @@ async function handleSubmit(continueAdding = false) {
             :total-amount="amount ?? 0"
             :currency="currency"
             :members="project.members"
+            :split-groups="project.splitGroups"
             :default-payer-id="project.defaultPayerId"
             :initial-mode="project.defaultSplitMode"
             :initial-split-config="splitPreset"
             :reset-key="splitResetKey"
             @update:split-config="splitConfig = $event"
             @validity-change="splitValid = $event"
+            @save-split-group="handleSaveSplitGroup"
+            @remove-split-group="handleRemoveSplitGroup"
           />
 
           <p v-if="errorText" class="text-xs font-medium text-rose-500">

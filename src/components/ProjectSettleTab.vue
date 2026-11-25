@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   ArrowLeftRight,
+  ArrowUpDown,
   ChevronRight,
   Coins,
   Copy,
@@ -13,15 +14,20 @@ import {
   RefreshCw,
   Share2,
   Trash2,
+  Wallet,
   X,
 } from 'lucide-vue-next'
 import type { Project, Transaction } from '@/schemas/ledgerSchema'
 import {
   applySettlementRatesToTransactions,
+  buildHubSettlementTransfers,
   type SettleUpResult,
 } from '@/core/settleUpEngine'
 import { formatCurrencyAmount } from '@/core/currency'
-import { buildProjectSettlementShareText } from '@/core/shareFormatter'
+import {
+  buildMemberStatementShareText,
+  buildProjectSettlementShareText,
+} from '@/core/shareFormatter'
 import {
   getTodayIso,
   sanitizeExportFilename,
@@ -36,12 +42,16 @@ interface Props {
   settleUp: SettleUpResult
   expenses: Transaction[]
   settlements: Transaction[]
+  myMemberId?: string
 }
 
-const props = defineProps<Props>()
+const props = withDefaults(defineProps<Props>(), {
+  myMemberId: undefined,
+})
 
 const emit = defineEmits<{
   (e: 'recordPayment', payload: { fromMemberId: string; toMemberId: string; amount: number; currency: string }): void
+  (e: 'openPoolCollect'): void
   (e: 'editSettlement', tx: Transaction): void
   (e: 'editExpense', tx: Transaction): void
   (e: 'inspectMember', memberId: string): void
@@ -56,6 +66,70 @@ const includeDetailsInShare = ref(false)
 const isGeneratingImage = ref(false)
 const customSettleRateDrafts = ref<Record<string, string>>({})
 const selectedMemberDetailId = ref<string | null>(null)
+const memberSortMode = ref<'project' | 'net_desc'>('project')
+const transferPlanMode = ref<'min_transfers' | 'hub'>('min_transfers')
+const hubMemberId = ref<string>('')
+const onlyMyTransfers = ref(false)
+
+const poolMembers = computed(() => props.project.members.filter((m) => m.isPool))
+const poolMemberIds = computed(() => new Set(poolMembers.value.map((m) => m.id)))
+
+const poolBalances = computed(() =>
+  props.settleUp.balances.filter((b) => poolMemberIds.value.has(b.memberId)),
+)
+
+const displayedMemberBalances = computed(() => {
+  const list = props.settleUp.balances.filter(
+    (b) => !poolMemberIds.value.has(b.memberId),
+  )
+  if (memberSortMode.value === 'net_desc') {
+    return [...list].sort((a, b) => b.netAmount - a.netAmount)
+  }
+  return list
+})
+
+const resolvedHubMemberId = computed<string>(() => {
+  if (
+    hubMemberId.value &&
+    props.project.members.some((m) => m.id === hubMemberId.value)
+  ) {
+    return hubMemberId.value
+  }
+  // 預設優先選公費袋，其次選應收回金額最高之大債權人（財務長）
+  if (poolMembers.value.length > 0) {
+    return poolMembers.value[0].id
+  }
+  const topCreditor = [...props.settleUp.balances].sort(
+    (a, b) => b.netAmount - a.netAmount,
+  )[0]
+  return topCreditor?.memberId || props.project.members[0]?.id || ''
+})
+
+const effectiveTransfers = computed(() => {
+  if (transferPlanMode.value === 'hub' && resolvedHubMemberId.value) {
+    return buildHubSettlementTransfers(
+      props.settleUp.balances,
+      resolvedHubMemberId.value,
+      settlementCurrency.value,
+    )
+  }
+  return props.settleUp.transfers
+})
+
+const visibleTransfers = computed(() => {
+  if (!onlyMyTransfers.value || !props.myMemberId) {
+    return effectiveTransfers.value
+  }
+  return effectiveTransfers.value.filter(
+    (tr) =>
+      tr.fromMemberId === props.myMemberId || tr.toMemberId === props.myMemberId,
+  )
+})
+
+const effectiveSettleUp = computed<SettleUpResult>(() => ({
+  ...props.settleUp,
+  transfers: effectiveTransfers.value,
+}))
 
 function toggleMemberDetail(memberId: string) {
   selectedMemberDetailId.value =
@@ -319,10 +393,68 @@ function getCategoryLabel(key: string): string {
   return translated === `categories.${key}` ? key : translated
 }
 
+async function handleShareMemberStatement(memberId: string) {
+  const memberName = getMemberName(memberId)
+  const text = buildMemberStatementShareText(
+    props.project,
+    memberId,
+    effectiveSettleUp.value,
+    selectedMemberStatement.value.map((item) => ({
+      date: item.tx.date,
+      title: item.title,
+      isRefund: item.isRefund,
+      shareInSettle: item.shareInSettle,
+      paidInSettle: item.paidInSettle,
+    })),
+    {
+      headerPrefix: t('share.headerPrefix'),
+      statementTitle: t('settle.memberStatementTitle', { name: memberName }),
+      spentLabel: t('share.spentLabel'),
+      paidLabel: t('share.paidLabel'),
+      netLabel: t('export.excelNetAmount'),
+      shouldReceive: t('settle.shouldReceive'),
+      shouldPay: t('settle.shouldPay'),
+      settled: t('settle.settled'),
+      transfersTitle: t('share.pendingTitle'),
+      allSettledText: t('settle.allSettled'),
+      entriesTitle: t('share.detailsTitle'),
+      refundTag: t('project.refundBadge'),
+      transferLine: (from, to, amount) =>
+        t('share.transferLine', { from, to, amount }),
+      footerTagline: t('share.footerTagline'),
+    },
+    locale.value,
+  )
+
+  try {
+    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+      emit('toast', t('settle.memberStatementCopiedToast', { name: memberName }))
+      return
+    }
+  } catch {
+    // 降級複製
+  }
+
+  try {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    document.execCommand('copy')
+    document.body.removeChild(ta)
+    emit('toast', t('settle.memberStatementCopiedToast', { name: memberName }))
+  } catch {
+    emit('toast', t('share.failedToast'))
+  }
+}
+
 async function handleShareSettlement() {
   const summaryText = buildProjectSettlementShareText(
     props.project,
-    props.settleUp,
+    effectiveSettleUp.value,
     props.settlements,
     {
       headerPrefix: t('share.headerPrefix'),
@@ -422,7 +554,7 @@ async function handleExportExcel() {
   const bytes = buildProjectExcelBytes(
     props.project,
     allProjectTxs,
-    props.settleUp,
+    effectiveSettleUp.value,
     {
       sheets: {
         entries: t('export.excelSheetEntries'),
@@ -481,13 +613,13 @@ async function handleExportLongImage() {
     )
     const blob = await generateProjectReportPngBlob(
       props.project,
-      props.settleUp,
+      effectiveSettleUp.value,
       props.expenses,
       {
         brandTitle: t('app.name'),
         totalSpendLabel: t('settle.projectTotalSpend'),
         memberCountLabel: t('project.memberCount', {
-          count: props.project.members.length,
+          count: props.project.members.filter((m) => !m.isPool).length || props.project.members.length,
         }),
         categorySectionTitle: t('stats.title'),
         memberSectionTitle: t('settle.balancesTitle'),
@@ -501,10 +633,15 @@ async function handleExportLongImage() {
         entriesSectionTitle: t('share.detailsTitle'),
         refundBadge: t('project.refundBadge'),
         footerTagline: t('share.footerTagline'),
+        omittedEntriesNotice: (count) =>
+          t('export.longImageOmittedNotice', { count }),
         resolveCategoryLabel: getCategoryLabel,
         resolveCategoryColor: getCategoryColor,
       },
       locale.value,
+      {
+        includeEntries: includeDetailsInShare.value,
+      },
     )
 
     const safeName = sanitizeExportFilename(props.project.name)
@@ -697,15 +834,89 @@ async function handleExportLongImage() {
       </template>
     </section>
 
-    <!-- 各成員總支出與結算總覽（含一鍵分享精簡／明細切換與報表匯出） -->
+    <!-- 公費袋（公積金）專屬餘額卡（啟用公費袋時獨立呈現，不混亂真人成員對帳） -->
+    <section
+      v-if="poolBalances.length > 0"
+      class="space-y-2 rounded-2xl border border-teal-200/80 bg-teal-50/50 p-3.5 shadow-sm dark:border-teal-900/60 dark:bg-teal-950/25"
+    >
+      <div class="flex items-center justify-between gap-2">
+        <div class="flex items-center gap-1.5 text-xs font-bold text-teal-900 dark:text-teal-200">
+          <Wallet class="h-4 w-4 text-teal-600 dark:text-teal-400" />
+          <span>{{ t('pool.cardTitle') }}</span>
+        </div>
+        <button
+          type="button"
+          class="inline-flex items-center gap-1 rounded-lg bg-teal-600 px-2.5 py-1 text-[11px] font-bold text-white transition hover:bg-teal-700 dark:bg-teal-500 dark:text-slate-950"
+          @click="emit('openPoolCollect')"
+        >
+          <span>+ {{ t('pool.collectButtonShort') }}</span>
+        </button>
+      </div>
+
+      <div
+        v-for="pb in poolBalances"
+        :key="pb.memberId"
+        class="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-white/90 px-3 py-2.5 dark:bg-slate-900/90"
+      >
+        <div class="min-w-0">
+          <div class="text-xs font-bold text-slate-800 dark:text-slate-100">
+            {{ getMemberName(pb.memberId) }}
+          </div>
+          <div class="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
+            {{ t('pool.paidOutLabel') }} {{ fmt(pb.totalPaid, settlementCurrency) }}
+          </div>
+        </div>
+        <div class="text-right">
+          <div
+            class="text-base font-extrabold tabular-nums"
+            :class="
+              pb.netAmount <= 0
+                ? 'text-teal-700 dark:text-teal-300'
+                : 'text-rose-600 dark:text-rose-400'
+            "
+          >
+            {{ fmt(Math.abs(pb.netAmount), settlementCurrency) }}
+          </div>
+          <div class="text-[10px] font-semibold text-slate-400">
+            {{
+              pb.netAmount < 0
+                ? t('pool.remainingCashLabel')
+                : pb.netAmount > 0
+                  ? t('pool.overdrawnLabel')
+                  : t('settle.settled')
+            }}
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 各成員總支出與結算總覽（含一鍵分享精簡／明細切換、排序與報表匯出） -->
     <section
       class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900"
     >
       <div class="mb-3 flex flex-wrap items-start justify-between gap-2">
         <div>
-          <h3 class="text-xs font-bold text-slate-700 dark:text-slate-200">
-            {{ t('settle.balancesTitle') }}
-          </h3>
+          <div class="flex flex-wrap items-center gap-2">
+            <h3 class="text-xs font-bold text-slate-700 dark:text-slate-200">
+              {{ t('settle.balancesTitle') }}
+            </h3>
+            <button
+              v-if="displayedMemberBalances.length >= 5"
+              type="button"
+              class="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500 transition hover:border-emerald-400 hover:text-emerald-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400"
+              @click="
+                memberSortMode =
+                  memberSortMode === 'project' ? 'net_desc' : 'project'
+              "
+            >
+              <ArrowUpDown class="h-2.5 w-2.5" />
+              <span>{{
+                memberSortMode === 'project'
+                  ? t('settle.sortByMemberOrder')
+                  : t('settle.sortByNetAmount')
+              }}</span>
+            </button>
+          </div>
           <div class="mt-0.5 text-[11px] font-semibold tabular-nums text-slate-500 dark:text-slate-400">
             {{ t('settle.projectTotalSpend') }}:
             <strong class="text-slate-900 dark:text-white">{{
@@ -740,7 +951,7 @@ async function handleExportLongImage() {
 
       <div class="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
         <button
-          v-for="bal in settleUp.balances"
+          v-for="bal in displayedMemberBalances"
           :key="bal.memberId"
           type="button"
           class="overflow-hidden rounded-xl border text-left transition hover:brightness-[0.98] active:scale-[0.99]"
@@ -766,6 +977,12 @@ async function handleExportLongImage() {
                 />
                 <span class="truncate text-sm font-bold text-slate-800 dark:text-slate-100">
                   {{ getMemberName(bal.memberId) }}
+                </span>
+                <span
+                  v-if="myMemberId && bal.memberId === myMemberId"
+                  class="shrink-0 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[9px] font-bold text-emerald-700 dark:bg-emerald-900/60 dark:text-emerald-300"
+                >
+                  {{ t('settle.meBadge') }}
                 </span>
               </div>
 
@@ -831,15 +1048,15 @@ async function handleExportLongImage() {
         v-if="selectedMemberDetailId"
         class="mt-3 space-y-2 rounded-2xl border border-emerald-200/80 bg-emerald-50/40 p-3 dark:border-emerald-900/60 dark:bg-emerald-950/20"
       >
-        <div class="flex items-center justify-between gap-2">
-          <div class="flex items-center gap-2 text-xs font-bold text-slate-800 dark:text-slate-100">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div class="flex min-w-0 items-center gap-2 text-xs font-bold text-slate-800 dark:text-slate-100">
             <MemberAvatar
               :name="getMemberName(selectedMemberDetailId)"
               :color="getMemberColor(selectedMemberDetailId)"
               :image="project.members.find((m) => m.id === selectedMemberDetailId)?.avatarImage"
               size="xs"
             />
-            <span>
+            <span class="truncate">
               {{
                 t('settle.memberStatementTitle', {
                   name: getMemberName(selectedMemberDetailId),
@@ -848,7 +1065,15 @@ async function handleExportLongImage() {
               ({{ selectedMemberStatement.length }})
             </span>
           </div>
-          <div class="flex items-center gap-2">
+          <div class="flex shrink-0 items-center gap-1.5">
+            <button
+              type="button"
+              class="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-2 py-1 text-[10px] font-bold text-white transition hover:bg-emerald-700 dark:bg-emerald-500 dark:text-slate-950"
+              @click="handleShareMemberStatement(selectedMemberDetailId)"
+            >
+              <Copy class="h-3 w-3" />
+              <span>{{ t('settle.copyMemberStatementButton') }}</span>
+            </button>
             <button
               type="button"
               class="text-[11px] font-bold text-emerald-700 hover:underline dark:text-emerald-400"
@@ -957,25 +1182,111 @@ async function handleExportLongImage() {
       :base-currency="settlementCurrency"
     />
 
-    <!-- 待還款結算 -->
+    <!-- 待還款結算（支援「最少轉帳」vs「財務長集中收付」、只看我濾鏡與一鍵收公費） -->
     <section
-      class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900"
+      class="space-y-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900"
     >
-      <div class="mb-3 flex items-center gap-1.5 text-xs font-bold text-slate-700 dark:text-slate-200">
-        <Coins class="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
-        <span>{{ t('settle.suggestionsTitle') }}</span>
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <div class="flex items-center gap-1.5 text-xs font-bold text-slate-700 dark:text-slate-200">
+          <Coins class="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+          <span>{{ t('settle.suggestionsTitle') }}</span>
+        </div>
+
+        <button
+          type="button"
+          class="inline-flex items-center gap-1 rounded-lg border border-teal-200 bg-teal-50/70 px-2 py-1 text-[11px] font-bold text-teal-800 transition hover:bg-teal-100 dark:border-teal-800/70 dark:bg-teal-950/40 dark:text-teal-300"
+          @click="emit('openPoolCollect')"
+        >
+          <Wallet class="h-3 w-3" />
+          <span>{{ t('pool.collectButtonShort') }}</span>
+        </button>
+      </div>
+
+      <!-- 大團結算模式切換列：最少轉帳 / 集中收付 ＋ 只看我濾鏡 -->
+      <div
+        v-if="effectiveTransfers.length > 0"
+        class="space-y-2"
+      >
+        <div class="flex flex-wrap items-center justify-between gap-1.5">
+          <div class="inline-flex rounded-xl bg-slate-100 p-0.5 text-[11px] font-bold dark:bg-slate-800">
+            <button
+              type="button"
+              class="rounded-lg px-2.5 py-1 transition"
+              :class="
+                transferPlanMode === 'min_transfers'
+                  ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-950 dark:text-white'
+                  : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
+              "
+              @click="transferPlanMode = 'min_transfers'"
+            >
+              {{ t('settle.planModeMin') }}
+            </button>
+            <button
+              type="button"
+              class="rounded-lg px-2.5 py-1 transition"
+              :class="
+                transferPlanMode === 'hub'
+                  ? 'bg-white text-emerald-700 shadow-sm dark:bg-slate-950 dark:text-emerald-400'
+                  : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
+              "
+              @click="transferPlanMode = 'hub'"
+            >
+              {{ t('settle.planModeHub') }}
+            </button>
+          </div>
+
+          <button
+            v-if="myMemberId"
+            type="button"
+            class="rounded-full border px-2.5 py-1 text-[11px] font-semibold transition"
+            :class="
+              onlyMyTransfers
+                ? 'border-emerald-500 bg-emerald-600 text-white dark:bg-emerald-500 dark:text-slate-950'
+                : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300'
+            "
+            @click="onlyMyTransfers = !onlyMyTransfers"
+          >
+            {{ t('settle.onlyMyTransfersButton') }}
+          </button>
+        </div>
+
+        <!-- 集中收付模式時可自選收付窗口（財務長 / 公費袋） -->
+        <div
+          v-if="transferPlanMode === 'hub'"
+          class="flex items-center justify-between gap-2 rounded-xl bg-slate-50 px-3 py-1.5 text-[11px] dark:bg-slate-800/70"
+        >
+          <span class="shrink-0 font-semibold text-slate-500 dark:text-slate-400">
+            {{ t('settle.hubMemberLabel') }}
+          </span>
+          <select
+            :value="resolvedHubMemberId"
+            class="min-w-0 max-w-[180px] rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-bold text-slate-800 focus:border-emerald-500 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+            @change="hubMemberId = ($event.target as HTMLSelectElement).value"
+          >
+            <option v-for="m in project.members" :key="m.id" :value="m.id">
+              {{ m.name }}
+            </option>
+          </select>
+        </div>
       </div>
 
       <p
-        v-if="settleUp.transfers.length === 0"
+        v-if="effectiveTransfers.length === 0"
         class="rounded-xl bg-emerald-50 px-3.5 py-3 text-xs font-semibold text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300"
       >
         {{ t('settle.allSettled') }}
       </p>
 
+      <p
+        v-else-if="visibleTransfers.length === 0"
+        class="rounded-xl bg-slate-50 px-3.5 py-3 text-xs font-medium text-slate-500 dark:bg-slate-800/70 dark:text-slate-400"
+      >
+        {{ t('settle.noMyTransfers') }}
+      </p>
+
       <ul v-else class="space-y-2">
         <li
-          v-for="(transfer, idx) in settleUp.transfers"
+          v-for="(transfer, idx) in visibleTransfers"
           :key="idx"
           class="flex items-center justify-between gap-2 rounded-xl border border-slate-100 bg-slate-50 px-3.5 py-2.5 dark:border-slate-800 dark:bg-slate-800/70"
         >

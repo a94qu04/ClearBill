@@ -176,3 +176,118 @@ export function buildProjectSettlementShareText(
 
   return lines.join('\n')
 }
+
+export interface MemberStatementShareLabels {
+  headerPrefix: string
+  statementTitle: string
+  spentLabel: string
+  paidLabel: string
+  netLabel: string
+  shouldReceive: string
+  shouldPay: string
+  settled: string
+  transfersTitle: string
+  allSettledText: string
+  entriesTitle: string
+  refundTag: string
+  transferLine: (from: string, to: string, amountText: string) => string
+  footerTagline: string
+}
+
+export interface MemberStatementShareEntry {
+  date: string
+  title: string
+  isRefund: boolean
+  shareInSettle: number
+  paidInSettle: number
+}
+
+/**
+ * 產生「單一成員專屬對帳單」文字，方便大團直接私訊特定團員核對每一筆分攤與收款帳號
+ */
+export function buildMemberStatementShareText(
+  project: Project,
+  memberId: string,
+  settleUp: SettleUpResult,
+  entries: MemberStatementShareEntry[],
+  labels: MemberStatementShareLabels,
+  locale = 'zh-TW',
+): string {
+  const memberNameMap = new Map<string, string>()
+  const memberPaymentMap = new Map<string, string>()
+  for (const m of project.members) {
+    memberNameMap.set(m.id, m.name)
+    if (m.paymentInfo?.trim()) {
+      memberPaymentMap.set(m.id, m.paymentInfo.trim())
+    }
+  }
+  const targetCurrency = settleUp.currency || project.baseCurrency
+  const nameOf = (id: string) => memberNameMap.get(id) ?? id
+  const fmt = (amount: number, cur = targetCurrency) =>
+    formatCurrencyAmount(amount, cur, locale)
+
+  const bal = settleUp.balances.find((b) => b.memberId === memberId) ?? {
+    memberId,
+    totalExpense: 0,
+    totalPaid: 0,
+    netAmount: 0,
+  }
+  const netSign = bal.netAmount > 0 ? '+' : ''
+  const statusText =
+    bal.netAmount > 0
+      ? labels.shouldReceive
+      : bal.netAmount < 0
+        ? labels.shouldPay
+        : labels.settled
+
+  const lines: string[] = []
+  lines.push(`${labels.headerPrefix} ${project.name}`)
+  lines.push(labels.statementTitle)
+  lines.push(
+    `${labels.spentLabel}: ${fmt(bal.totalExpense)} ｜ ${labels.paidLabel}: ${fmt(bal.totalPaid)}`,
+  )
+  lines.push(`${labels.netLabel}: ${netSign}${fmt(bal.netAmount)}（${statusText}）`)
+  lines.push('')
+
+  const relatedTransfers = settleUp.transfers.filter(
+    (tr) => tr.fromMemberId === memberId || tr.toMemberId === memberId,
+  )
+  lines.push(labels.transfersTitle)
+  if (relatedTransfers.length === 0) {
+    lines.push(`• ${labels.allSettledText}`)
+  } else {
+    for (const tr of relatedTransfers) {
+      lines.push(
+        `• ${labels.transferLine(
+          nameOf(tr.fromMemberId),
+          nameOf(tr.toMemberId),
+          fmt(tr.amount, tr.currency),
+        )}`,
+      )
+      const recipientPayment = memberPaymentMap.get(tr.toMemberId)
+      if (recipientPayment && tr.fromMemberId === memberId) {
+        lines.push(`  ↳ ${recipientPayment}`)
+      }
+    }
+  }
+
+  if (entries.length > 0) {
+    lines.push('')
+    lines.push(`${labels.entriesTitle} (${entries.length})`)
+    for (const item of entries) {
+      const title = item.isRefund ? `[${labels.refundTag}] ${item.title}` : item.title
+      const parts: string[] = []
+      if (item.shareInSettle !== 0) {
+        parts.push(`${labels.spentLabel} ${fmt(item.shareInSettle)}`)
+      }
+      if (item.paidInSettle !== 0) {
+        parts.push(`${labels.paidLabel} ${fmt(item.paidInSettle)}`)
+      }
+      lines.push(`• ${item.date} ${title}｜${parts.join(' / ')}`)
+    }
+  }
+
+  lines.push('')
+  lines.push(labels.footerTagline)
+  return lines.join('\n')
+}

@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { calculateSettleUp, simplifyNetBalances } from '@/core/settleUpEngine'
+import {
+  buildHubSettlementTransfers,
+  calculateSettleUp,
+  simplifyNetBalances,
+} from '@/core/settleUpEngine'
 import type { Transaction } from '@/schemas/ledgerSchema'
 
 function createExpenseTx(
@@ -387,5 +391,58 @@ describe('settleUpEngine - 多人債務最小化結算演算法', () => {
 
     expect(afterPaid.transfers).toEqual([])
     expect(afterPaid.balances.every((b) => b.netAmount === 0)).toBe(true)
+  })
+
+  it('保留專案成員順序並支援「財務長集中收付」與「公費袋虛擬成員」完整數學守恆', () => {
+    // 模擬 3 位團員 + 1 個公費袋：每人交 3000 THB 給公費袋，公費袋墊付包車 4500 THB（3 人平分各 1500）
+    const orderedIds = ['z_charlie', 'a_alice', 'm_bob', 'pool_fund']
+    const txs: Transaction[] = [
+      ...['z_charlie', 'a_alice', 'm_bob'].map((mid, idx) =>
+        createExpenseTx({
+          id: `10000000-0000-4000-8000-00000000000${idx + 1}`,
+          type: 'transfer',
+          amount: 3000,
+          currency: 'THB',
+          categoryKey: 'cat_settlement',
+          splitConfig: {
+            payerId: mid,
+            mode: 'custom_plus_equal',
+            shares: [{ memberId: 'pool_fund', finalAmount: 3000 }],
+          },
+        }),
+      ),
+      createExpenseTx({
+        id: '10000000-0000-4000-8000-000000000010',
+        type: 'expense',
+        amount: 4500,
+        currency: 'THB',
+        splitConfig: {
+          payerId: 'pool_fund',
+          mode: 'equal',
+          shares: [
+            { memberId: 'z_charlie', finalAmount: 1500 },
+            { memberId: 'a_alice', finalAmount: 1500 },
+            { memberId: 'm_bob', finalAmount: 1500 },
+          ],
+        },
+      }),
+    ]
+
+    const res = calculateSettleUp(txs, 'THB', orderedIds)
+
+    // 1. 保留專案原始成員順序，不再被 UUID / 字母順序打亂
+    expect(res.balances.map((b) => b.memberId)).toEqual(orderedIds)
+    // 2. 公費袋剩餘現金 4500（netAmount = -4500），三位團員各有應收回 +1500
+    expect(res.balances.find((b) => b.memberId === 'pool_fund')?.netAmount).toBe(-4500)
+    expect(res.balances.find((b) => b.memberId === 'z_charlie')?.netAmount).toBe(1500)
+
+    // 3. 集中收付模式（指定 a_alice 為財務長窗口）：不產生自己轉自己，且淨收支精準守恆
+    const hubTransfers = buildHubSettlementTransfers(res.balances, 'a_alice', 'THB')
+    expect(hubTransfers.every((tr) => tr.fromMemberId !== tr.toMemberId)).toBe(true)
+    expect(hubTransfers).toEqual([
+      { fromMemberId: 'pool_fund', toMemberId: 'a_alice', amount: 4500, currency: 'THB' },
+      { fromMemberId: 'a_alice', toMemberId: 'z_charlie', amount: 1500, currency: 'THB' },
+      { fromMemberId: 'a_alice', toMemberId: 'm_bob', amount: 1500, currency: 'THB' },
+    ])
   })
 })

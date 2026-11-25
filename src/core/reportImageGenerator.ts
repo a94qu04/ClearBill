@@ -19,8 +19,14 @@ export interface LongReportLabels {
   entriesSectionTitle: string
   refundBadge: string
   footerTagline: string
+  omittedEntriesNotice?: (omittedCount: number) => string
   resolveCategoryLabel: (categoryKey: string) => string
   resolveCategoryColor: (categoryKey: string) => string
+}
+
+export interface LongReportOptions {
+  /** 是否繪製逐筆消費明細（大團建議關閉以產生高清晰總覽圖，或開啟並自動套用 iOS Canvas 安全上限保護） */
+  includeEntries?: boolean
 }
 
 function drawRoundedRect(
@@ -64,6 +70,7 @@ export async function generateProjectReportPngBlob(
   expenses: Transaction[],
   labels: LongReportLabels,
   locale = 'zh-TW',
+  options: LongReportOptions = {},
 ): Promise<Blob> {
   if (typeof document === 'undefined') {
     throw new Error('ERR_NO_CANVAS_ENV')
@@ -72,7 +79,9 @@ export async function generateProjectReportPngBlob(
   const W = 750
   const PAD = 32
   const CARD_W = W - PAD * 2
-  const DPR = 2
+  // iOS Safari 單一 Canvas 面積安全上限約 16.7M px；預留安全餘量避免空白或記憶體崩潰
+  const MAX_CANVAS_PIXELS = 15_000_000
+  const MAX_LOGICAL_HEIGHT = 11_000
 
   const memberNameMap = new Map<string, string>()
   const memberColorMap = new Map<string, string>()
@@ -87,37 +96,73 @@ export async function generateProjectReportPngBlob(
     formatCurrencyAmount(amount, cur, locale)
 
   const catStats = calculateCategoryStats(expenses, targetCurrency)
-  const validEntries = expenses
-    .filter((tx) => !tx.isDeleted && (tx.type === 'expense' || tx.type === 'refund'))
-    .sort((a, b) => {
-      const d = b.date.localeCompare(a.date)
-      if (d !== 0) return d
-      return b.time.localeCompare(a.time)
-    })
+  const includeEntries = options.includeEntries ?? true
+  const allValidEntries = includeEntries
+    ? expenses
+        .filter((tx) => !tx.isDeleted && (tx.type === 'expense' || tx.type === 'refund'))
+        .sort((a, b) => {
+          const d = b.date.localeCompare(a.date)
+          if (d !== 0) return d
+          return b.time.localeCompare(a.time)
+        })
+    : []
 
-  // 動態估算整張長截圖總高度
+  // 6 位以上成員自動改為雙欄網格，高度減半且在 LINE 預覽字體更清楚
+  const useTwoColMembers = settleUp.balances.length >= 6
+  const memberRowCount = useTwoColMembers
+    ? Math.ceil(settleUp.balances.length / 2)
+    : settleUp.balances.length
+
   const headerH = 152
   const pieCardH =
     catStats.items.length > 0 ? Math.max(230, 88 + catStats.items.length * 36) : 0
-  const memberCardH = 74 + settleUp.balances.length * 76
+  const memberCardH = 74 + memberRowCount * (useTwoColMembers ? 84 : 76)
   const transferCardH =
     settleUp.transfers.length > 0
       ? 74 + settleUp.transfers.length * 56
       : 120
-  const entriesCardH =
-    validEntries.length > 0 ? 74 + validEntries.length * 58 : 0
   const footerH = 64
-
   const gap = 20
-  let totalH = PAD + headerH + gap
-  if (pieCardH > 0) totalH += pieCardH + gap
-  totalH += memberCardH + gap + transferCardH + gap
+
+  const baseHeight =
+    PAD +
+    headerH +
+    gap +
+    (pieCardH > 0 ? pieCardH + gap : 0) +
+    memberCardH +
+    gap +
+    transferCardH +
+    gap +
+    footerH
+
+  // 動態計算可安全繪製的明細上限，確保不超過 iOS Canvas 高度限制
+  const maxEntriesAllowed = Math.max(
+    0,
+    Math.floor((MAX_LOGICAL_HEIGHT - baseHeight - 130) / 58),
+  )
+  const validEntries = allValidEntries.slice(0, maxEntriesAllowed)
+  const omittedEntriesCount = Math.max(0, allValidEntries.length - validEntries.length)
+
+  const entriesCardH =
+    validEntries.length > 0
+      ? 74 + validEntries.length * 58 + (omittedEntriesCount > 0 ? 44 : 0)
+      : 0
+
+  let totalH = baseHeight
   if (entriesCardH > 0) totalH += entriesCardH + gap
-  totalH += footerH
+
+  // 依總面積自動調整 DPR（2 -> 1.5 -> 1），100% 防範 iOS Safari 空白圖或 OOM
+  let DPR = 2
+  if (W * DPR * totalH * DPR > MAX_CANVAS_PIXELS) {
+    DPR = 1.5
+  }
+  if (W * DPR * totalH * DPR > MAX_CANVAS_PIXELS) {
+    DPR = 1
+  }
 
   const canvas = document.createElement('canvas')
-  canvas.width = W * DPR
-  canvas.height = totalH * DPR
+  canvas.width = Math.round(W * DPR)
+  canvas.height = Math.round(totalH * DPR)
   const ctx = canvas.getContext('2d')
   if (!ctx) throw new Error('ERR_NO_CANVAS_CTX')
 
@@ -255,7 +300,7 @@ export async function generateProjectReportPngBlob(
     y += pieCardH + gap
   }
 
-  // 3. 各成員總支出與淨收支卡片
+  // 3. 各成員總支出與淨收支卡片（6 人以上自動雙欄緊湊排版）
   drawRoundedRect(ctx, PAD, y, CARD_W, memberCardH, 22)
   ctx.fillStyle = '#ffffff'
   ctx.fill()
@@ -267,56 +312,99 @@ export async function generateProjectReportPngBlob(
   ctx.font = `700 18px ${fontStack}`
   ctx.fillText(labels.memberSectionTitle, PAD + 24, y + 36)
 
-  let my = y + 58
-  for (const bal of settleUp.balances) {
-    drawRoundedRect(ctx, PAD + 20, my, CARD_W - 40, 64, 14)
-    ctx.fillStyle = '#f8fafc'
-    ctx.fill()
+  if (useTwoColMembers) {
+    const colGap = 12
+    const cellW = (CARD_W - 40 - colGap) / 2
+    settleUp.balances.forEach((bal, idx) => {
+      const col = idx % 2
+      const row = Math.floor(idx / 2)
+      const cx = PAD + 20 + col * (cellW + colGap)
+      const cy = y + 58 + row * 84
 
-    // 左側成員色條
-    drawRoundedRect(ctx, PAD + 20, my, 6, 64, 3)
-    ctx.fillStyle = colorOf(bal.memberId)
-    ctx.fill()
+      drawRoundedRect(ctx, cx, cy, cellW, 72, 14)
+      ctx.fillStyle = '#f8fafc'
+      ctx.fill()
 
-    ctx.fillStyle = '#0f172a'
-    ctx.font = `700 18px ${fontStack}`
-    ctx.fillText(
-      truncateText(ctx, nameOf(bal.memberId), 240),
-      PAD + 40,
-      my + 26,
-    )
+      drawRoundedRect(ctx, cx, cy, 5, 72, 3)
+      ctx.fillStyle = colorOf(bal.memberId)
+      ctx.fill()
 
-    ctx.fillStyle = '#64748b'
-    ctx.font = `500 14px ${fontStack}`
-    ctx.fillText(
-      `${labels.spentLabel} ${fmt(bal.totalExpense)}  ·  ${labels.paidLabel} ${fmt(bal.totalPaid)}`,
-      PAD + 40,
-      my + 50,
-    )
+      ctx.fillStyle = '#0f172a'
+      ctx.font = `700 15px ${fontStack}`
+      ctx.fillText(truncateText(ctx, nameOf(bal.memberId), cellW - 140), cx + 14, cy + 25)
 
-    const netSign = bal.netAmount > 0 ? '+' : ''
-    ctx.textAlign = 'right'
-    ctx.fillStyle =
-      bal.netAmount > 0 ? '#059669' : bal.netAmount < 0 ? '#e11d48' : '#64748b'
-    ctx.font = `800 19px ${fontStack}`
-    ctx.fillText(
-      `${netSign}${fmt(bal.netAmount)}`,
-      PAD + CARD_W - 34,
-      my + 28,
-    )
+      const netSign = bal.netAmount > 0 ? '+' : ''
+      ctx.textAlign = 'right'
+      ctx.fillStyle =
+        bal.netAmount > 0 ? '#059669' : bal.netAmount < 0 ? '#e11d48' : '#64748b'
+      ctx.font = `800 15px ${fontStack}`
+      ctx.fillText(`${netSign}${fmt(bal.netAmount)}`, cx + cellW - 12, cy + 25)
 
-    ctx.fillStyle = '#94a3b8'
-    ctx.font = `600 13px ${fontStack}`
-    const statusText =
-      bal.netAmount > 0
-        ? labels.shouldReceive
-        : bal.netAmount < 0
-          ? labels.shouldPay
-          : labels.settled
-    ctx.fillText(statusText, PAD + CARD_W - 34, my + 50)
-    ctx.textAlign = 'left'
+      ctx.textAlign = 'left'
+      ctx.fillStyle = '#64748b'
+      ctx.font = `500 12px ${fontStack}`
+      ctx.fillText(
+        truncateText(
+          ctx,
+          `${labels.spentLabel} ${fmt(bal.totalExpense)} · ${labels.paidLabel} ${fmt(bal.totalPaid)}`,
+          cellW - 26,
+        ),
+        cx + 14,
+        cy + 54,
+      )
+    })
+  } else {
+    let my = y + 58
+    for (const bal of settleUp.balances) {
+      drawRoundedRect(ctx, PAD + 20, my, CARD_W - 40, 64, 14)
+      ctx.fillStyle = '#f8fafc'
+      ctx.fill()
 
-    my += 76
+      // 左側成員色條
+      drawRoundedRect(ctx, PAD + 20, my, 6, 64, 3)
+      ctx.fillStyle = colorOf(bal.memberId)
+      ctx.fill()
+
+      ctx.fillStyle = '#0f172a'
+      ctx.font = `700 18px ${fontStack}`
+      ctx.fillText(
+        truncateText(ctx, nameOf(bal.memberId), 240),
+        PAD + 40,
+        my + 26,
+      )
+
+      ctx.fillStyle = '#64748b'
+      ctx.font = `500 14px ${fontStack}`
+      ctx.fillText(
+        `${labels.spentLabel} ${fmt(bal.totalExpense)}  ·  ${labels.paidLabel} ${fmt(bal.totalPaid)}`,
+        PAD + 40,
+        my + 50,
+      )
+
+      const netSign = bal.netAmount > 0 ? '+' : ''
+      ctx.textAlign = 'right'
+      ctx.fillStyle =
+        bal.netAmount > 0 ? '#059669' : bal.netAmount < 0 ? '#e11d48' : '#64748b'
+      ctx.font = `800 19px ${fontStack}`
+      ctx.fillText(
+        `${netSign}${fmt(bal.netAmount)}`,
+        PAD + CARD_W - 34,
+        my + 28,
+      )
+
+      ctx.fillStyle = '#94a3b8'
+      ctx.font = `600 13px ${fontStack}`
+      const statusText =
+        bal.netAmount > 0
+          ? labels.shouldReceive
+          : bal.netAmount < 0
+            ? labels.shouldPay
+            : labels.settled
+      ctx.fillText(statusText, PAD + CARD_W - 34, my + 50)
+      ctx.textAlign = 'left'
+
+      my += 76
+    }
   }
 
   y += memberCardH + gap
@@ -433,6 +521,17 @@ export async function generateProjectReportPngBlob(
       ctx.textAlign = 'left'
 
       ey += 58
+    }
+
+    if (omittedEntriesCount > 0) {
+      ctx.fillStyle = '#64748b'
+      ctx.font = `600 13px ${fontStack}`
+      ctx.textAlign = 'center'
+      const notice = labels.omittedEntriesNotice
+        ? labels.omittedEntriesNotice(omittedEntriesCount)
+        : `... +${omittedEntriesCount}`
+      ctx.fillText(notice, W / 2, ey + 18)
+      ctx.textAlign = 'left'
     }
 
     y += entriesCardH + gap

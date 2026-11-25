@@ -41,12 +41,23 @@ function simplifyDebtFromUnits(
   paidUnitMap: Map<string, number>,
   totalProjectExpenseUnits: number,
   currency: string,
+  orderedMemberIds: string[] = [],
 ): SettleUpResult {
-  const sortedMemberIds = Array.from(netUnitMap.keys()).sort((a, b) =>
-    a.localeCompare(b),
-  )
+  // 優先保留專案原始成員順序（不再以 UUID 隨機排序），未在清單中的成員依字母順序補於後方
+  const orderedSet = new Set<string>()
+  const finalMemberIds: string[] = []
+  for (const id of orderedMemberIds) {
+    if (netUnitMap.has(id) && !orderedSet.has(id)) {
+      orderedSet.add(id)
+      finalMemberIds.push(id)
+    }
+  }
+  const extraIds = Array.from(netUnitMap.keys())
+    .filter((id) => !orderedSet.has(id))
+    .sort((a, b) => a.localeCompare(b))
+  finalMemberIds.push(...extraIds)
 
-  const balances: MemberNetBalance[] = sortedMemberIds.map((memberId) => ({
+  const balances: MemberNetBalance[] = finalMemberIds.map((memberId) => ({
     memberId,
     totalExpense: fromMinorUnits(expenseUnitMap.get(memberId) ?? 0, currency),
     totalPaid: fromMinorUnits(paidUnitMap.get(memberId) ?? 0, currency),
@@ -56,7 +67,7 @@ function simplifyDebtFromUnits(
   const creditors: UnitBalanceEntry[] = []
   const debtors: UnitBalanceEntry[] = []
 
-  for (const memberId of sortedMemberIds) {
+  for (const memberId of finalMemberIds) {
     const units = netUnitMap.get(memberId) ?? 0
     if (units > 0) {
       creditors.push({ memberId, units })
@@ -283,7 +294,51 @@ export function calculateSettleUp(
     paidUnitMap,
     totalProjectExpenseUnits,
     currency,
+    knownMemberIds,
   )
+}
+
+/**
+ * 集中收付模式（財務長統一窗口）：
+ * - 所有負債成員統一轉帳給指定的 hubMemberId（財務長 / 公費袋）
+ * - hubMemberId 再統一轉帳給所有債權成員
+ * - 若系統總淨額守恆，則所有轉帳完成後全體淨額必精準歸零
+ */
+export function buildHubSettlementTransfers(
+  balances: MemberNetBalance[],
+  hubMemberId: string,
+  currency = 'TWD',
+): SettlementTransfer[] {
+  const normalizedCurrency = CurrencyCodeSchema.parse(currency)
+  if (!hubMemberId) return []
+
+  const inbound: SettlementTransfer[] = []
+  const outbound: SettlementTransfer[] = []
+
+  for (const bal of balances) {
+    if (bal.memberId === hubMemberId) continue
+    const units = toMinorUnits(bal.netAmount, normalizedCurrency)
+    if (units < 0) {
+      inbound.push({
+        fromMemberId: bal.memberId,
+        toMemberId: hubMemberId,
+        amount: fromMinorUnits(-units, normalizedCurrency),
+        currency: normalizedCurrency,
+      })
+    } else if (units > 0) {
+      outbound.push({
+        fromMemberId: hubMemberId,
+        toMemberId: bal.memberId,
+        amount: fromMinorUnits(units, normalizedCurrency),
+        currency: normalizedCurrency,
+      })
+    }
+  }
+
+  // 先列「大家繳給財務長」（金額高到低），再列「財務長發給大家」（金額高到低）
+  inbound.sort((a, b) => b.amount - a.amount)
+  outbound.sort((a, b) => b.amount - a.amount)
+  return [...inbound, ...outbound]
 }
 
 /**

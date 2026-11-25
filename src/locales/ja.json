@@ -285,7 +285,13 @@
     "cardBgLabel": "カード背景（カラーまたは写真）",
     "cardBgUploadPhoto": "写真を設定",
     "cardBgReset": "既定に戻す",
-    "cardBgPreviewHint": "カード背景プレビュー"
+    "cardBgPreviewHint": "カード背景プレビュー",
+    "quickAddCurrencyShort": "通貨追加",
+    "quickAddCurrencyButton": "通貨が見つかりませんか？ここで追加",
+    "quickAddCurrencyPlaceholder": "3文字コード（例：THB、SGD、VND）",
+    "duplicateWarnTitle": "重複記録の確認",
+    "duplicateWarnMessage": "同じ日付・同額の記録「{note}」（{amount}）が既にあります。このまま保存しますか？",
+    "duplicateWarnConfirm": "そのまま保存"
   },
   "profile": {
     "sectionTitle": "マイプロフィール・アイコン",
@@ -327,7 +333,17 @@
     "hideMemberDetails": "内訳を閉じる",
     "memberStatementTitle": "{name} の負担・立替内訳",
     "openInEntriesButton": "明細で絞り込む",
-    "memberStatementEmpty": "このメンバーに関する支出記録はまだありません。"
+    "memberStatementEmpty": "このメンバーに関する支出記録はまだありません。",
+    "meBadge": "自分",
+    "sortByMemberOrder": "メンバー順",
+    "sortByNetAmount": "差額順",
+    "copyMemberStatementButton": "個別明細をコピー",
+    "memberStatementCopiedToast": "「{name}」の個別精算明細をコピーしました！",
+    "planModeMin": "最小送金",
+    "planModeHub": "代表者集約",
+    "hubMemberLabel": "集約窓口（幹事）",
+    "onlyMyTransfersButton": "自分のみ",
+    "noMyTransfers": "自分に関係する未精算の送金はありません！"
   },
   "split": {
     "payerLabel": "立替者",
@@ -359,7 +375,15 @@
     "errUnallocatedRemainder": "未配分の残額 {remainder} があります。1名以上選択してください。",
     "errInvalidWeights": "比率・口数の合計は0より大きくしてください。",
     "errPercentTotal": "割合の合計は100%にしてください（現在 {total}%）。",
-    "errInvalidAmount": "有効な金額を入力してください。"
+    "errInvalidAmount": "有効な金額を入力してください。",
+    "quickSelectAll": "全選択",
+    "quickSelectNone": "全解除",
+    "quickSelectInvert": "反転",
+    "quickSelectPayerOnly": "立替者のみ",
+    "saveAsGroupButton": "グループ保存",
+    "groupNamePlaceholder": "サブグループ名（例：A車、お酒組）...",
+    "groupSavedToast": "よく使うグループ「{name}」を保存しました",
+    "groupRemovedToast": "サブグループを削除しました"
   },
   "categories": {
     "cat_food": "飲食",
@@ -403,7 +427,8 @@
     "csvPayers": "立替者",
     "csvShares": "負担内訳",
     "projectBackupTitle": "プロジェクト単体バックアップ",
-    "projectBackupDesc": "このプロジェクトを JSON 形式で保存して仲間と共有・マージできます。Excel・画像レポートは「精算」タブから出力できます。"
+    "projectBackupDesc": "このプロジェクトを JSON 形式で保存して仲間と共有・マージできます。Excel・画像レポートは「精算」タブから出力できます。",
+    "longImageOmittedNotice": "他 {count} 件は画像サイズ制限のため省略しました。全明細は Excel (.xlsx) を出力してください"
   },
   "demo": {
     "tryButton": "サンプル旅行データで割り勘・円グラフを体験",
@@ -514,7 +539,13 @@
     "modeLive": "最新レート",
     "modeCustom": "カスタム",
     "applySettleCustomButton": "カスタム精算レートを適用",
-    "settleCustomAppliedToast": "カスタム精算レートで再計算しました！"
+    "settleCustomAppliedToast": "カスタム精算レートで再計算しました！",
+    "cashPresetLabel": "現金 {rate}",
+    "cardPresetLabel": "カード {rate}",
+    "saveAsCashPreset": "+ 現金レート保存",
+    "saveAsCardPreset": "+ カードレート保存",
+    "cashPresetSavedToast": "現金レートを保存しました：{rate}",
+    "cardPresetSavedToast": "カードレートを保存しました：{rate}"
   },
   "confirm": {
     "defaultTitle": "操作の確認",
@@ -533,5 +564,26 @@
     "projectNameRequired": "プロジェクト名を入力してください",
     "membersRequired": "メンバーを2名以上入力してください",
     "sameMemberSettlement": "支払人と受取人は別のメンバーを指定してください"
+  },
+  "pool": {
+    "cardTitle": "共通財布（プール金）残高",
+    "collectButtonShort": "集金",
+    "paidOutLabel": "共通財布から支出",
+    "remainingCashLabel": "共通財布の残額",
+    "overdrawnLabel": "超過（要補充）",
+    "modalTitle": "グループ共通費を一括集金",
+    "modalSubtitle": "全員分の事前集金をまとめて記録できます",
+    "modeVirtualPool": "専用共通財布",
+    "modeTreasurer": "幹事メンバー",
+    "virtualPoolHint": "仮想の「共通財布」を作成して残高を独立管理します。幹事個人の収支がマイナスにならず見やすくなります。",
+    "defaultName": "共通財布",
+    "defaultNote": "共通費の集金",
+    "selectTreasurerLabel": "集金担当（幹事）",
+    "amountPerPersonLabel": "1人あたりの集金額",
+    "contributorsLabel": "集金対象メンバー",
+    "totalPreviewLabel": "{count} 名分・集金合計",
+    "confirmButton": "一括で集金を記録",
+    "errNoContributors": "集金対象のメンバーを1名以上選択してください",
+    "collectedToast": "{count} 名分の共通費集金を記録しました！"
   }
 }
