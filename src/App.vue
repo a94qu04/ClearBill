@@ -1412,6 +1412,10 @@ onBeforeUnmount(() => {
               </div>
             </div>
 
+            <p class="-mt-1.5 text-[11px] leading-relaxed text-slate-400 dark:text-slate-500">
+              {{ t('project.baseCurrencyHint') }}
+            </p>
+
             <!-- 建專案現場中文搜尋新增幣別（不必跳離頁面遺失已輸入之成員名單） -->
             <CurrencyQuickAddPicker
               v-if="createNewCurrencyOpen"
@@ -1632,7 +1636,7 @@ onBeforeUnmount(() => {
                   </span>
                   <span>
                     {{ t('project.memberCount', { count: getHumanMembers(store.activeProject).length }) }}
-                    · {{ store.activeProject.baseCurrency }}
+                    · {{ t('project.baseCurrencyBadge', { currency: store.activeProject.baseCurrency }) }}
                   </span>
                 </button>
                 <span

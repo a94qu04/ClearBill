@@ -138,3 +138,26 @@ export function formatCurrencyAmount(
     return `${normalizedCurrency} ${numberText}`
   }
 }
+
+/**
+ * 嚴格使用 Intl.NumberFormat 格式化純金額數字（不含幣別符號，方便搭配醒目的 ISO 幣別代碼顯示「{幣別} 金額」）
+ */
+export function formatCurrencyNumber(
+  amount: number,
+  currency: string,
+  locale = 'zh-TW',
+): string {
+  const normalizedCurrency = currency.trim().toUpperCase()
+  const decimals = getCurrencyDecimals(normalizedCurrency)
+  const isCleanInt =
+    decimals > 0 &&
+    SMART_INTEGER_CURRENCIES.has(normalizedCurrency) &&
+    Number.isInteger(Number(amount.toFixed(decimals)))
+  const minFractionDigits = isCleanInt ? 0 : decimals
+
+  return new Intl.NumberFormat(locale, {
+    style: 'decimal',
+    minimumFractionDigits: minFractionDigits,
+    maximumFractionDigits: decimals,
+  }).format(amount)
+}

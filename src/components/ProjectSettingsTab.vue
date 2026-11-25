@@ -596,6 +596,10 @@ function handleExportProjectJson() {
           </div>
         </div>
 
+        <p class="text-[11px] leading-relaxed text-slate-400 dark:text-slate-500">
+          {{ t('project.baseCurrencyHint') }}
+        </p>
+
         <div
           v-if="switchingFromPoolPayer"
           role="status"

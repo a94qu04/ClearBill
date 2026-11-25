@@ -62,6 +62,7 @@ interface Props {
   modelValue: number | null
   currency?: string
   currencies?: string[]
+  currencyLabels?: Record<string, string>
   showCurrencySelect?: boolean
   allowDecimals?: boolean
   enableExpression?: boolean
@@ -77,6 +78,7 @@ interface Props {
 const props = withDefaults(defineProps<Props>(), {
   currency: 'TWD',
   currencies: undefined,
+  currencyLabels: undefined,
   showCurrencySelect: false,
   allowDecimals: undefined,
   enableExpression: false,
@@ -451,12 +453,12 @@ const sizeClasses = computed(() => {
       <select
         v-if="showCurrencySelect && currencies && currencies.length > 0"
         :value="currency"
-        class="shrink-0 border-r border-slate-200 bg-slate-100/80 text-slate-700 focus:outline-none dark:border-slate-700 dark:bg-slate-800/90 dark:text-slate-200"
+        class="max-w-[140px] shrink-0 truncate border-r border-slate-200 bg-slate-100/80 text-slate-700 focus:outline-none dark:border-slate-700 dark:bg-slate-800/90 dark:text-slate-200"
         :class="sizeClasses.select"
         @change="handleCurrencyChange"
       >
         <option v-for="code in currencies" :key="code" :value="code">
-          {{ code }}
+          {{ currencyLabels?.[code] ?? code }}
         </option>
       </select>
 

@@ -6,6 +6,7 @@ import { useLedgerStore } from '@/stores/ledgerStore'
 import { useModalLayer } from '@/composables/useModalLayer'
 import {
   formatCurrencyAmount,
+  formatCurrencyNumber,
   fromMinorUnits,
   toMinorUnits,
 } from '@/core/currency'
@@ -64,12 +65,52 @@ const suggestedCurrency = computed<string>(() => {
   return store.defaultCurrency
 })
 
+const projectSettlementCurrency = computed<string>(() => {
+  if (props.project) return store.getProjectSettlementCurrency(props.project)
+  return suggestedCurrency.value
+})
+
+const projectBaseCurrency = computed<string>(() =>
+  props.project?.baseCurrency.trim().toUpperCase() || store.defaultCurrency,
+)
+
+/** 優先置頂排列：1. 結帳幣別、2. 記帳幣別、3. 目前選中／其餘常用幣別 */
 const currencyOptions = computed<string[]>(() => {
-  const set = new Set<string>(store.availableCurrencies)
-  if (props.project?.baseCurrency) set.add(props.project.baseCurrency.trim().toUpperCase())
-  if (suggestedCurrency.value) set.add(suggestedCurrency.value)
-  if (payCurrency.value) set.add(payCurrency.value.trim().toUpperCase())
-  return Array.from(set)
+  const ordered: string[] = []
+  const pushUnique = (code: string | undefined | null) => {
+    if (!code) return
+    const normalized = code.trim().toUpperCase()
+    if (normalized && !ordered.includes(normalized)) {
+      ordered.push(normalized)
+    }
+  }
+  pushUnique(projectSettlementCurrency.value)
+  pushUnique(projectBaseCurrency.value)
+  pushUnique(suggestedCurrency.value)
+  pushUnique(payCurrency.value)
+  for (const code of store.availableCurrencies) {
+    pushUnique(code)
+  }
+  return ordered
+})
+
+/** 下拉選單內針對置頂的結帳幣別／記帳幣別顯示明確標記 */
+const currencyOptionLabels = computed<Record<string, string>>(() => {
+  const labels: Record<string, string> = {}
+  const settleCur = projectSettlementCurrency.value
+  const baseCur = projectBaseCurrency.value
+  for (const code of currencyOptions.value) {
+    if (code === settleCur && code === baseCur) {
+      labels[code] = `${code} · ${t('settle.currencyTagBothShort')}`
+    } else if (code === settleCur) {
+      labels[code] = `${code} · ${t('settle.currencyTagSettlementShort')}`
+    } else if (code === baseCur) {
+      labels[code] = `${code} · ${t('settle.currencyTagBaseShort')}`
+    } else {
+      labels[code] = code
+    }
+  }
+  return labels
 })
 
 const needsExchangeRate = computed(() => {
@@ -216,6 +257,10 @@ async function handleRefreshRate() {
 
 function fmt(val: number, cur: string): string {
   return formatCurrencyAmount(val, cur, locale.value)
+}
+
+function fmtWithCode(val: number, cur: string): string {
+  return `${cur.trim().toUpperCase()} ${formatCurrencyNumber(val, cur, locale.value)}`
 }
 
 async function handleSubmit() {
@@ -366,13 +411,54 @@ async function handleSubmit() {
           </div>
 
           <div class="space-y-2">
-            <label class="block text-xs font-semibold text-slate-500">
-              {{ t('settle.paidAmountLabel') }} ({{ payCurrency }})
-            </label>
+            <div class="flex flex-wrap items-center justify-between gap-1.5">
+              <label class="block text-xs font-semibold text-slate-500">
+                {{ t('settle.paidAmountLabel') }} ({{ payCurrency }})
+              </label>
+
+              <!-- 優先置頂快捷切換：結帳幣別（翡翠綠）、記帳幣別（天藍）醒目標記 -->
+              <div class="flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  class="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-bold transition"
+                  :class="
+                    payCurrency === projectSettlementCurrency
+                      ? 'bg-emerald-600 text-white shadow-sm dark:bg-emerald-500 dark:text-slate-950'
+                      : 'bg-emerald-500/12 text-emerald-700 ring-1 ring-emerald-500/35 hover:bg-emerald-500/20 dark:bg-emerald-500/15 dark:text-emerald-300'
+                  "
+                  @click="payCurrency = projectSettlementCurrency"
+                >
+                  <span>
+                    {{
+                      projectSettlementCurrency === projectBaseCurrency
+                        ? t('settle.currencyTagBoth')
+                        : t('settle.currencyTagSettlement')
+                    }}
+                  </span>
+                  <span class="tabular-nums">{{ projectSettlementCurrency }}</span>
+                </button>
+
+                <button
+                  v-if="projectBaseCurrency !== projectSettlementCurrency"
+                  type="button"
+                  class="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-bold transition"
+                  :class="
+                    payCurrency === projectBaseCurrency
+                      ? 'bg-sky-600 text-white shadow-sm dark:bg-sky-400 dark:text-slate-950'
+                      : 'bg-sky-500/12 text-sky-700 ring-1 ring-sky-500/35 hover:bg-sky-500/20 dark:bg-sky-500/15 dark:text-sky-300'
+                  "
+                  @click="payCurrency = projectBaseCurrency"
+                >
+                  <span>{{ t('settle.currencyTagBase') }}</span>
+                  <span class="tabular-nums">{{ projectBaseCurrency }}</span>
+                </button>
+              </div>
+            </div>
             <CurrencyAmountInput
               v-model="amount"
               v-model:currency="payCurrency"
               :currencies="currencyOptions"
+              :currency-labels="currencyOptionLabels"
               show-currency-select
               size="lg"
               autofocus
@@ -385,7 +471,7 @@ async function handleSubmit() {
               <span>
                 {{
                   t('settle.remainingHint', {
-                    amount: fmt(suggestedAmount, suggestedCurrency),
+                    amount: fmtWithCode(suggestedAmount, suggestedCurrency),
                   })
                 }}
               </span>
@@ -396,7 +482,7 @@ async function handleSubmit() {
                 <span>
                   ({{
                     t('project.convertedPreview', {
-                      amount: fmt(equivalentSuggestedInSelectedCurrency, payCurrency),
+                      amount: fmtWithCode(equivalentSuggestedInSelectedCurrency, payCurrency),
                     })
                   }})
                 </span>
