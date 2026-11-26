@@ -59,11 +59,53 @@ const ZERO_CONTRIBUTION: MemberTxContribution = {
   isSpendingTx: false,
 }
 
+/** 最大餘數法非負整數分配：確保所有項目皆 >= 0 且總和 100% 等於 totalUnits */
+function allocateNonNegativeUnits(
+  totalUnits: number,
+  weights: number[],
+): number[] {
+  const out = new Array<number>(weights.length).fill(0)
+  if (totalUnits <= 0 || !Number.isFinite(totalUnits)) return out
+  let maxW = 0
+  for (const w of weights) {
+    if (Number.isFinite(w) && w > maxW) maxW = w
+  }
+  if (maxW <= 0) return out
+  const norm = weights.map((w) => (Number.isFinite(w) && w > 0 ? w / maxW : 0))
+  const sum = norm.reduce((acc, w) => acc + w, 0)
+  if (!Number.isFinite(sum) || sum <= 0) return out
+  const rems: Array<{ idx: number; frac: number }> = []
+  let allocated = 0
+  for (let i = 0; i < norm.length; i += 1) {
+    if (norm[i] <= 0) {
+      rems.push({ idx: i, frac: -1 })
+      continue
+    }
+    const exact = totalUnits * (norm[i] / sum)
+    const floored = Math.floor(exact)
+    out[i] = floored
+    allocated += floored
+    rems.push({ idx: i, frac: exact - floored })
+  }
+  let leftover = totalUnits - allocated
+  if (leftover > 0) {
+    rems.sort((a, b) => (b.frac !== a.frac ? b.frac - a.frac : a.idx - b.idx))
+    for (const r of rems) {
+      if (leftover <= 0) break
+      if (r.frac < 0) continue
+      out[r.idx] += 1
+      leftover -= 1
+    }
+  }
+  return out
+}
+
 /**
  * 將單筆交易依結算引擎同一套規則拆解為目標幣別之最小單位（minor units）分攤與墊付明細：
  * - 自動忽略已軟刪除（isDeleted）、無 splitConfig 或非 expense/refund/transfer 之交易
+ * - 採最大餘數法將總基準單位非負分配給各分攤成員，確保小額外幣消費不蒸發歸 0
  * - 單人墊付統一以 Σshares（totalShareUnits）記入墊付方，避免跨幣別四捨五入造成系統不守恆與口徑不一
- * - 多人墊付（splitConfig.payers）於容許尾差內吸收至首位墊付人，超出容許尾差則標記 payerSumMismatch
+ * - 多人墊付（splitConfig.payers）於容許尾差內以最大餘數法非負分配確保總和守恆且絕不出現負值，超出容許尾差則標記 payerSumMismatch
  */
 export function computeTxLedgerBreakdown(
   tx: Transaction,
@@ -78,29 +120,48 @@ export function computeTxLedgerBreakdown(
 
   const normalizedCurrency = currency.trim().toUpperCase()
   const { payerId, payers, shares } = tx.splitConfig
-  const rate = tx.exchangeRateToBase > 0 ? tx.exchangeRateToBase : 1
+  const rate =
+    Number.isFinite(tx.exchangeRateToBase) && tx.exchangeRateToBase > 0
+      ? tx.exchangeRateToBase
+      : 1
   const direction: 1 | -1 = tx.type === 'refund' ? -1 : 1
   const isSpendingTx = tx.type === 'expense' || tx.type === 'refund'
 
-  const shareUnitsByMember = new Map<string, number>()
-  let totalShareUnits = 0
+  const positiveShares = shares.filter(
+    (s) => Number.isFinite(s.finalAmount) && s.finalAmount > 0,
+  )
+  const origShareTotal = positiveShares.reduce(
+    (acc, s) => acc + s.finalAmount,
+    0,
+  )
+  const totalShareUnits = toMinorUnits(
+    origShareTotal * rate,
+    normalizedCurrency,
+  )
 
-  for (const share of shares) {
-    const shareBaseUnits = toMinorUnits(share.finalAmount * rate, normalizedCurrency)
-    if (shareBaseUnits === 0) {
-      continue
-    }
-    totalShareUnits += shareBaseUnits
-    shareUnitsByMember.set(
-      share.memberId,
-      (shareUnitsByMember.get(share.memberId) ?? 0) + shareBaseUnits,
+  const shareUnitsByMember = new Map<string, number>()
+  if (totalShareUnits > 0 && positiveShares.length > 0) {
+    const allocatedShareUnits = allocateNonNegativeUnits(
+      totalShareUnits,
+      positiveShares.map((s) => s.finalAmount),
     )
+    for (let i = 0; i < positiveShares.length; i += 1) {
+      const shareBaseUnits = allocatedShareUnits[i]
+      if (shareBaseUnits <= 0) continue
+      const memberId = positiveShares[i].memberId
+      shareUnitsByMember.set(
+        memberId,
+        (shareUnitsByMember.get(memberId) ?? 0) + shareBaseUnits,
+      )
+    }
   }
 
   const paidUnitsByMember = new Map<string, number>()
   let payerSumMismatch: TxPayerSumMismatch | null = null
 
-  const activePayers = (payers ?? []).filter((p) => p.amount > 0)
+  const activePayers = (payers ?? []).filter(
+    (p) => Number.isFinite(p.amount) && p.amount > 0,
+  )
   if (activePayers.length > 0) {
     const payerBaseUnitsList = activePayers.map((p) => ({
       memberId: p.memberId,
@@ -110,10 +171,22 @@ export function computeTxLedgerBreakdown(
     const roundingDiff = totalShareUnits - payerSum
     const toleranceUnits = getSettlementRoundingToleranceUnits(tx)
 
-    if (roundingDiff !== 0) {
-      if (Math.abs(roundingDiff) <= toleranceUnits) {
-        payerBaseUnitsList[0].units += roundingDiff
-      } else {
+    if (roundingDiff !== 0 && Math.abs(roundingDiff) <= toleranceUnits) {
+      const allocatedPayerUnits = allocateNonNegativeUnits(
+        totalShareUnits,
+        activePayers.map((p) => p.amount),
+      )
+      for (let i = 0; i < activePayers.length; i += 1) {
+        const units = allocatedPayerUnits[i]
+        if (units <= 0) continue
+        const memberId = activePayers[i].memberId
+        paidUnitsByMember.set(
+          memberId,
+          (paidUnitsByMember.get(memberId) ?? 0) + units,
+        )
+      }
+    } else {
+      if (roundingDiff !== 0) {
         payerSumMismatch = {
           diffUnits: roundingDiff,
           toleranceUnits,
@@ -121,13 +194,12 @@ export function computeTxLedgerBreakdown(
           currency: normalizedCurrency,
         }
       }
-    }
-
-    for (const entry of payerBaseUnitsList) {
-      paidUnitsByMember.set(
-        entry.memberId,
-        (paidUnitsByMember.get(entry.memberId) ?? 0) + entry.units,
-      )
+      for (const entry of payerBaseUnitsList) {
+        paidUnitsByMember.set(
+          entry.memberId,
+          (paidUnitsByMember.get(entry.memberId) ?? 0) + entry.units,
+        )
+      }
     }
   } else {
     paidUnitsByMember.set(
@@ -265,16 +337,20 @@ export function sumProjectExpense(
     if (tx.isDeleted || !tx.splitConfig) continue
     if (tx.type !== 'expense' && tx.type !== 'refund') continue
 
-    const rate = tx.exchangeRateToBase > 0 ? tx.exchangeRateToBase : 1
+    const rate =
+      Number.isFinite(tx.exchangeRateToBase) && tx.exchangeRateToBase > 0
+        ? tx.exchangeRateToBase
+        : 1
     const direction: 1 | -1 = tx.type === 'refund' ? -1 : 1
-    let txShareUnits = 0
+    let origShareTotal = 0
 
     for (const share of tx.splitConfig.shares) {
-      const shareBaseUnits = toMinorUnits(share.finalAmount * rate, normalizedCurrency)
-      if (shareBaseUnits === 0) continue
-      txShareUnits += shareBaseUnits
+      if (Number.isFinite(share.finalAmount) && share.finalAmount > 0) {
+        origShareTotal += share.finalAmount
+      }
     }
 
+    const txShareUnits = toMinorUnits(origShareTotal * rate, normalizedCurrency)
     totalUnits += direction * txShareUnits
   }
 

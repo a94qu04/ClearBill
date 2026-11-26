@@ -823,14 +823,18 @@ defineExpose({ resetFilters, setMemberFilter })
                     </div>
                   </div>
 
-                  <!-- 跨幣別匯率說明 -->
+                  <!-- 跨幣別匯率說明（首頁展開外幣帳目時亦自動帶出所屬專案記帳幣別） -->
                   <div
-                    v-if="projectBaseCurrency && tx.currency !== projectBaseCurrency"
+                    v-if="
+                      (projectBaseCurrency || store.getProjectById(tx.projectId)?.baseCurrency) &&
+                      tx.currency !==
+                        (projectBaseCurrency || store.getProjectById(tx.projectId)?.baseCurrency)
+                    "
                     class="text-[11px] text-slate-500 dark:text-slate-400"
                   >
                     {{ t('project.exchangeRateLabel', { from: tx.currency }) }}
                     <strong class="tabular-nums text-slate-700 dark:text-slate-200">{{ tx.exchangeRateToBase }}</strong>
-                    {{ projectBaseCurrency }}
+                    {{ projectBaseCurrency || store.getProjectById(tx.projectId)?.baseCurrency }}
                   </div>
 
                   <!-- 全部收據縮圖 -->

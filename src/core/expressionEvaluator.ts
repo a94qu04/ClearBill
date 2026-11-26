@@ -12,7 +12,8 @@ type Token =
   | { type: 'lparen' }
   | { type: 'rparen' }
 
-const OPERATOR_REGEX = /[+\-*/×÷＋－（）()]/
+const OPERATOR_REGEX = /[+\-*/×÷＋－（）()✕✖／—–％]/
+const MULTIPLY_X_REGEX = /[\d)]\s*[xX]/
 
 /**
  * 判斷輸入字串是否包含算式運算符號（或百分比符號）
@@ -20,7 +21,11 @@ const OPERATOR_REGEX = /[+\-*/×÷＋－（）()]/
 export function hasMathExpression(raw: string): boolean {
   const trimmed = raw.trim()
   if (!trimmed) return false
-  return OPERATOR_REGEX.test(trimmed) || trimmed.includes('%')
+  return (
+    OPERATOR_REGEX.test(trimmed) ||
+    MULTIPLY_X_REGEX.test(trimmed) ||
+    trimmed.includes('%')
+  )
 }
 
 function normalizeExpressionString(raw: string): string {

@@ -152,7 +152,16 @@ const resolvedHubMemberId = computed<string>(() => {
   ) {
     return hubMemberId.value
   }
-  // 預設優先選公費袋，其次選應收回金額最高之大債權人（財務長）
+  // 預設優先選應收回金額最高之真人債權人（財務長），無真人時才回退公費袋
+  const humanBalances = props.settleUp.balances.filter(
+    (b) => !poolMemberIds.value.has(b.memberId),
+  )
+  const topHumanCreditor = [...humanBalances].sort(
+    (a, b) => b.netAmount - a.netAmount,
+  )[0]
+  if (topHumanCreditor) {
+    return topHumanCreditor.memberId
+  }
   if (poolMembers.value.length > 0) {
     return poolMembers.value[0].id
   }

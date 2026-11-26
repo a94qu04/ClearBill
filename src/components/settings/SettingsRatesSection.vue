@@ -91,7 +91,7 @@ async function handleManualRefreshRates() {
 }
 
 function handleSaveCustomRate(currencyCode: string) {
-  const raw = (customRateDrafts.value[currencyCode] ?? '').trim()
+  const raw = String(customRateDrafts.value[currencyCode] ?? '').trim()
   const parsed = Number(raw)
   if (!Number.isFinite(parsed) || parsed <= 0) {
     syncCustomRateDrafts()

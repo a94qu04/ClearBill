@@ -143,6 +143,16 @@ function getPreviewCardStyle(): Record<string, string> | undefined {
   return undefined
 }
 
+/** 確保下拉選單一律包含專案目前主幣別（即使為非常用共享幣別也不空白） */
+const currencyOptions = computed<string[]>(() => {
+  const list = [...store.availableCurrencies]
+  const currentBase = props.project.baseCurrency.trim().toUpperCase()
+  if (currentBase && !list.includes(currentBase)) {
+    list.unshift(currentBase)
+  }
+  return list
+})
+
 /** 偵測是否正從「公費優先墊付」切換為指定真人成員 */
 const switchingFromPoolPayer = computed<ProjectMember | null>(() => {
   const currentDefault = props.project.members.find(
@@ -156,19 +166,11 @@ const switchingFromPoolPayer = computed<ProjectMember | null>(() => {
   return nextSelected
 })
 
-function handleDefaultPayerSelectChange() {
-  if (switchingFromPoolPayer.value) {
-    emit(
-      'toast',
-      t('pool.switchedFromPoolToast', {
-        name: switchingFromPoolPayer.value.name,
-      }),
-    )
-  }
-}
-
 async function handleSaveProjectSettings() {
-  if (!editProjectName.value.trim()) return
+  if (!editProjectName.value.trim()) {
+    emit('toast', t('validation.projectNameRequired'))
+    return
+  }
 
   const switchedToMember = switchingFromPoolPayer.value
   const currencyChanged =
@@ -177,6 +179,14 @@ async function handleSaveProjectSettings() {
   const existingTxCount = store.getProjectTransactionCount(props.project.id)
 
   if (currencyChanged && existingTxCount > 0) {
+    if (
+      store.getLiveExchangeRate(
+        props.project.baseCurrency,
+        editProjectCurrency.value,
+      ) === null
+    ) {
+      await store.refreshExchangeRates(false)
+    }
     const rate = store.getEffectiveExchangeRate(
       props.project.baseCurrency,
       editProjectCurrency.value,
@@ -305,6 +315,13 @@ async function handleSaveMemberEdit() {
 }
 
 async function handleRemoveMember(member: ProjectMember) {
+  const confirmed = await askConfirm({
+    title: t('home.deleteTx'),
+    message: `${t('home.deleteTx')}「${member.name}」？`,
+    confirmText: t('home.deleteTx'),
+    tone: 'danger',
+  })
+  if (!confirmed) return
   const res = await store.removeProjectMember(props.project.id, member.id)
   if (!res.ok) {
     if (res.reason === 'last_member') {
@@ -561,6 +578,7 @@ function handleExportProjectJson() {
           <input
             v-model="editProjectName"
             type="text"
+            maxlength="100"
             class="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-medium text-slate-900 focus:border-emerald-500 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white"
           />
         </div>
@@ -575,7 +593,7 @@ function handleExportProjectJson() {
               class="w-full rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2 text-xs font-semibold text-slate-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
             >
               <option
-                v-for="code in store.availableCurrencies"
+                v-for="code in currencyOptions"
                 :key="code"
                 :value="code"
               >
@@ -590,7 +608,6 @@ function handleExportProjectJson() {
             <select
               v-model="editProjectDefaultPayerId"
               class="w-full rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2 text-xs font-semibold text-slate-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
-              @change="handleDefaultPayerSelectChange"
             >
               <option
                 v-for="m in project.members"

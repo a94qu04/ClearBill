@@ -402,7 +402,9 @@ function confirmSaveCurrentAsGroup() {
 function stepMemberWeight(memberId: string, delta: number) {
   const state = memberStateMap[memberId]
   if (!state) return
-  const next = Math.max(0, Number(((state.weight ?? 0) + delta).toFixed(2)))
+  const parsedBase = Number(state.weight)
+  const safeBase = Number.isFinite(parsedBase) && parsedBase >= 0 ? parsedBase : 0
+  const next = Math.max(0, Number((safeBase + delta).toFixed(2)))
   state.weight = next
   state.isIncludedInRemainder = next > 0
 }
@@ -421,10 +423,10 @@ function handleSwitchMode(nextMode: SplitMode) {
       }
     }
   } else if (nextMode === 'weight') {
-    const totalW = props.members.reduce(
-      (sum, m) => sum + (memberStateMap[m.id]?.weight ?? 0),
-      0,
-    )
+    const totalW = props.members.reduce((sum, m) => {
+      const w = Number(memberStateMap[m.id]?.weight)
+      return sum + (Number.isFinite(w) && w > 0 ? w : 0)
+    }, 0)
     if (totalW <= 0) {
       for (const member of props.members) {
         if (memberStateMap[member.id]) {
@@ -516,6 +518,15 @@ const evaluation = computed<EvaluationState>(() => {
           : 0,
     }
   })
+
+  // 若百分比模式有單人超過 100%，直接回報百分比總和錯誤，避免落入 ZodError 誤顯示「請輸入有效金額」
+  if (mode.value === 'percentage' && inputs.some((m) => m.percent > 100)) {
+    return {
+      result: null,
+      errorCode: 'ERR_PERCENT_TOTAL_INVALID',
+      unallocatedRemainder: 0,
+    }
+  }
 
   try {
     const result = calculateSplit({
@@ -1048,6 +1059,7 @@ watch(
               step="0.5"
               inputmode="decimal"
               class="w-16 bg-white py-1 text-center text-xs font-bold tabular-nums text-slate-900 focus:outline-none dark:bg-slate-900 dark:text-white sm:w-12"
+              @keydown.enter.prevent="($event.target as HTMLInputElement).blur()"
             />
             <button
               type="button"
@@ -1071,6 +1083,7 @@ watch(
               step="any"
               inputmode="decimal"
               class="w-20 bg-transparent px-2 py-1 text-right text-xs font-bold tabular-nums text-slate-900 focus:outline-none dark:bg-slate-900 dark:text-white sm:w-16"
+              @keydown.enter.prevent="($event.target as HTMLInputElement).blur()"
             />
             <span class="pr-2 text-[11px] font-bold text-slate-400">%</span>
           </div>

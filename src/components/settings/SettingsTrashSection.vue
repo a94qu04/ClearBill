@@ -101,6 +101,13 @@ async function handleRestoreTx(id: string) {
 }
 
 async function handlePermanentDeleteTx(id: string) {
+  const confirmed = await askConfirm({
+    title: t('trash.deleteForever'),
+    message: t('trash.emptyAllConfirm', { count: 1 }),
+    confirmText: t('trash.deleteForever'),
+    tone: 'danger',
+  })
+  if (!confirmed) return
   await store.permanentlyDeleteTransaction(id)
   emit('toast', t('trash.permanentlyDeletedToast'))
 }

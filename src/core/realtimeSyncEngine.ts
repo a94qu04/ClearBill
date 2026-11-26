@@ -254,7 +254,6 @@ export function reconcileRemoteTransactions(
 
   const triggered =
     newlyDeletedCount >= 5 ||
-    (localActiveCount >= 10 && deletionRatio >= 0.1) ||
     (localActiveCount > 0 && newlyDeletedCount >= 2 && deletionRatio >= 0.1)
 
   return {

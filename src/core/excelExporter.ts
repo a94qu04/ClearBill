@@ -162,7 +162,9 @@ function createZipArchive(entries: ZipEntryInput[]): Uint8Array {
 
 // ==================== OOXML Worksheet 產生器 ====================
 function escapeXml(str: string): string {
+  // 移除 XML 1.0 禁止之控制字元與無效碼點，避免 Excel 開啟時報檔案損毀
   return str
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
@@ -171,7 +173,14 @@ function escapeXml(str: string): string {
 }
 
 function sanitizeSheetName(raw: string, fallback: string): string {
-  const cleaned = raw.replace(/[\\/?*[\]:]/g, ' ').trim().slice(0, 31)
+  const cleaned = Array.from(
+    raw
+      .replace(/[\u0000-\u001F]/g, '')
+      .replace(/[\\/?*[\]:]/g, ' ')
+      .trim(),
+  )
+    .slice(0, 31)
+    .join('')
   return cleaned || fallback
 }
 
@@ -211,8 +220,10 @@ function buildWorksheetXml(
             return `<c r="${ref}"${styleAttr}><v>${val}</v></c>`
           }
           const rawText = String(val)
-          // 防範試算表公式注入
-          const safeText = /^[=+\-@\t\r]/.test(rawText) ? `'${rawText}` : rawText
+          // 防範試算表公式注入（含前置空白／換行／Tab 後接 = + - @）
+          const safeText = /^[\s\r\n\t]*[=+\-@]/.test(rawText)
+            ? `'${rawText}`
+            : rawText
           return `<c r="${ref}" t="inlineStr"${styleAttr}><is><t xml:space="preserve">${escapeXml(safeText)}</t></is></c>`
         })
         .join('')
@@ -279,10 +290,14 @@ export function buildProjectExcelBytes(
     })
 
   for (const tx of sortedTxs) {
+    const isTransfer = tx.type === 'transfer'
     const sign = tx.type === 'refund' ? -1 : 1
     const rate = tx.exchangeRateToBase > 0 ? tx.exchangeRateToBase : 1
     const baseUnits = toMinorUnits(tx.amount * rate, targetCurrency)
-    const signedBaseAmount = sign * fromMinorUnits(baseUnits, targetCurrency)
+    // 還款／公費收款（transfer）不列入支出基準金額欄，避免使用者對該欄 SUM() 時將還款重複計入總支出
+    const signedBaseAmount: CellValue = isTransfer
+      ? ''
+      : sign * fromMinorUnits(baseUnits, targetCurrency)
     const signedOriginalAmount = sign * tx.amount
 
     const payersText = describePayers(tx, nameOf, {

@@ -248,7 +248,15 @@ export const useRealtimeSyncStore = defineStore('realtimeSync', () => {
     }
 
     await normalVaultDb.transactions.bulkPut(toPersist)
-    ctx.transactions.value = Array.from(localMap.values())
+    // 寫入完成後改以當下最新記憶體陣列增量合併，避免蓋掉 await 期間本地剛新增的交易
+    const currentMap = new Map(ctx.transactions.value.map((t) => [t.id, t]))
+    for (const savedTx of toPersist) {
+      const current = currentMap.get(savedTx.id)
+      if (!current || savedTx.updatedAt >= current.updatedAt) {
+        currentMap.set(savedTx.id, savedTx)
+      }
+    }
+    ctx.transactions.value = Array.from(currentMap.values())
   }
 
   async function handleRemoteTransactionsBatch(

@@ -190,10 +190,13 @@ watch([collectorMode, selectedCollectorMemberId], () => {
     kept.length > 0 ? kept : eligibleContributors.value.map((m) => m.id)
 })
 
-watch(currency, (nextCur) => {
-  if (!props.project) return
-  const base = props.project.baseCurrency.trim().toUpperCase()
+/** 僅由使用者主動切換幣別時更新匯率，避免開啟編輯歷史公費帳目時覆寫原始匯率 */
+function handleUserCurrencyChange(nextCur: string) {
   const cur = nextCur.trim().toUpperCase()
+  if (!cur || !props.project) return
+  if (currency.value === cur) return
+  currency.value = cur
+  const base = props.project.baseCurrency.trim().toUpperCase()
   if (cur === base) {
     exchangeRate.value = 1
     exchangeRateSource.value = 'same'
@@ -202,7 +205,7 @@ watch(currency, (nextCur) => {
     exchangeRate.value = resolved.rate
     exchangeRateSource.value = resolved.source
   }
-})
+}
 
 function toggleContributor(memberId: string) {
   if (selectedContributorIds.value.includes(memberId)) {
@@ -395,12 +398,13 @@ async function handleSubmit() {
             </label>
             <CurrencyAmountInput
               v-model="amountPerMember"
-              v-model:currency="currency"
+              :currency="currency"
               :currencies="currencyOptions"
               show-currency-select
               size="lg"
               autofocus
               placeholder="0"
+              @update:currency="handleUserCurrencyChange"
             />
           </div>
 
@@ -416,9 +420,10 @@ async function handleSubmit() {
               <CurrencyAmountInput
                 v-model="exchangeRate"
                 :allow-decimals="true"
+                :max-decimals="8"
                 size="sm"
                 :placeholder="t('rates.needInputShort')"
-                class="w-24"
+                class="w-28"
               />
               <span class="font-semibold text-amber-900 dark:text-amber-200">
                 {{ project.baseCurrency }}

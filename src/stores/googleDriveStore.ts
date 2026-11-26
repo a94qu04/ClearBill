@@ -54,6 +54,8 @@ export const useGoogleDriveStore = defineStore('googleDrive', () => {
   )
   let googleAutoSyncTimer: ReturnType<typeof setTimeout> | null = null
   let googleSyncInFlight: Promise<GoogleDriveSyncResult | null> | null = null
+  let googlePullInFlight: Promise<{ stats: LedgerMergeStats; syncedAt: number }> | null =
+    null
   let backupBridge: GoogleDriveBackupBridge | null = null
 
   function resolveInitialGoogleDriveStatus(): GoogleDriveSyncStatus {
@@ -154,6 +156,13 @@ export const useGoogleDriveStore = defineStore('googleDrive', () => {
     const bridge = requireBackupBridge()
 
     const run = async (): Promise<GoogleDriveSyncResult | null> => {
+      if (googlePullInFlight) {
+        try {
+          await googlePullInFlight
+        } catch {
+          // 忽略既有拉取失敗，繼續本次同步
+        }
+      }
       googleDriveStatus.value = 'syncing'
       googleDriveLastErrorCode.value = null
       googleDriveLastErrorDetail.value = null
@@ -237,37 +246,56 @@ export const useGoogleDriveStore = defineStore('googleDrive', () => {
     stats: LedgerMergeStats
     syncedAt: number
   }> {
-    const bridge = requireBackupBridge()
-    googleDriveStatus.value = 'syncing'
-    googleDriveLastErrorCode.value = null
-    googleDriveLastErrorDetail.value = null
-    try {
-      const downloaded = await downloadBackupFromGoogleDrive(clientId, false)
-      if (!downloaded) {
-        throw new GoogleDriveSyncError('ERR_DRIVE_NOT_FOUND')
-      }
-      const stats = await bridge.importAndMergeLedgerBackup(downloaded.rawJson)
-      googleDriveLastSyncAt.value = downloaded.syncedAt
-      if (downloaded.account) {
-        googleDriveAccount.value = downloaded.account
-      }
-      googleDriveStatus.value = googleDriveDirty.value ? 'pending' : 'synced'
-      return { stats, syncedAt: downloaded.syncedAt }
-    } catch (err) {
-      if (err instanceof GoogleDriveSyncError) {
-        googleDriveLastErrorCode.value = err.code
-        googleDriveLastErrorDetail.value = err.message
-        if (err.code === 'ERR_OAUTH_SILENT_REQUIRED') {
-          googleDriveStatus.value = 'needs_auth'
-          throw err
-        }
-      } else {
-        googleDriveLastErrorDetail.value =
-          err instanceof Error ? err.message : String(err)
-      }
-      googleDriveStatus.value = 'error'
-      throw err
+    if (googlePullInFlight) {
+      return googlePullInFlight
     }
+    const bridge = requireBackupBridge()
+    const runPull = async (): Promise<{
+      stats: LedgerMergeStats
+      syncedAt: number
+    }> => {
+      if (googleSyncInFlight) {
+        try {
+          await googleSyncInFlight
+        } catch {
+          // 忽略既有背景同步失敗，繼續本次拉取
+        }
+      }
+      googleDriveStatus.value = 'syncing'
+      googleDriveLastErrorCode.value = null
+      googleDriveLastErrorDetail.value = null
+      try {
+        const downloaded = await downloadBackupFromGoogleDrive(clientId, false)
+        if (!downloaded) {
+          throw new GoogleDriveSyncError('ERR_DRIVE_NOT_FOUND')
+        }
+        const stats = await bridge.importAndMergeLedgerBackup(downloaded.rawJson)
+        googleDriveLastSyncAt.value = downloaded.syncedAt
+        if (downloaded.account) {
+          googleDriveAccount.value = downloaded.account
+        }
+        googleDriveStatus.value = googleDriveDirty.value ? 'pending' : 'synced'
+        return { stats, syncedAt: downloaded.syncedAt }
+      } catch (err) {
+        if (err instanceof GoogleDriveSyncError) {
+          googleDriveLastErrorCode.value = err.code
+          googleDriveLastErrorDetail.value = err.message
+          if (err.code === 'ERR_OAUTH_SILENT_REQUIRED') {
+            googleDriveStatus.value = 'needs_auth'
+            throw err
+          }
+        } else {
+          googleDriveLastErrorDetail.value =
+            err instanceof Error ? err.message : String(err)
+        }
+        googleDriveStatus.value = 'error'
+        throw err
+      } finally {
+        googlePullInFlight = null
+      }
+    }
+    googlePullInFlight = runPull()
+    return googlePullInFlight
   }
 
   function disconnectGoogleDriveAccount(): void {

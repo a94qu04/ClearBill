@@ -981,7 +981,8 @@ export const useLedgerStore = defineStore('ledger', () => {
     memberId: string,
   ): boolean {
     return transactions.value.some((tx) => {
-      if (tx.isDeleted || tx.projectId !== projectId || !tx.splitConfig) {
+      // 連同回收桶中尚未永久刪除的交易一併檢查，避免刪除成員後復原交易出現裸露孤兒 ID
+      if (tx.projectId !== projectId || !tx.splitConfig) {
         return false
       }
       if (tx.splitConfig.payerId === memberId) return true
@@ -1007,7 +1008,14 @@ export const useLedgerStore = defineStore('ledger', () => {
     )
     if (!existing) return { ok: false }
 
-    if (existing.members.length <= 1) {
+    const targetMember = existing.members.find((m) => m.id === memberId)
+    if (!targetMember) return { ok: false }
+
+    const humanMemberCount = existing.members.filter((m) => !m.isPool).length
+    if (
+      existing.members.length <= 1 ||
+      (!targetMember.isPool && humanMemberCount <= 1)
+    ) {
       return { ok: false, reason: 'last_member' }
     }
 
@@ -1033,10 +1041,20 @@ export const useLedgerStore = defineStore('ledger', () => {
 
     const now = Date.now()
     const baseExisting = toPlainClone(existing)
+    const nextSyncMeta = baseExisting.syncMeta
+      ? {
+          ...baseExisting.syncMeta,
+          myMemberId:
+            baseExisting.syncMeta.myMemberId === memberId
+              ? undefined
+              : baseExisting.syncMeta.myMemberId,
+        }
+      : undefined
     const updated: Project = {
       ...baseExisting,
       members: remainingMembers,
       defaultPayerId: nextDefaultPayer,
+      syncMeta: nextSyncMeta,
       splitGroups:
         cleanedSplitGroups && cleanedSplitGroups.length > 0
           ? cleanedSplitGroups

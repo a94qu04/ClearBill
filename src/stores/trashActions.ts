@@ -147,8 +147,9 @@ export function createTrashActions(ctx: TrashActionsContext) {
 
     const now = Date.now()
 
-    // 若該筆消費原本屬於某個專案且該專案目前處於軟刪除狀態，一併復原專案；若交易指向已刪除的公費袋 ID，亦自動補回該公費袋成員避免出現孤兒 ID
+    // 若該筆消費原本屬於某個專案且該專案目前處於軟刪除狀態，一併復原專案；若交易指向已刪除的公費袋 ID，優先重映射到既有公費袋避免出現雙公費袋
     let targetProjectId = target.projectId
+    let remappedSplitConfig = target.splitConfig
     if (targetProjectId) {
       const parentProject = ctx.projects.value.find(
         (p) => p.id === targetProjectId,
@@ -157,25 +158,43 @@ export function createTrashActions(ctx: TrashActionsContext) {
         const existingMemberIds = new Set(
           parentProject.members.map((m) => m.id),
         )
-        const missingPoolIds = extractMissingPoolMemberIdsFromTransaction(
-          target,
-          existingMemberIds,
+        const missingPoolIds = new Set(
+          extractMissingPoolMemberIdsFromTransaction(target, existingMemberIds),
         )
+        const existingPool = parentProject.members.find((m) => m.isPool)
+        if (existingPool && missingPoolIds.size > 0 && target.splitConfig) {
+          const mapPoolId = (poolRefId: string) =>
+            missingPoolIds.has(poolRefId) ? existingPool.id : poolRefId
+          remappedSplitConfig = {
+            ...target.splitConfig,
+            payerId: mapPoolId(target.splitConfig.payerId),
+            payers: target.splitConfig.payers?.map((p) => ({
+              ...p,
+              memberId: mapPoolId(p.memberId),
+            })),
+            shares: target.splitConfig.shares.map((s) => ({
+              ...s,
+              memberId: mapPoolId(s.memberId),
+            })),
+          }
+          missingPoolIds.clear()
+        }
 
-        if (parentProject.isDeleted || missingPoolIds.length > 0) {
+        if (parentProject.isDeleted || missingPoolIds.size > 0) {
           const plainParent = ctx.toPlainClone(parentProject)
-          const extraPoolMembers: ProjectMember[] = missingPoolIds.map(
-            (poolId) => ({
-              id: poolId,
-              name: '公費袋',
-              avatarColor: '#0f766e',
-              isPool: true,
-            }),
-          )
+          const extraPoolMembers: ProjectMember[] = Array.from(
+            missingPoolIds,
+          ).map((poolId) => ({
+            id: poolId,
+            name: 'Pool',
+            avatarColor: '#0f766e',
+            isPool: true,
+          }))
           const restoredProject = await saveProjectToNormalVault({
             ...plainParent,
             isDeleted: false,
             isActive: true,
+            isArchived: false,
             members: [
               ...plainParent.members.map((m) => ({ ...m })),
               ...extraPoolMembers,
@@ -204,6 +223,7 @@ export function createTrashActions(ctx: TrashActionsContext) {
     const restoredPayload: Transaction = {
       ...target,
       projectId: targetProjectId,
+      splitConfig: remappedSplitConfig,
       isDeleted: false,
       updatedAt: now,
     }

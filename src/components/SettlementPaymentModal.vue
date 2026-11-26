@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { RefreshCw, X } from 'lucide-vue-next'
+import { Loader2, RefreshCw, X } from 'lucide-vue-next'
 import { useLedgerStore } from '@/stores/ledgerStore'
 import { useModalLayer } from '@/composables/useModalLayer'
 import {
@@ -47,7 +47,6 @@ useModalLayer(
   dialogRef,
 )
 
-let isHydrating = false
 let lastAutoFilledAmount: number | null = null
 const fromId = ref('')
 const toId = ref('')
@@ -58,6 +57,7 @@ const exchangeRateSource = ref<
   'same' | 'live' | 'remembered' | 'estimated' | 'saved' | 'missing'
 >('same')
 const isFetchingRate = ref(false)
+const isSubmitting = ref(false)
 const date = ref(getTodayIso())
 const note = ref('')
 const errorText = ref('')
@@ -224,7 +224,6 @@ watch(
     ] as const,
   ([isOpen]) => {
     if (!isOpen || !props.project) return
-    isHydrating = true
     errorText.value = ''
 
     if (props.editingTx && props.editingTx.splitConfig) {
@@ -249,7 +248,6 @@ watch(
       date.value = props.editingTx.date
       note.value = props.editingTx.note ?? ''
       lastAutoFilledAmount = null
-      isHydrating = false
       return
     }
 
@@ -263,14 +261,16 @@ watch(
     lastAutoFilledAmount = props.suggestedAmount ?? null
     date.value = getTodayIso()
     note.value = ''
-    isHydrating = false
   },
   { immediate: true },
 )
 
-watch(payCurrency, (nextCur) => {
-  if (isHydrating || !props.project) return
+/** 僅由使用者主動切換幣別時重算匯率與建議金額，避免編輯開啟時覆寫歷史匯率 */
+function handleUserCurrencyChange(nextCur: string) {
   const cur = nextCur.trim().toUpperCase()
+  if (!cur || !props.project) return
+  if (payCurrency.value === cur) return
+  payCurrency.value = cur
   const resolved = resolvePayCurrencyRateToBase(cur)
   exchangeRate.value = resolved.rate
   exchangeRateSource.value = resolved.source
@@ -289,7 +289,7 @@ watch(payCurrency, (nextCur) => {
       }
     }
   }
-})
+}
 
 async function handleRefreshRate() {
   if (!props.project || !needsExchangeRate.value || isFetchingRate.value) return
@@ -318,6 +318,7 @@ function fmtWithCode(val: number, cur: string): string {
 }
 
 async function handleSubmit() {
+  if (isSubmitting.value) return
   errorText.value = ''
   if (!props.project) return
 
@@ -338,6 +339,7 @@ async function handleSubmit() {
     return
   }
 
+  isSubmitting.value = true
   try {
     if (needsExchangeRate.value && rateToBase > 0) {
       store.rememberExchangeRate(
@@ -390,6 +392,8 @@ async function handleSubmit() {
     emit('close')
   } catch {
     errorText.value = t('home.saveFailed')
+  } finally {
+    isSubmitting.value = false
   }
 }
 </script>
@@ -480,7 +484,7 @@ async function handleSubmit() {
                       ? 'bg-emerald-600 text-white shadow-sm dark:bg-emerald-500 dark:text-slate-950'
                       : 'bg-emerald-500/12 text-emerald-700 ring-1 ring-emerald-500/35 hover:bg-emerald-500/20 dark:bg-emerald-500/15 dark:text-emerald-300'
                   "
-                  @click="payCurrency = projectSettlementCurrency"
+                  @click="handleUserCurrencyChange(projectSettlementCurrency)"
                 >
                   <span>
                     {{
@@ -501,7 +505,7 @@ async function handleSubmit() {
                       ? 'bg-sky-600 text-white shadow-sm dark:bg-sky-400 dark:text-slate-950'
                       : 'bg-sky-500/12 text-sky-700 ring-1 ring-sky-500/35 hover:bg-sky-500/20 dark:bg-sky-500/15 dark:text-sky-300'
                   "
-                  @click="payCurrency = projectBaseCurrency"
+                  @click="handleUserCurrencyChange(projectBaseCurrency)"
                 >
                   <span>{{ t('settle.currencyTagBase') }}</span>
                   <span class="tabular-nums">{{ projectBaseCurrency }}</span>
@@ -510,13 +514,14 @@ async function handleSubmit() {
             </div>
             <CurrencyAmountInput
               v-model="amount"
-              v-model:currency="payCurrency"
+              :currency="payCurrency"
               :currencies="currencyOptions"
               :currency-labels="currencyOptionLabels"
               show-currency-select
               size="lg"
               autofocus
               placeholder="0"
+              @update:currency="handleUserCurrencyChange"
             />
             <p
               v-if="!editingTx && suggestedAmount !== null"
@@ -566,9 +571,10 @@ async function handleSubmit() {
                 <CurrencyAmountInput
                   v-model="exchangeRate"
                   :allow-decimals="true"
+                  :max-decimals="8"
                   size="sm"
                   :placeholder="t('rates.needInputShort')"
-                  class="w-24"
+                  class="w-28"
                 />
                 <span class="font-semibold text-amber-900 dark:text-amber-200">
                   {{ project.baseCurrency }}
@@ -620,6 +626,7 @@ async function handleSubmit() {
             <input
               v-model="note"
               type="text"
+              maxlength="1000"
               :placeholder="t('daily.notePlaceholder')"
               class="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-800 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
             />
@@ -631,13 +638,17 @@ async function handleSubmit() {
 
           <button
             type="submit"
-            class="w-full rounded-2xl bg-emerald-600 py-3 text-sm font-bold text-white shadow-sm hover:bg-emerald-700 dark:bg-emerald-500 dark:text-slate-950"
+            :disabled="isSubmitting"
+            class="inline-flex w-full items-center justify-center gap-1.5 rounded-2xl bg-emerald-600 py-3 text-sm font-bold text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-emerald-500 dark:text-slate-950"
           >
-            {{
-              editingTx
-                ? t('settle.updatePayment')
-                : t('settle.savePayment')
-            }}
+            <Loader2 v-if="isSubmitting" class="h-4 w-4 animate-spin" />
+            <span>
+              {{
+                editingTx
+                  ? t('settle.updatePayment')
+                  : t('settle.savePayment')
+              }}
+            </span>
           </button>
         </form>
       </div>

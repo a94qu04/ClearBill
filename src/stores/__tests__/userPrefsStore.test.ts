@@ -71,7 +71,7 @@ describe('userPrefsStore - 使用者偏好、幣別、分類與匯率記憶', ()
     })
 
     // 未知幣別無記憶無快取時回傳 missing（不得靜默 1:1）
-    expect(prefs.getEffectiveExchangeRateWithSource('VND', 'TWD')).toEqual({
+    expect(prefs.getEffectiveExchangeRateWithSource('ARS', 'TWD')).toEqual({
       rate: null,
       source: 'missing',
     })

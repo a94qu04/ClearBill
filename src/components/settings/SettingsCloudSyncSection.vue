@@ -54,7 +54,8 @@ const googleAccountInitial = computed(() => {
     store.googleDriveAccount?.displayName ||
     store.googleDriveAccount?.email ||
     'G'
-  return name.trim().charAt(0).toUpperCase() || 'G'
+  const trimmed = name.trim()
+  return (Array.from(trimmed)[0] ?? 'G').toUpperCase()
 })
 
 const googleStatusBadge = computed(() => {

@@ -103,9 +103,9 @@ export function parseAndSaveCustomFirebaseConfig(rawInput: string): FirebaseWebC
   const end = trimmed.lastIndexOf('}')
   const block = start !== -1 && end > start ? trimmed.slice(start, end + 1) : trimmed
 
-  // 將常見 JS 物件字面值轉為標準 JSON（單引號、未加引號之 key、尾隨逗號）
+  // 將常見 JS 物件字面值轉為標準 JSON（單引號、未加引號之 key、尾隨逗號；僅移除行首或空白後的 // 註解，避免誤砍 https://）
   const jsonLike = block
-    .replace(/\/\/[^\n]*/g, '')
+    .replace(/(^|\s)\/\/[^\n]*/g, '$1')
     .replace(/([,{]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:/g, '$1"$2":')
     .replace(/'([^']*)'/g, '"$1"')
     .replace(/,\s*}/g, '}')
@@ -162,11 +162,16 @@ async function loadFirebaseModules() {
       import('firebase/app'),
       import('firebase/auth'),
       import('firebase/firestore'),
-    ]).then(([appModule, authModule, firestoreModule]) => ({
-      appModule,
-      authModule,
-      firestoreModule,
-    }))
+    ])
+      .then(([appModule, authModule, firestoreModule]) => ({
+        appModule,
+        authModule,
+        firestoreModule,
+      }))
+      .catch((err) => {
+        cachedModulesPromise = null
+        throw err
+      })
   }
   return cachedModulesPromise
 }
@@ -184,7 +189,7 @@ async function getFirebaseContext() {
     .getApps()
     .find((existing) => existing.name === FIREBASE_APP_NAME)
 
-  if (app && cachedConfigFingerprint && cachedConfigFingerprint !== fingerprint) {
+  if (app && cachedConfigFingerprint !== fingerprint) {
     await appModule.deleteApp(app)
     app = undefined
   }
@@ -309,13 +314,17 @@ export async function joinSharedProjectOnFirestore(
 
     const projectRef = doc(db, 'shared_projects', shareId)
 
-    // 先透過帶入 accessKey 將自己的匿名 UID 加入 memberUids（金鑰不符會被 Firestore Rules 直接拒絕）
-    await updateDoc(projectRef, {
-      accessKey,
-      memberUids: arrayUnion(uid),
-    })
-
-    const projSnap = await getDoc(projectRef)
+    // 若本裝置已屬於 memberUids／ownerUid，直接讀取文件；否則須提交 `lastJoinProof = "${uid}:${accessKey}"` 通過安全規則驗證加入
+    let projSnap
+    try {
+      projSnap = await getDoc(projectRef)
+    } catch {
+      await updateDoc(projectRef, {
+        memberUids: arrayUnion(uid),
+        lastJoinProof: `${uid}:${accessKey}`,
+      })
+      projSnap = await getDoc(projectRef)
+    }
     if (!projSnap.exists()) {
       throw new FirestoreSyncError('ERR_PROJECT_NOT_FOUND')
     }

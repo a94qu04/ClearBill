@@ -109,6 +109,20 @@ describe('realtimeSyncEngine - 邀請連結、熔斷器與雲端序列化', () =
     expect(result.incomingDeletes).toHaveLength(1)
     expect(result.safeUpserts).toHaveLength(1)
     expect(result.safeUpserts[0].amount).toBe(1200)
+
+    // 專案剛好有 10 筆時，正常刪除 1 筆不應誤觸熔斷器
+    const exactlyTen = Array.from({ length: 10 }, (_, idx) =>
+      makeTx(String(idx + 20)),
+    )
+    const oneDeleteRes = reconcileRemoteTransactions(exactlyTen, [
+      {
+        ...exactlyTen[0],
+        isDeleted: true,
+        updatedAt: exactlyTen[0].updatedAt + 1000,
+      },
+    ])
+    expect(oneDeleteRes.circuitBreaker.triggered).toBe(false)
+    expect(oneDeleteRes.incomingDeletes).toHaveLength(1)
   })
 
   it('prepareTransactionForCloud 會在收據圖片過大或關閉同步時安全略過圖片', () => {

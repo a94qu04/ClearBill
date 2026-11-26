@@ -47,10 +47,10 @@ export const Time24hSchema = z
 /** 單一成員拆帳輸入結構（用於 splitCalculator） */
 export const MemberSplitInputSchema = z.object({
   memberId: z.string().trim().min(1, '成員 ID 不可為空'),
-  customAmount: z.number().finite().min(0, '指定金額不可為負數').default(0),
+  customAmount: z.number().finite().min(0, '指定金額不可為負數').max(1e12).default(0),
   isIncludedInRemainder: z.boolean().default(true),
   /** 選填：份數比例模式權重（如 1、2、0.5、0） */
-  weight: z.number().finite().min(0, '份數權重不可為負數').optional(),
+  weight: z.number().finite().min(0, '份數權重不可為負數').max(1e6).optional(),
   /** 選填：百分比模式比例（0 ~ 100） */
   percent: z.number().finite().min(0, '百分比不可為負數').max(100, '百分比不可超過 100').optional(),
 })
@@ -60,17 +60,17 @@ export type NormalizedMemberSplitInput = z.output<typeof MemberSplitInputSchema>
 /** 單一墊付人實付金額結構（支援多人同時墊付同一筆消費） */
 export const SplitPayerSchema = z.object({
   memberId: z.string().trim().min(1, '墊付人 ID 不可為空'),
-  amount: z.number().finite().min(0, '墊付金額不可為負數'),
+  amount: z.number().finite().min(0, '墊付金額不可為負數').max(1e12),
 })
 export type SplitPayer = z.infer<typeof SplitPayerSchema>
 
 /** 單一成員最終分攤金額（保留選填原始輸入欄位，讓修改帳目可 100% 精準還原） */
 export const SplitShareSchema = z.object({
   memberId: z.string().trim().min(1),
-  finalAmount: z.number().finite().min(0),
-  customAmount: z.number().finite().min(0).optional(),
+  finalAmount: z.number().finite().min(0).max(1e12),
+  customAmount: z.number().finite().min(0).max(1e12).optional(),
   isIncludedInRemainder: z.boolean().optional(),
-  weight: z.number().finite().min(0).optional(),
+  weight: z.number().finite().min(0).max(1e6).optional(),
   percent: z.number().finite().min(0).max(100).optional(),
 })
 export type SplitShare = z.infer<typeof SplitShareSchema>
@@ -106,9 +106,9 @@ export const TransactionSchema = z.object({
   projectId: z.string().trim().min(1).optional(),
   vaultLevel: VaultLevelSchema,
   type: TransactionTypeSchema,
-  amount: z.number().finite().min(0, '金額不可為負數'),
+  amount: z.number().finite().min(0, '金額不可為負數').max(1e12),
   currency: CurrencyCodeSchema,
-  exchangeRateToBase: z.number().finite().positive('匯率必須大於 0').default(1),
+  exchangeRateToBase: z.number().finite().positive('匯率必須大於 0').max(1e9).default(1),
   categoryKey: z.string().trim().min(1, '分類鍵值不可為空'),
   date: IsoDateSchema,
   time: z.preprocess(

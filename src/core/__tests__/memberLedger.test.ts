@@ -56,8 +56,9 @@ describe('memberLedger - 成員單筆／彙總與結算引擎統一計算口徑'
     const settleUp = calculateSettleUp([tx], 'TWD', ['alice', 'bob', 'carol'])
     const aliceBal = settleUp.balances.find((b) => b.memberId === 'alice')!
 
-    expect(aliceContrib.share).toBe(71)
-    expect(aliceContrib.paid).toBe(213)
+    // 1000 JPY * 0.214 = 214 TWD，最大餘數法分配為 72 / 71 / 71（總和不蒸發，與結算引擎 100% 對拍）
+    expect(aliceContrib.share).toBe(72)
+    expect(aliceContrib.paid).toBe(214)
     expect(aliceContrib.net).toBe(142)
     expect(aliceContrib.paid).toBe(aliceBal.totalPaid)
     expect(aliceContrib.share).toBe(aliceBal.totalExpense)

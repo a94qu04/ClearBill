@@ -227,6 +227,7 @@ export function createPoolActions(ctx: PoolActionsContext) {
 
     // 統一收斂為單筆多人繳交之公費帳目，避免一次收公費產生大量零散紀錄
     const perMemberUnits = toMinorUnits(params.amountPerMember, payCurrency)
+    if (perMemberUnits <= 0) return 0
     const normalizedPerMember = fromMinorUnits(perMemberUnits, payCurrency)
     const totalAmount = fromMinorUnits(
       perMemberUnits * validContributors.length,

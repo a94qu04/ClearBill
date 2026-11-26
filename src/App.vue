@@ -1,5 +1,13 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onBeforeUnmount, ref } from 'vue'
+import {
+  computed,
+  defineAsyncComponent,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  watch,
+} from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   ArrowLeft,
@@ -83,6 +91,7 @@ const projectViewRef = ref<InstanceType<typeof ProjectView> | null>(null)
 const toastMessage = ref('')
 const undoDeletedTxIds = ref<string[]>([])
 let toastTimer: ReturnType<typeof setTimeout> | null = null
+let undoClearTimer: ReturnType<typeof setTimeout> | null = null
 
 // 支出與還款彈窗狀態
 const expenseModalFromHome = ref(false)
@@ -104,14 +113,16 @@ function showToast(message: string, undoTxId: string | null = null) {
     if (!undoDeletedTxIds.value.includes(undoTxId)) {
       undoDeletedTxIds.value = [...undoDeletedTxIds.value, undoTxId]
     }
-  } else {
-    undoDeletedTxIds.value = []
+    if (undoClearTimer) clearTimeout(undoClearTimer)
+    undoClearTimer = setTimeout(() => {
+      undoDeletedTxIds.value = []
+      undoClearTimer = null
+    }, 6000)
   }
   if (toastTimer) clearTimeout(toastTimer)
   toastTimer = setTimeout(
     () => {
       toastMessage.value = ''
-      undoDeletedTxIds.value = []
     },
     undoDeletedTxIds.value.length > 0 ? 6000 : 2800,
   )
@@ -244,11 +255,22 @@ function handleProjectCreated() {
   activeView.value = 'project_workspace'
 }
 
+/** 刪除專案後一律返回首頁並重設分頁，避免原地切到下一個專案的設定頁造成連環誤刪 */
 function handleProjectDeleted() {
-  if (!store.activeProject) {
-    activeView.value = 'home'
-  }
+  projectTab.value = 'expenses'
+  activeView.value = 'home'
 }
+
+// 遠端同步或備份合併導致目前專案不存在時，自動退回首頁防止空白主畫面
+watch(
+  () => store.activeProject,
+  (proj) => {
+    if (!proj && activeView.value === 'project_workspace') {
+      projectTab.value = 'expenses'
+      activeView.value = 'home'
+    }
+  },
+)
 
 function handleJoinedSharedProject(projectId: string) {
   pendingJoinInvite.value = null
@@ -445,8 +467,45 @@ const { isDark, setTheme, isTouchDevice, inAppBrowser, inAppBannerDismissed } =
     },
   })
 
+let isSyncingFromPopstate = false
+
+watch(activeView, (nextView, prevView) => {
+  if (typeof window === 'undefined' || isSyncingFromPopstate) return
+  // 從首頁進入專案工作區或建立專案頁時推入一筆瀏覽器歷史紀錄，讓手機系統返回鍵可自然退回首頁而非直接跳離 App
+  if (prevView === 'home' && nextView !== 'home') {
+    try {
+      window.history.pushState({ clearbillView: nextView }, '')
+    } catch {
+      // 忽略受限環境
+    }
+  }
+})
+
+function handleBrowserPopState() {
+  if (activeView.value === 'home') return
+  isSyncingFromPopstate = true
+  activeView.value = 'home'
+  projectTab.value = 'expenses'
+  void nextTick(() => {
+    isSyncingFromPopstate = false
+  })
+}
+
+onMounted(() => {
+  if (typeof window !== 'undefined') {
+    window.addEventListener('popstate', handleBrowserPopState)
+  }
+})
+
 onBeforeUnmount(() => {
+  if (typeof window !== 'undefined') {
+    window.removeEventListener('popstate', handleBrowserPopState)
+  }
   if (toastTimer) clearTimeout(toastTimer)
+  if (undoClearTimer) {
+    clearTimeout(undoClearTimer)
+    undoClearTimer = null
+  }
 })
 </script>
 
@@ -579,37 +638,39 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
-    <!-- 輕量提示 Toast（含即時復原鈕） -->
-    <Transition
-      enter-active-class="transition duration-200 ease-out"
-      enter-from-class="opacity-0 translate-y-2"
-      enter-to-class="opacity-100 translate-y-0"
-      leave-active-class="transition duration-150 ease-in"
-      leave-from-class="opacity-100 translate-y-0"
-      leave-to-class="opacity-0 translate-y-2"
-    >
-      <div
-        v-if="toastMessage"
-        role="status"
-        class="safe-toast-bottom fixed left-1/2 z-50 flex w-max max-w-[calc(100vw-2rem)] -translate-x-1/2 items-center gap-2 rounded-2xl bg-slate-900 px-3.5 py-2 text-xs font-semibold text-white shadow-xl dark:bg-slate-100 dark:text-slate-950 sm:rounded-full sm:px-4"
+    <!-- 輕量提示 Toast（透過 Teleport 掛載至 body 最上層 z-[80]，絕不被彈窗遮罩蓋住） -->
+    <Teleport to="body">
+      <Transition
+        enter-active-class="transition duration-200 ease-out"
+        enter-from-class="opacity-0 translate-y-2"
+        enter-to-class="opacity-100 translate-y-0"
+        leave-active-class="transition duration-150 ease-in"
+        leave-from-class="opacity-100 translate-y-0"
+        leave-to-class="opacity-0 translate-y-2"
       >
-        <Check class="h-3.5 w-3.5 shrink-0 text-emerald-400 dark:text-emerald-600" />
-        <span class="break-words leading-snug">{{ toastMessage }}</span>
-        <button
-          v-if="undoDeletedTxIds.length > 0"
-          type="button"
-          class="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-500 px-2.5 py-0.5 text-[11px] font-bold text-slate-950 transition hover:bg-emerald-400"
-          @click="handleUndoDelete"
+        <div
+          v-if="toastMessage"
+          role="status"
+          class="safe-toast-bottom fixed left-1/2 z-[80] flex w-max max-w-[calc(100vw-2rem)] -translate-x-1/2 items-center gap-2 rounded-2xl bg-slate-900 px-3.5 py-2 text-xs font-semibold text-white shadow-xl dark:bg-slate-100 dark:text-slate-950 sm:rounded-full sm:px-4"
         >
-          <Undo2 class="h-3 w-3" />
-          <span>{{
-            undoDeletedTxIds.length > 1
-              ? `${t('trash.restore')} (${undoDeletedTxIds.length})`
-              : t('trash.restore')
-          }}</span>
-        </button>
-      </div>
-    </Transition>
+          <Check class="h-3.5 w-3.5 shrink-0 text-emerald-400 dark:text-emerald-600" />
+          <span class="break-words leading-snug">{{ toastMessage }}</span>
+          <button
+            v-if="undoDeletedTxIds.length > 0"
+            type="button"
+            class="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-500 px-2.5 py-0.5 text-[11px] font-bold text-slate-950 transition hover:bg-emerald-400"
+            @click="handleUndoDelete"
+          >
+            <Undo2 class="h-3 w-3" />
+            <span>{{
+              undoDeletedTxIds.length > 1
+                ? `${t('trash.restore')} (${undoDeletedTxIds.length})`
+                : t('trash.restore')
+            }}</span>
+          </button>
+        </div>
+      </Transition>
+    </Teleport>
 
     <main class="mx-auto max-w-xl px-4 pt-5 md:max-w-3xl lg:max-w-5xl">
       <!-- LINE / FB / IG / WeChat 內建瀏覽器偵測提醒橫幅 -->

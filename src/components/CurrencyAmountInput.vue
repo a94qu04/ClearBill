@@ -49,6 +49,7 @@ interface Props {
   currencyLabels?: Record<string, string>
   showCurrencySelect?: boolean
   allowDecimals?: boolean
+  maxDecimals?: number
   enableExpression?: boolean
   showServiceFeeButton?: boolean
   showFxFeeButton?: boolean
@@ -65,6 +66,7 @@ const props = withDefaults(defineProps<Props>(), {
   currencyLabels: undefined,
   showCurrencySelect: false,
   allowDecimals: undefined,
+  maxDecimals: 4,
   enableExpression: false,
   showServiceFeeButton: false,
   showFxFeeButton: false,
@@ -117,7 +119,11 @@ const targetDecimals = computed(() =>
 
 const displayValue = ref(
   props.modelValue !== null && props.modelValue !== undefined
-    ? formatGroupedNumberInput(props.modelValue, effectiveAllowDecimals.value)
+    ? formatGroupedNumberInput(
+        props.modelValue,
+        effectiveAllowDecimals.value,
+        props.maxDecimals,
+      )
     : '',
 )
 
@@ -232,7 +238,7 @@ function recalculateWithCurrentFees() {
 
 watch(
   () => [props.modelValue, effectiveAllowDecimals.value] as const,
-  ([nextVal, allowDec]) => {
+  ([nextVal, allowDec], [, prevAllowDec]) => {
     if (nextVal === null || nextVal === undefined) {
       resetFeeState()
       if (displayValue.value !== '') {
@@ -240,12 +246,24 @@ watch(
       }
       return
     }
+    // 切換至零小數幣別（如 USD -> TWD/JPY）時，強制將殘留小數四捨五入並回寫
+    if (prevAllowDec === true && allowDec === false && !Number.isInteger(nextVal)) {
+      const rounded = Math.round(nextVal)
+      resetFeeState()
+      displayValue.value = formatGroupedNumberInput(rounded, false, 0)
+      emit('update:modelValue', rounded)
+      return
+    }
     const currentParsed = isExpressionInput.value
       ? evaluatedExpressionValue.value
       : parseGroupedNumberInput(displayValue.value)
-    if (currentParsed !== nextVal) {
+    if (currentParsed !== nextVal || (allowDec === false && displayValue.value.includes('.'))) {
       resetFeeState()
-      displayValue.value = formatGroupedNumberInput(nextVal, allowDec)
+      displayValue.value = formatGroupedNumberInput(
+        nextVal,
+        allowDec,
+        props.maxDecimals,
+      )
     }
   },
 )
@@ -267,7 +285,11 @@ function handleInput(event: Event) {
     return
   }
 
-  const formatted = formatGroupedNumberInput(raw, effectiveAllowDecimals.value)
+  const formatted = formatGroupedNumberInput(
+    raw,
+    effectiveAllowDecimals.value,
+    props.maxDecimals,
+  )
   displayValue.value = formatted
   if (target.value !== formatted) {
     target.value = formatted
@@ -282,6 +304,7 @@ function commitExpressionIfValid() {
     const formatted = formatGroupedNumberInput(
       evaluatedExpressionValue.value,
       effectiveAllowDecimals.value,
+      props.maxDecimals,
     )
     displayValue.value = formatted
     emit('update:modelValue', evaluatedExpressionValue.value)
@@ -302,7 +325,7 @@ function handleKeydown(event: KeyboardEvent) {
 
 function appendOperator(op: '+' | '-' | '×' | '÷') {
   if (!props.enableExpression) return
-  resetFeeState()
+  resetFeeState(true)
   const current = displayValue.value.trim()
   if (!current) return
 
@@ -313,9 +336,7 @@ function appendOperator(op: '+' | '-' | '×' | '÷') {
 
   displayValue.value = replaced
   const evaluated = evaluateAmountExpression(replaced, targetDecimals.value)
-  if (evaluated !== null) {
-    emit('update:modelValue', evaluated)
-  }
+  emit('update:modelValue', evaluated)
   inputElRef.value?.focus()
 }
 
@@ -371,9 +392,7 @@ function handleServiceFeeRateChange() {
     )
   }
   if (serviceFeeEnabled.value) {
-    if (parsedServiceFeePercent.value <= 0) {
-      serviceFeeEnabled.value = false
-    }
+    // 編輯期間暫時清空數字時不主動取消勾選，避免使用者改填新 % 數卻意外未套用
     recalculateWithCurrentFees()
   }
 }
@@ -386,9 +405,6 @@ function handleFxFeeRateChange() {
     )
   }
   if (fxFeeEnabled.value) {
-    if (parsedFxFeePercent.value <= 0) {
-      fxFeeEnabled.value = false
-    }
     recalculateWithCurrentFees()
   }
 }
@@ -593,7 +609,7 @@ const sizeClasses = computed(() => {
               :aria-label="t('project.serviceFeeShort')"
               class="w-14 bg-transparent text-right text-[11px] font-bold tabular-nums text-slate-900 focus:outline-none dark:text-white sm:w-11"
               @input="handleServiceFeeRateChange"
-              @keyup.enter.prevent="!serviceFeeEnabled && toggleServiceFee()"
+              @keydown.enter.prevent.stop="!serviceFeeEnabled && toggleServiceFee()"
             />
             <span class="ml-0.5 text-[10px] font-bold text-slate-400">%</span>
           </div>
@@ -643,7 +659,7 @@ const sizeClasses = computed(() => {
               :aria-label="t('project.fxFeeShort')"
               class="w-14 bg-transparent text-right text-[11px] font-bold tabular-nums text-slate-900 focus:outline-none dark:text-white sm:w-11"
               @input="handleFxFeeRateChange"
-              @keyup.enter.prevent="!fxFeeEnabled && toggleFxFee()"
+              @keydown.enter.prevent.stop="!fxFeeEnabled && toggleFxFee()"
             />
             <span class="ml-0.5 text-[10px] font-bold text-slate-400">%</span>
           </div>

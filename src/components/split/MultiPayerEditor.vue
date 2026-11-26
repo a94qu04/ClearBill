@@ -167,7 +167,7 @@ function fillRemainingToPayer(memberId: string) {
         :key="`payer-${member.id}`"
         class="flex items-center justify-between gap-2"
       >
-        <div class="flex min-w-[76px] items-center gap-1.5">
+        <div class="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
           <span
             class="h-2.5 w-2.5 shrink-0 rounded-full"
             :style="{ backgroundColor: member.avatarColor || '#10b981' }"
@@ -178,7 +178,7 @@ function fillRemainingToPayer(memberId: string) {
             {{ member.name }}
           </span>
         </div>
-        <div class="flex items-center gap-1.5">
+        <div class="flex shrink-0 items-center gap-1.5">
           <CurrencyAmountInput
             :model-value="multiPayerAmounts[member.id] ?? null"
             :currency="currency"

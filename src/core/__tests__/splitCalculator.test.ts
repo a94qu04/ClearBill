@@ -286,4 +286,37 @@ describe('splitCalculator - 雙模式拆帳計算機', () => {
       }),
     ).toThrowError(/ERR_PERCENT_TOTAL_INVALID/)
   })
+
+  it('weight 模式：極大與極小正權重皆正常比例分配不產生 NaN，超高金額會被安全擋下', () => {
+    const bigWeights = calculateSplit({
+      totalAmount: 100,
+      currency: 'USD',
+      mode: 'weight',
+      members: [
+        { memberId: 'a', weight: 1e6 },
+        { memberId: 'b', weight: 1e6 },
+      ],
+    })
+    expect(bigWeights.shares.map((s) => s.finalAmount)).toEqual([50, 50])
+
+    const tinyWeights = calculateSplit({
+      totalAmount: 100,
+      currency: 'TWD',
+      mode: 'weight',
+      members: [
+        { memberId: 'a', weight: 0.00001 },
+        { memberId: 'b', weight: 0.00001 },
+      ],
+    })
+    expect(tinyWeights.shares.map((s) => s.finalAmount)).toEqual([50, 50])
+
+    expect(() =>
+      calculateSplit({
+        totalAmount: 1e15,
+        currency: 'TWD',
+        mode: 'equal',
+        members: [{ memberId: 'a', customAmount: 0, isIncludedInRemainder: true }],
+      }),
+    ).toThrowError(/ERR_INVALID_TOTAL_AMOUNT/)
+  })
 })

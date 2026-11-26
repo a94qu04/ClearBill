@@ -581,6 +581,41 @@ describe('settleUpEngine - 多人債務最小化結算演算法', () => {
     }
     expect(result.balances.reduce((acc, b) => acc + b.netAmount, 0)).toBe(0)
   })
+
+  it('小額外幣多人墊付消費不蒸發且絕不產生負數已墊付金額', () => {
+    // 2,000 VND（匯率 0.0012 -> 2.4 TWD ≈ 2 TWD），5 人各分 400 VND，由 a 墊付 400、b 墊付 1,600
+    const txs: Transaction[] = [
+      createExpenseTx({
+        id: '50000000-0000-4000-8000-000000000001',
+        type: 'expense',
+        amount: 2000,
+        currency: 'VND',
+        exchangeRateToBase: 0.0012,
+        splitConfig: {
+          payerId: 'a',
+          payers: [
+            { memberId: 'a', amount: 400 },
+            { memberId: 'b', amount: 1600 },
+          ],
+          mode: 'equal',
+          shares: [
+            { memberId: 'a', finalAmount: 400 },
+            { memberId: 'b', finalAmount: 400 },
+            { memberId: 'c', finalAmount: 400 },
+            { memberId: 'd', finalAmount: 400 },
+            { memberId: 'e', finalAmount: 400 },
+          ],
+        },
+      }),
+    ]
+
+    const result = calculateSettleUp(txs, 'TWD', ['a', 'b', 'c', 'd', 'e'])
+    expect(result.totalProjectExpense).toBe(2)
+    expect(result.balances.every((b) => b.totalPaid >= 0)).toBe(true)
+    expect(result.balances.every((b) => b.totalExpense >= 0)).toBe(true)
+    expect(result.balances.reduce((acc, b) => acc + b.totalPaid, 0)).toBe(2)
+    expect(result.balances.reduce((acc, b) => acc + b.netAmount, 0)).toBe(0)
+  })
 })
 
 describe('applySettlementRatesToTransactions - 結算匯率套用與無效匯率防護', () => {

@@ -339,11 +339,19 @@ export function parseQuickIntake(
           ? activeProject.defaultPayerId
           : activeProject.members[0].id
 
+      const humanMembers = activeProject.members.filter((m) => !m.isPool)
+      const splitMembers =
+        humanMembers.length > 0 ? humanMembers : activeProject.members
+      const effectiveMode =
+        activeProject.defaultSplitMode === 'percentage'
+          ? 'equal'
+          : activeProject.defaultSplitMode
+
       const splitResult = calculateSplit({
         totalAmount: parsedAmount,
         currency,
-        mode: activeProject.defaultSplitMode,
-        members: activeProject.members.map((member) => ({
+        mode: effectiveMode,
+        members: splitMembers.map((member) => ({
           memberId: member.id,
           customAmount: 0,
           isIncludedInRemainder: true,
@@ -352,7 +360,7 @@ export function parseQuickIntake(
 
       defaultSplitConfig = {
         payerId,
-        mode: activeProject.defaultSplitMode,
+        mode: effectiveMode,
         shares: splitResult.shares.map((share) => ({
           memberId: share.memberId,
           finalAmount: share.finalAmount,

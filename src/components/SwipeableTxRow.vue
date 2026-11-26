@@ -97,7 +97,7 @@ function clearActionTimers() {
 }
 
 function onPointerDown(event: PointerEvent) {
-  if (actionPhase.value !== 'idle') return
+  if (isDragging.value || actionPhase.value !== 'idle') return
   // 僅於觸控／手寫筆啟用滑動手勢，桌機滑鼠保留自由選字複製與展開操作按鈕
   if (event.pointerType === 'mouse') return
   // 避開 iOS / Android 螢幕最左緣系統返回手勢熱區
@@ -114,7 +114,13 @@ function onPointerDown(event: PointerEvent) {
 }
 
 function onPointerMove(event: PointerEvent) {
-  if (!isDragging.value || actionPhase.value !== 'idle') return
+  if (
+    !isDragging.value ||
+    actionPhase.value !== 'idle' ||
+    event.pointerId !== activePointerId
+  ) {
+    return
+  }
   const dx = event.clientX - startX
   const dy = event.clientY - startY
 
@@ -150,10 +156,7 @@ function onClickCapture(event: MouseEvent) {
   }
 }
 
-function finishDrag() {
-  if (!isDragging.value) return
-  isDragging.value = false
-
+function releaseActivePointerCapture() {
   if (captureEl && activePointerId !== null) {
     try {
       if (captureEl.hasPointerCapture(activePointerId)) {
@@ -163,11 +166,39 @@ function finishDrag() {
       // 忽略釋放例外
     }
   }
+}
+
+/** 系統中斷手勢（來電、下拉通知欄、邊緣手勢）一律強制歸零復位，絕不誤觸刪除或修改 */
+function cancelDrag(event: PointerEvent) {
+  if (!isDragging.value || event.pointerId !== activePointerId) return
+  isDragging.value = false
+  releaseActivePointerCapture()
+  directionLocked = null
+  activePointerId = null
+  captureEl = null
+  offsetX.value = 0
+  if (suppressNextClick) {
+    setTimeout(() => {
+      suppressNextClick = false
+    }, 50)
+  }
+}
+
+function finishDrag(event: PointerEvent) {
+  if (!isDragging.value || event.pointerId !== activePointerId) return
+  isDragging.value = false
+  releaseActivePointerCapture()
 
   const triggered = pendingAction.value
   directionLocked = null
   activePointerId = null
   captureEl = null
+
+  if (suppressNextClick) {
+    setTimeout(() => {
+      suppressNextClick = false
+    }, 50)
+  }
 
   clearActionTimers()
 
@@ -220,7 +251,7 @@ onBeforeUnmount(() => {
       @pointerdown="onPointerDown"
       @pointermove="onPointerMove"
       @pointerup="finishDrag"
-      @pointercancel="finishDrag"
+      @pointercancel="cancelDrag"
     >
       <!-- 右滑左側背景：天藍修改 -->
       <div

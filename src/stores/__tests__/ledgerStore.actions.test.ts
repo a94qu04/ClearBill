@@ -166,7 +166,7 @@ describe('ledgerStore - 核心業務動作整合測試', () => {
         fromMemberId: m2.id,
         toMemberId: m1.id,
         amount: 500000,
-        currency: 'VND',
+        currency: 'ARS',
         date: '2026-11-26',
       }),
     ).rejects.toThrow('ERR_EXCHANGE_RATE_REQUIRED')

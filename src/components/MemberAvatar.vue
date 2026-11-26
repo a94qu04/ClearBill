@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { getFirstGrapheme } from '@/core/ledgerHelpers'
 
 interface Props {
   name: string
@@ -33,10 +34,7 @@ const sizeClasses = computed(() => {
   }
 })
 
-const initial = computed(() => {
-  const trimmed = props.name.trim()
-  return trimmed ? trimmed.slice(0, 1).toUpperCase() : '?'
-})
+const initial = computed(() => getFirstGrapheme(props.name, '?'))
 </script>
 
 <template>

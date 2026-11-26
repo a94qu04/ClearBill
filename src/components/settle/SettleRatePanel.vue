@@ -157,7 +157,6 @@ watch(
       ) ?? {},
     ),
     foreignCurrenciesInProject.value.join(','),
-    store.liveRatesFetchedAt,
   ],
   () => {
     syncSettleRateDrafts()

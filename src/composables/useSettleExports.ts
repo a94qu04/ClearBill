@@ -108,9 +108,15 @@ export function useSettleExports(options: UseSettleExportsOptions) {
     )
   }
 
+  const isSharingSummary = ref(false)
+  const isExportingExcel = ref(false)
+
   async function shareSettlementText(includeDetails: boolean): Promise<void> {
+    if (isSharingSummary.value) return
+    isSharingSummary.value = true
     options.onCloseShareSheet?.()
-    const project = options.project.value
+    try {
+      const project = options.project.value
     const summaryText = buildProjectSettlementShareText(
       project,
       options.effectiveSettleUp.value,
@@ -165,11 +171,17 @@ export function useSettleExports(options: UseSettleExportsOptions) {
     } else if (result === 'failed') {
       options.onToast(t('share.failedToast'))
     }
+    } finally {
+      isSharingSummary.value = false
+    }
   }
 
   async function exportExcel(): Promise<void> {
+    if (isExportingExcel.value) return
+    isExportingExcel.value = true
     options.onCloseShareSheet?.()
-    const project = options.project.value
+    try {
+      const project = options.project.value
     const expenses = options.expenses.value
     const settlements = options.settlements.value
     const { buildProjectExcelBytes } = await import('@/core/excelExporter')
@@ -237,6 +249,9 @@ export function useSettleExports(options: UseSettleExportsOptions) {
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     )
     options.onToast(t('export.excelExportedToast'))
+    } finally {
+      isExportingExcel.value = false
+    }
   }
 
   async function exportLongImage(includeDetails: boolean): Promise<void> {

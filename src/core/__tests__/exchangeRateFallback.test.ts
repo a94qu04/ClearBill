@@ -6,15 +6,15 @@ import {
 } from '@/core/settleUpEngine'
 import type { Transaction } from '@/schemas/ledgerSchema'
 
-function createVndTx(): Transaction {
+function createUnknownCurrencyTx(): Transaction {
   return {
     id: '33333333-3333-4333-8333-333333333301',
     schemaVersion: 1,
     vaultLevel: 'normal',
     type: 'expense',
     amount: 100000,
-    currency: 'VND',
-    exchangeRateToBase: 0.0013,
+    currency: 'ARS',
+    exchangeRateToBase: 0.03,
     categoryKey: 'cat_food',
     date: '2026-11-26',
     time: '12:00',
@@ -31,10 +31,10 @@ function createVndTx(): Transaction {
 }
 
 describe('exchangeRateFallback - 未知幣別不得靜默回退 1:1', () => {
-  it('同幣別（包含離線表未收錄幣別如 VND→VND）回傳 1', () => {
+  it('同幣別（包含離線表未收錄幣別如 ARS→ARS）回傳 1', () => {
     expect(getSuggestedExchangeRate('TWD', 'TWD')).toBe(1)
-    expect(getSuggestedExchangeRate('VND', 'VND')).toBe(1)
-    expect(getSuggestedExchangeRate(' vnd ', 'VND')).toBe(1)
+    expect(getSuggestedExchangeRate('ARS', 'ARS')).toBe(1)
+    expect(getSuggestedExchangeRate(' ars ', 'ARS')).toBe(1)
   })
 
   it('已知常用幣別對回傳正確離線估算匯率', () => {
@@ -43,28 +43,28 @@ describe('exchangeRateFallback - 未知幣別不得靜默回退 1:1', () => {
     expect(getSuggestedExchangeRate('TWD', 'JPY')).toBe(Number((1 / 0.21).toFixed(4)))
   })
 
-  it('未知幣別對（如 VND→TWD、TWD→VND、空字串）必須回傳 null，絕不可靜默回傳 1', () => {
-    expect(getSuggestedExchangeRate('VND', 'TWD')).toBeNull()
-    expect(getSuggestedExchangeRate('TWD', 'VND')).toBeNull()
-    expect(getSuggestedExchangeRate('MYR', 'TWD')).toBeNull()
+  it('未知幣別對（如 ARS→TWD、TWD→ARS、CLP→TWD、空字串）必須回傳 null，絕不可靜默回傳 1', () => {
+    expect(getSuggestedExchangeRate('ARS', 'TWD')).toBeNull()
+    expect(getSuggestedExchangeRate('TWD', 'ARS')).toBeNull()
+    expect(getSuggestedExchangeRate('CLP', 'TWD')).toBeNull()
     expect(getSuggestedExchangeRate('', 'TWD')).toBeNull()
     expect(getSuggestedExchangeRate('TWD', '')).toBeNull()
   })
 
-  it('VND→TWD 無快取與無記憶匯率時，結算覆寫表不得填入 1:1，應保留交易原記帳匯率', () => {
-    const vndTx = createVndTx()
+  it('ARS→TWD 無快取與無記憶匯率時，結算覆寫表不得填入 1:1，應保留交易原記帳匯率', () => {
+    const arsTx = createUnknownCurrencyTx()
 
     // 模擬 Store 在 live / custom 模式下組裝 overrideRatesByCurrency：
-    // 當 getEffectiveExchangeRate('VND', 'TWD') 回傳 null 時，不得將 1 寫入覆寫表
-    const suggested = getSuggestedExchangeRate('VND', 'TWD')
+    // 當 getEffectiveExchangeRate('ARS', 'TWD') 回傳 null 時，不得將 1 寫入覆寫表
+    const suggested = getSuggestedExchangeRate('ARS', 'TWD')
     const overrideRatesByCurrency: Record<string, number> = {}
     if (suggested !== null && suggested > 0) {
-      overrideRatesByCurrency.VND = suggested
+      overrideRatesByCurrency.ARS = suggested
     }
-    expect(overrideRatesByCurrency.VND).toBeUndefined()
+    expect(overrideRatesByCurrency.ARS).toBeUndefined()
 
     const effective = applySettlementRatesToTransactions(
-      [vndTx],
+      [arsTx],
       'TWD',
       Object.keys(overrideRatesByCurrency).length > 0
         ? overrideRatesByCurrency
@@ -72,9 +72,9 @@ describe('exchangeRateFallback - 未知幣別不得靜默回退 1:1', () => {
       'TWD',
       1,
     )
-    expect(effective[0].exchangeRateToBase).toBe(0.0013)
+    expect(effective[0].exchangeRateToBase).toBe(0.03)
 
-    const settle = calculateSettleUp([vndTx], 'TWD', ['alice', 'bob'], {
+    const settle = calculateSettleUp([arsTx], 'TWD', ['alice', 'bob'], {
       ...(Object.keys(overrideRatesByCurrency).length > 0
         ? { overrideRatesByCurrency }
         : {}),
@@ -82,13 +82,13 @@ describe('exchangeRateFallback - 未知幣別不得靜默回退 1:1', () => {
       baseToSettlementRate: 1,
     })
 
-    // 100,000 VND * 0.0013 = 130 TWD，絕不可因靜默 1:1 變成 100,000 TWD
-    expect(settle.totalProjectExpense).toBe(130)
+    // 100,000 ARS * 0.03 = 3,000 TWD，絕不可因靜默 1:1 變成 100,000 TWD
+    expect(settle.totalProjectExpense).toBe(3000)
     expect(settle.transfers).toEqual([
       {
         fromMemberId: 'bob',
         toMemberId: 'alice',
-        amount: 65,
+        amount: 1500,
         currency: 'TWD',
       },
     ])

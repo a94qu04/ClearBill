@@ -72,10 +72,16 @@ export function dispatchHashRoute(
   }
 
   const activeProject = params.getActiveProject()
-  const parsed = parseQuickIntake(href, {
-    activeProject,
-    defaultCurrency: params.getDefaultCurrency(),
-  })
+  let parsed: ParsedQuickIntakeResult
+  try {
+    parsed = parseQuickIntake(href, {
+      activeProject,
+      defaultCurrency: params.getDefaultCurrency(),
+    })
+  } catch {
+    clearHash()
+    return 'quick_add_empty'
+  }
   clearHash()
 
   if (parsed.projectId && activeProject) {
