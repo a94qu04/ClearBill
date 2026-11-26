@@ -7,6 +7,42 @@ import {
   type UserProfile,
 } from '@/schemas/ledgerSchema'
 import { migrateLedgerBackup } from '@/core/migrationEngine'
+import {
+  resolvePreservedLocalDefaultPayerId,
+  sanitizeProjectForCloud,
+} from '@/core/realtimeSyncEngine'
+
+export interface CreateLedgerBackupOptions {
+  /** 是否保留裝置私有欄位（syncMeta、isArchived、defaultPayerId）；預設 false，避免外洩 accessKey / myMemberId 或跨裝置互相覆寫 */
+  includeDevicePrivateFields?: boolean
+}
+
+/**
+ * 將外部匯入或雲端備份之專案與本地專案合併時，嚴格隔離裝置私有欄位（syncMeta、isArchived、defaultPayerId）：
+ * - 外部專案先剔除其 syncMeta、isArchived 與 defaultPayerId，防止匯入他機／舊版備份時外洩或繼承他人 accessKey、myMemberId、封存狀態與預設墊付人偏好
+ * - 若本地已存在同 ID 專案，保留本機原本的 syncMeta、isArchived 與 defaultPayerId（若原成員已被遠端移除則安全回退），不因遠端 updatedAt 較新而被覆寫或清空
+ */
+function mergeIncomingProjectPreservingPrivateFields(
+  existing: Project | undefined,
+  incoming: Project,
+): Project {
+  const sanitizedIncoming: Project = sanitizeProjectForCloud(incoming)
+  if (!existing) {
+    return sanitizedIncoming
+  }
+  const resolvedDefaultPayerId = resolvePreservedLocalDefaultPayerId(
+    existing,
+    sanitizedIncoming.members,
+  )
+  return {
+    ...sanitizedIncoming,
+    ...(existing.isArchived !== undefined ? { isArchived: existing.isArchived } : {}),
+    ...(resolvedDefaultPayerId !== undefined
+      ? { defaultPayerId: resolvedDefaultPayerId }
+      : {}),
+    ...(existing.syncMeta ? { syncMeta: { ...existing.syncMeta } } : {}),
+  }
+}
 
 export interface LedgerMergeStats {
   projectsAdded: number
@@ -18,9 +54,20 @@ export interface LedgerMergeStats {
   categoriesAdded: number
 }
 
+export interface MergeOutboxEntry {
+  projectId: string
+  entityType: 'project' | 'transaction'
+  entityId: string
+  updatedAt: number
+}
+
 export interface LedgerMergeResult {
   projects: Project[]
   transactions: Transaction[]
+  /** 本次合併實際新增或更新之專案 ID（已去重） */
+  changedProjectIds: string[]
+  /** 本次合併實際新增或更新之交易 ID（已去重） */
+  changedTransactionIds: string[]
   categories: ManagedCategoryBackup[]
   userProfile?: UserProfile
   userProfileUpdated: boolean
@@ -57,14 +104,23 @@ export function mergeLedgerData(
   let projectsAdded = 0
   let projectsUpdated = 0
   let projectsSkipped = 0
+  const changedProjectIdSet = new Set<string>()
 
   for (const incomingProj of incomingBackup.projects) {
     const existing = projectMap.get(incomingProj.id)
     if (!existing) {
-      projectMap.set(incomingProj.id, incomingProj)
+      projectMap.set(
+        incomingProj.id,
+        mergeIncomingProjectPreservingPrivateFields(undefined, incomingProj),
+      )
+      changedProjectIdSet.add(incomingProj.id)
       projectsAdded += 1
     } else if (incomingProj.updatedAt > existing.updatedAt) {
-      projectMap.set(incomingProj.id, incomingProj)
+      projectMap.set(
+        incomingProj.id,
+        mergeIncomingProjectPreservingPrivateFields(existing, incomingProj),
+      )
+      changedProjectIdSet.add(incomingProj.id)
       projectsUpdated += 1
     } else {
       projectsSkipped += 1
@@ -79,14 +135,17 @@ export function mergeLedgerData(
   let transactionsAdded = 0
   let transactionsUpdated = 0
   let transactionsSkipped = 0
+  const changedTransactionIdSet = new Set<string>()
 
   for (const incomingTx of incomingBackup.transactions) {
     const existing = txMap.get(incomingTx.id)
     if (!existing) {
       txMap.set(incomingTx.id, incomingTx)
+      changedTransactionIdSet.add(incomingTx.id)
       transactionsAdded += 1
     } else if (incomingTx.updatedAt > existing.updatedAt) {
       txMap.set(incomingTx.id, incomingTx)
+      changedTransactionIdSet.add(incomingTx.id)
       transactionsUpdated += 1
     } else {
       transactionsSkipped += 1
@@ -180,6 +239,8 @@ export function mergeLedgerData(
   return {
     projects: Array.from(projectMap.values()),
     transactions: Array.from(txMap.values()),
+    changedProjectIds: Array.from(changedProjectIdSet),
+    changedTransactionIds: Array.from(changedTransactionIdSet),
     categories: Array.from(categoryMap.values()),
     userProfile: mergedUserProfile,
     userProfileUpdated,
@@ -199,7 +260,60 @@ export function mergeLedgerData(
 }
 
 /**
+ * 從備份／Google Drive 合併結果中，篩選出屬於「啟用中 Firestore 即時共享專案」的變更項目，
+ * 供呼叫端補排進離線同步 Outbox，避免匯入或跨裝置合併後與其他協作成員產生資料分歧。
+ */
+export function collectRealtimeOutboxEntriesFromMerge(
+  mergeResult: Pick<
+    LedgerMergeResult,
+    'projects' | 'transactions' | 'changedProjectIds' | 'changedTransactionIds'
+  >,
+): MergeOutboxEntry[] {
+  const syncedProjectsById = new Map<string, Project>()
+  for (const proj of mergeResult.projects) {
+    if (
+      !proj.isDeleted &&
+      proj.syncMeta?.mode === 'firestore' &&
+      Boolean(proj.syncMeta.shareId)
+    ) {
+      syncedProjectsById.set(proj.id, proj)
+    }
+  }
+  if (syncedProjectsById.size === 0) return []
+
+  const entries: MergeOutboxEntry[] = []
+
+  for (const projectId of mergeResult.changedProjectIds) {
+    const proj = syncedProjectsById.get(projectId)
+    if (!proj) continue
+    entries.push({
+      projectId: proj.id,
+      entityType: 'project',
+      entityId: proj.id,
+      updatedAt: proj.updatedAt,
+    })
+  }
+
+  if (mergeResult.changedTransactionIds.length > 0) {
+    const txById = new Map(mergeResult.transactions.map((tx) => [tx.id, tx]))
+    for (const txId of mergeResult.changedTransactionIds) {
+      const tx = txById.get(txId)
+      if (!tx || !tx.projectId || !syncedProjectsById.has(tx.projectId)) continue
+      entries.push({
+        projectId: tx.projectId,
+        entityType: 'transaction',
+        entityId: tx.id,
+        updatedAt: tx.updatedAt,
+      })
+    }
+  }
+
+  return entries
+}
+
+/**
  * 建立符合 schemaVersion: 1 規格之標準備份物件
+ * 預設剔除裝置私有欄位（syncMeta、isArchived），避免外洩共享金鑰（accessKey）或於跨裝置同步時互相覆寫
  */
 export function createLedgerBackupPayload(
   projects: Project[],
@@ -209,11 +323,16 @@ export function createLedgerBackupPayload(
   userProfile?: UserProfile,
   projectOrder?: string[],
   projectOrderUpdatedAt?: number,
+  options?: CreateLedgerBackupOptions,
 ): LedgerBackup {
+  const exportProjects = options?.includeDevicePrivateFields
+    ? projects
+    : projects.map((proj) => sanitizeProjectForCloud(proj))
+
   return migrateLedgerBackup({
     schemaVersion: CURRENT_SCHEMA_VERSION,
     exportedAt,
-    projects,
+    projects: exportProjects,
     transactions,
     ...(categories && categories.length > 0 ? { categories } : {}),
     ...(userProfile ? { userProfile } : {}),

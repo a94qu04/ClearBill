@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { createI18n } from 'vue-i18n'
 import {
+  collectRealtimeOutboxEntriesFromMerge,
   createLedgerBackupPayload,
+  createSingleProjectBackupPayload,
+  mergeLedgerData,
   parseAndMergeLedgerBackup,
 } from '@/core/backupMergeEngine'
 import {
@@ -292,6 +295,332 @@ describe('backupMergeEngine - JSON 備份匯出與 UUID + updatedAt 合併', () 
       ),
     ).toThrowError(/ERR_UNSUPPORTED_SCHEMA_VERSION/)
   })
+
+  it('匯出完整與單專案備份時，預設剔除 syncMeta（含 accessKey/myMemberId）與 isArchived', () => {
+    const sharedArchivedProject: Project = {
+      ...projectA,
+      isArchived: true,
+      syncMeta: {
+        mode: 'firestore',
+        shareId: 'share_12345678',
+        accessKey: 'secret_access_key_1234567890',
+        role: 'owner',
+        myMemberId: 'me',
+        syncReceiptImages: true,
+        lastSyncedAt: 1700000005000,
+      },
+    }
+
+    const fullBackup = createLedgerBackupPayload(
+      [sharedArchivedProject],
+      [txLocalOld],
+    )
+    expect(fullBackup.projects[0].syncMeta).toBeUndefined()
+    expect(fullBackup.projects[0].isArchived).toBeUndefined()
+    expect(fullBackup.projects[0].defaultPayerId).toBeUndefined()
+    expect(JSON.stringify(fullBackup)).not.toContain('secret_access_key_1234567890')
+
+    const singleBackup = createSingleProjectBackupPayload(
+      sharedArchivedProject,
+      [txLocalOld],
+    )
+    expect(singleBackup.projects[0].syncMeta).toBeUndefined()
+    expect(singleBackup.projects[0].isArchived).toBeUndefined()
+    expect(singleBackup.projects[0].defaultPayerId).toBeUndefined()
+    expect(JSON.stringify(singleBackup)).not.toContain('secret_access_key_1234567890')
+
+    // 原始專案物件不被就地修改
+    expect(sharedArchivedProject.syncMeta?.accessKey).toBe(
+      'secret_access_key_1234567890',
+    )
+    expect(sharedArchivedProject.isArchived).toBe(true)
+    expect(sharedArchivedProject.defaultPayerId).toBe('me')
+  })
+
+  it('合併備份時保留本機專案的 syncMeta、isArchived 與 defaultPayerId，並剔除外部夾帶的裝置私有欄位', () => {
+    const localSyncMeta = {
+      mode: 'firestore' as const,
+      shareId: 'local_share_0001',
+      accessKey: 'local_secret_access_key_0001',
+      role: 'owner' as const,
+      myMemberId: 'me',
+      syncReceiptImages: true,
+      lastSyncedAt: 1700000005000,
+    }
+    const localProjectShared: Project = {
+      ...projectA,
+      members: [
+        ...projectA.members,
+        { id: 'pool_1', name: '公費袋', avatarColor: '#f59e0b', isPool: true },
+      ],
+      defaultPayerId: 'pool_1',
+      isArchived: true,
+      syncMeta: localSyncMeta,
+      updatedAt: 1700000001000,
+    }
+    const localProjectUnshared: Project = {
+      ...projectA,
+      id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      name: '2026 大阪行',
+      defaultPayerId: 'me',
+      updatedAt: 1700000001000,
+    }
+
+    // 模擬舊版備份或他機 Drive 同步：專案更新時間較新，且夾帶他機 syncMeta / isArchived / defaultPayerId
+    const incomingBackup = createLedgerBackupPayload(
+      [
+        // 情境 A：本機有 syncMeta、isArchived 與公費優先 defaultPayerId，遠端夾帶他機不同的私有欄位
+        {
+          ...projectA,
+          members: [
+            ...projectA.members,
+            { id: 'pool_1', name: '公費袋', avatarColor: '#f59e0b', isPool: true },
+          ],
+          name: '2026 東京自由行（遠端改名）',
+          defaultPayerId: 'lin',
+          isArchived: false,
+          syncMeta: {
+            mode: 'firestore',
+            shareId: 'remote_share_9999',
+            accessKey: 'remote_secret_access_key_9999',
+            role: 'editor',
+            myMemberId: 'lin',
+          },
+          updatedAt: 1700000010000,
+        },
+        // 情境 B：本機無 syncMeta & 無 isArchived，遠端舊版夾帶他機 syncMeta、isArchived: true 與 defaultPayerId: 'lin'
+        {
+          ...localProjectUnshared,
+          name: '2026 大阪行（遠端改名）',
+          defaultPayerId: 'lin',
+          isArchived: true,
+          syncMeta: {
+            mode: 'firestore',
+            shareId: 'other_device_share',
+            accessKey: 'other_device_secret_key_1234',
+            role: 'editor',
+            myMemberId: 'lin',
+          },
+          updatedAt: 1700000010000,
+        },
+        // 情境 C：本機不存在的新專案，外部舊版備份夾帶他人 syncMeta、isArchived: true 與 defaultPayerId: 'lin'
+        {
+          ...projectA,
+          id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+          name: '朋友分享的北海道專案',
+          defaultPayerId: 'lin',
+          isArchived: true,
+          syncMeta: {
+            mode: 'firestore',
+            shareId: 'friend_share_0001',
+            accessKey: 'friend_secret_access_key_0001',
+            role: 'owner',
+            myMemberId: 'friend_1',
+          },
+          updatedAt: 1700000010000,
+        },
+      ],
+      [],
+      1700000010000,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { includeDevicePrivateFields: true },
+    )
+
+    const merged = mergeLedgerData(
+      {
+        projects: [localProjectShared, localProjectUnshared],
+        transactions: [],
+      },
+      incomingBackup,
+    )
+
+    expect(merged.stats.projectsUpdated).toBe(2)
+    expect(merged.stats.projectsAdded).toBe(1)
+
+    // 情境 A：共享欄位已更新，本機 syncMeta、isArchived 與公費優先 defaultPayerId 完整保留
+    const mergedA = merged.projects.find((p) => p.id === localProjectShared.id)
+    expect(mergedA?.name).toBe('2026 東京自由行（遠端改名）')
+    expect(mergedA?.isArchived).toBe(true)
+    expect(mergedA?.defaultPayerId).toBe('pool_1')
+    expect(mergedA?.syncMeta).toEqual(localSyncMeta)
+
+    // 情境 B：本機原本未共享未封存，不得被遠端塞入他機 syncMeta / isArchived / defaultPayerId
+    const mergedB = merged.projects.find((p) => p.id === localProjectUnshared.id)
+    expect(mergedB?.name).toBe('2026 大阪行（遠端改名）')
+    expect(mergedB?.syncMeta).toBeUndefined()
+    expect(mergedB?.isArchived).toBeUndefined()
+    expect(mergedB?.defaultPayerId).toBe('me')
+
+    // 情境 C：新增專案時剔除外部夾帶的 syncMeta、isArchived 與 defaultPayerId
+    const mergedC = merged.projects.find(
+      (p) => p.id === 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+    )
+    expect(mergedC?.name).toBe('朋友分享的北海道專案')
+    expect(mergedC?.syncMeta).toBeUndefined()
+    expect(mergedC?.isArchived).toBeUndefined()
+    expect(mergedC?.defaultPayerId).toBeUndefined()
+  })
+
+  it('匯入／Drive 合併後，僅為即時共享專案中實際新增或更新的項目產出 Firestore Outbox 補排清單', () => {
+    const sharedProjectId = projectA.id
+    const localOnlyProjectId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const deletedSharedProjectId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+    const newExternalProjectId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+
+    const sharedProject: Project = {
+      ...projectA,
+      updatedAt: 1700000001000,
+      syncMeta: {
+        mode: 'firestore',
+        shareId: 'share_realtime_01',
+        accessKey: 'secret_key_realtime_01',
+        role: 'owner',
+        myMemberId: 'me',
+      },
+    }
+    const localOnlyProject: Project = {
+      ...projectA,
+      id: localOnlyProjectId,
+      name: '僅本機專案',
+      updatedAt: 1700000001000,
+    }
+    const deletedSharedProject: Project = {
+      ...projectA,
+      id: deletedSharedProjectId,
+      name: '已刪除共享專案',
+      isDeleted: true,
+      updatedAt: 1700000001000,
+      syncMeta: {
+        mode: 'firestore',
+        shareId: 'share_deleted_01',
+        accessKey: 'secret_key_deleted_01',
+        role: 'owner',
+        myMemberId: 'me',
+      },
+    }
+
+    const txSharedSkipped: Transaction = {
+      ...txLocalOld,
+      id: '11111111-1111-4111-8111-111111111111',
+      projectId: sharedProjectId,
+      updatedAt: 1700000005000,
+    }
+    const txSharedUpdatedLocal: Transaction = {
+      ...txLocalOld,
+      id: '22222222-2222-4222-8222-222222222222',
+      projectId: sharedProjectId,
+      updatedAt: 1700000002000,
+    }
+
+    const incomingBackup = createLedgerBackupPayload(
+      [
+        // 共享專案更新 -> 應補排 project
+        { ...sharedProject, name: '2026 東京自由行（合併更新）', updatedAt: 1700000010000 },
+        // 非共享專案更新 -> 不補排
+        { ...localOnlyProject, name: '僅本機專案（更新）', updatedAt: 1700000010000 },
+        // 已軟刪除之共享專案更新 -> 不補排
+        { ...deletedSharedProject, name: '已刪除共享專案（更新）', updatedAt: 1700000010000 },
+        // 外部新增專案（即便原始帶 syncMeta，合併時已被剔除） -> 不補排
+        {
+          ...projectA,
+          id: newExternalProjectId,
+          name: '外部新增專案',
+          updatedAt: 1700000010000,
+          syncMeta: {
+            mode: 'firestore',
+            shareId: 'external_share',
+            accessKey: 'external_secret_key_1234',
+            role: 'owner',
+          },
+        },
+      ],
+      [
+        // 共享專案交易較舊 -> skipped，不補排
+        { ...txSharedSkipped, amount: 1800, updatedAt: 1700000003000 },
+        // 共享專案既有交易更新（且含同 ID 兩筆遞增版本 -> 去重並採用最新 updatedAt）
+        { ...txSharedUpdatedLocal, amount: 2400, updatedAt: 1700000008000 },
+        { ...txSharedUpdatedLocal, amount: 2600, updatedAt: 1700000009000 },
+        // 共享專案新增交易 -> 應補排
+        {
+          ...txLocalOld,
+          id: '33333333-3333-4333-8333-333333333333',
+          projectId: sharedProjectId,
+          amount: 3200,
+          updatedAt: 1700000011000,
+        },
+        // 共享專案新增軟刪除交易 -> 應補排（同步刪除狀態）
+        {
+          ...txLocalOld,
+          id: '44444444-4444-4444-8444-444444444444',
+          projectId: sharedProjectId,
+          isDeleted: true,
+          updatedAt: 1700000012000,
+        },
+        // 非共享專案新增交易 -> 不補排
+        {
+          ...txLocalOld,
+          id: '55555555-5555-4555-8555-555555555555',
+          projectId: localOnlyProjectId,
+          amount: 500,
+          updatedAt: 1700000011000,
+        },
+        // 已軟刪除共享專案新增交易 -> 不補排
+        {
+          ...txLocalOld,
+          id: '66666666-6666-4666-8666-666666666666',
+          projectId: deletedSharedProjectId,
+          amount: 700,
+          updatedAt: 1700000011000,
+        },
+      ],
+      1700000012000,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { includeDevicePrivateFields: true },
+    )
+
+    const merged = mergeLedgerData(
+      {
+        projects: [sharedProject, localOnlyProject, deletedSharedProject],
+        transactions: [txSharedSkipped, txSharedUpdatedLocal],
+      },
+      incomingBackup,
+    )
+
+    const outboxEntries = collectRealtimeOutboxEntriesFromMerge(merged)
+
+    expect(outboxEntries).toEqual([
+      {
+        projectId: sharedProjectId,
+        entityType: 'project',
+        entityId: sharedProjectId,
+        updatedAt: 1700000010000,
+      },
+      {
+        projectId: sharedProjectId,
+        entityType: 'transaction',
+        entityId: '22222222-2222-4222-8222-222222222222',
+        updatedAt: 1700000009000,
+      },
+      {
+        projectId: sharedProjectId,
+        entityType: 'transaction',
+        entityId: '33333333-3333-4333-8333-333333333333',
+        updatedAt: 1700000011000,
+      },
+      {
+        projectId: sharedProjectId,
+        entityType: 'transaction',
+        entityId: '44444444-4444-4444-8444-444444444444',
+        updatedAt: 1700000012000,
+      },
+    ])
+  })
 })
 
 describe('shareFormatter - 一鍵分享結算摘要文字產生器', () => {
@@ -492,5 +821,64 @@ describe('i18n locales - 全站三語系鍵值對齊與 vue-i18n 實機編譯健
         expect(rendered.length).toBeGreaterThan(0)
       }
     }
+  })
+})
+
+describe('mergeLedgerData - 直接邊界測試', () => {
+  it('相同 UUID 且 updatedAt 相等時應保留本機並標記 skipped，不計入 changedIds', () => {
+    const incoming = createLedgerBackupPayload([projectA], [txLocalOld])
+    const res = mergeLedgerData(
+      { projects: [projectA], transactions: [txLocalOld] },
+      incoming,
+    )
+    expect(res.stats.projectsSkipped).toBe(1)
+    expect(res.stats.projectsUpdated).toBe(0)
+    expect(res.stats.transactionsSkipped).toBe(1)
+    expect(res.stats.transactionsUpdated).toBe(0)
+    expect(res.changedProjectIds).toEqual([])
+    expect(res.changedTransactionIds).toEqual([])
+  })
+
+  it('空的 incoming 備份不影響本機既有專案、交易與分類，且自訂分類去重合併正確', () => {
+    const localCats = [
+      { key: 'cat_food', isBuiltin: true, color: '#ef4444' },
+      { key: 'cat_custom_1', customLabel: '滑雪', isBuiltin: false, color: '#0ea5e9' },
+    ]
+    const emptyIncoming = createLedgerBackupPayload(
+      [],
+      [],
+      1700000099999,
+      [
+        { key: 'cat_custom_1', customLabel: '不應覆蓋本機', isBuiltin: false, color: '#000000' },
+        { key: 'cat_custom_2', customLabel: '溫泉', isBuiltin: false, color: '#10b981' },
+      ],
+      {
+        displayName: '新版大明',
+        avatarColor: '#2563eb',
+        updatedAt: 1700000099999,
+      },
+    )
+
+    const res = mergeLedgerData(
+      {
+        projects: [projectA],
+        transactions: [txLocalOld],
+        categories: localCats,
+        userProfile: {
+          displayName: '舊版大明',
+          avatarColor: '#059669',
+          updatedAt: 1700000001000,
+        },
+      },
+      emptyIncoming,
+    )
+
+    expect(res.projects).toHaveLength(1)
+    expect(res.transactions).toHaveLength(1)
+    expect(res.stats.categoriesAdded).toBe(1)
+    expect(res.categories.find((c) => c.key === 'cat_custom_1')?.customLabel).toBe('滑雪')
+    expect(res.categories.find((c) => c.key === 'cat_custom_2')?.customLabel).toBe('溫泉')
+    expect(res.userProfileUpdated).toBe(true)
+    expect(res.userProfile?.displayName).toBe('新版大明')
   })
 })

@@ -175,8 +175,9 @@ function extractLinks(sourceUrl: string | undefined, rawText: string): string[] 
 
 function extractTime(rawText: string, explicitTime?: string): string {
   const timeRegex = /\b([01]\d|2[0-3]):([0-5]\d)\b/
-  if (explicitTime && timeRegex.test(explicitTime.trim())) {
-    return explicitTime.trim().match(timeRegex)![0]
+  const explicitMatch = explicitTime?.trim().match(timeRegex)
+  if (explicitMatch) {
+    return explicitMatch[0]
   }
   const match = rawText.match(timeRegex)
   if (match) {
@@ -199,8 +200,9 @@ function extractDate(
   referenceDate: Date,
 ): string {
   const isoRegex = /\b(\d{4})[-/](\d{2})[-/](\d{2})\b/
-  if (explicitDate && isoRegex.test(explicitDate.trim())) {
-    const [, y, m, d] = explicitDate.trim().match(isoRegex)!
+  const explicitMatch = explicitDate?.trim().match(isoRegex)
+  if (explicitMatch) {
+    const [, y, m, d] = explicitMatch
     return `${y}-${m}-${d}`
   }
 

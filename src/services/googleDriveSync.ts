@@ -1,4 +1,9 @@
 import type { LedgerBackup } from '@/schemas/ledgerSchema'
+import {
+  parseGoogleDriveAccountInfoJson,
+  parseGoogleSessionTokenJson,
+  type GoogleDriveAccountInfo,
+} from '@/schemas/userPrefsSchema'
 import type { LedgerMergeStats } from '@/core/backupMergeEngine'
 
 const GOOGLE_DRIVE_CLIENT_ID_KEY = 'clearbill_google_client_id'
@@ -26,10 +31,7 @@ export type GoogleDriveSyncErrorCode =
   | 'ERR_DRIVE_UPLOAD_FAILED'
   | 'ERR_DRIVE_DOWNLOAD_FAILED'
 
-export interface GoogleDriveAccountInfo {
-  email: string
-  displayName: string
-}
+export type { GoogleDriveAccountInfo }
 
 interface GoogleTokenResponse {
   access_token?: string
@@ -112,13 +114,8 @@ function restoreSessionTokenIfValid(): void {
       window.localStorage.getItem(GOOGLE_DRIVE_TOKEN_STORAGE_KEY) ||
       window.sessionStorage.getItem(GOOGLE_DRIVE_TOKEN_STORAGE_KEY)
     if (!raw) return
-    const parsed = JSON.parse(raw) as { token?: string; expiresAt?: number }
-    if (
-      typeof parsed.token === 'string' &&
-      parsed.token &&
-      typeof parsed.expiresAt === 'number' &&
-      Date.now() < parsed.expiresAt
-    ) {
+    const parsed = parseGoogleSessionTokenJson(raw)
+    if (parsed && Date.now() < parsed.expiresAt) {
       cachedAccessToken = parsed.token
       cachedTokenExpiresAt = parsed.expiresAt
     } else {
@@ -221,18 +218,7 @@ export function getSavedGoogleAccount(): GoogleDriveAccountInfo | null {
   if (typeof window === 'undefined') return null
   try {
     const raw = window.localStorage.getItem(GOOGLE_DRIVE_ACCOUNT_KEY)
-    if (!raw) return null
-    const parsed = JSON.parse(raw) as Partial<GoogleDriveAccountInfo>
-    if (typeof parsed.email === 'string' && parsed.email.trim()) {
-      return {
-        email: parsed.email.trim(),
-        displayName:
-          typeof parsed.displayName === 'string' && parsed.displayName.trim()
-            ? parsed.displayName.trim()
-            : parsed.email.trim(),
-      }
-    }
-    return null
+    return parseGoogleDriveAccountInfoJson(raw)
   } catch {
     return null
   }
@@ -565,6 +551,7 @@ async function uploadBackupPayload(
   accessToken: string,
   backup: LedgerBackup,
   existingFileId: string | null,
+  options?: { clearDirtyOnSuccess?: boolean },
 ): Promise<{ fileId: string; syncedAt: number; modifiedTime?: string }> {
   const boundary = 'clearbill_drive_sync_boundary'
   const metadata = {
@@ -610,7 +597,9 @@ async function uploadBackupPayload(
   if (uploaded.modifiedTime) {
     saveRemoteModifiedTime(uploaded.modifiedTime)
   }
-  setGoogleDriveDirtyChanges(false)
+  if (options?.clearDirtyOnSuccess !== false) {
+    setGoogleDriveDirtyChanges(false)
+  }
   return {
     fileId: uploaded.id,
     syncedAt,
@@ -684,7 +673,6 @@ export async function syncWithGoogleDrive(
     if (!shouldUpload && existingFile) {
       const syncedAt = Date.now()
       saveLastGoogleSyncAt(syncedAt)
-      setGoogleDriveDirtyChanges(false)
       return {
         fileId: existingFile.id,
         syncedAt,
@@ -700,6 +688,7 @@ export async function syncWithGoogleDrive(
       token,
       latestBackup,
       existingFile?.id ?? null,
+      { clearDirtyOnSuccess: false },
     )
 
     return {

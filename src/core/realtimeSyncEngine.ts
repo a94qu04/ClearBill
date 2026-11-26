@@ -1,6 +1,7 @@
 import {
   ShareInviteParamsSchema,
   type Project,
+  type ProjectMember,
   type ShareInviteParams,
   type Transaction,
 } from '@/schemas/ledgerSchema'
@@ -72,15 +73,77 @@ export function parseShareInviteHash(rawUrlOrHash: string): ShareInviteParams | 
 }
 
 /**
- * 準備同步至雲端的專案資料：剔除裝置私有欄位（如 syncMeta、isArchived）
+ * 準備同步至雲端的專案資料：剔除裝置私有欄位（syncMeta、isArchived、defaultPayerId）
+ * - defaultPayerId 屬本機裝置偏好（例如各成員自己的預設墊付人或本機公費優先開關），不得跨裝置互相覆寫
  */
 export function sanitizeProjectForCloud(
   project: Project,
-): Omit<Project, 'syncMeta' | 'isArchived'> {
-  const { syncMeta: _syncMeta, isArchived: _isArchived, ...sharedPart } = project
+): Omit<Project, 'syncMeta' | 'isArchived' | 'defaultPayerId'> {
+  const {
+    syncMeta: _syncMeta,
+    isArchived: _isArchived,
+    defaultPayerId: _defaultPayerId,
+    ...sharedPart
+  } = project
   return {
     ...sharedPart,
     members: project.members.map((m) => ({ ...m })),
+  }
+}
+
+/**
+ * 合併遠端或外部備份之專案時，安全保留本機裝置偏好的 defaultPayerId：
+ * 1. 若本機原本的 defaultPayerId 仍存在於最新成員清單中，優先保留（含本機「公費袋優先」設定）
+ * 2. 否則若本機已認領之 syncMeta.myMemberId 仍存在於最新成員清單中，回退至 myMemberId
+ * 3. 否則若傳入之 fallbackDefaultPayerId 存在於最新成員清單中，採用之（向下相容舊版資料）
+ * 4. 最後回退至第一位真人成員或第一位成員
+ */
+export function resolvePreservedLocalDefaultPayerId(
+  localProj: Pick<Project, 'defaultPayerId' | 'syncMeta'>,
+  incomingMembers: readonly ProjectMember[],
+  fallbackDefaultPayerId?: string,
+): string | undefined {
+  const hasMember = (id: string | undefined): id is string =>
+    Boolean(id && incomingMembers.some((m) => m.id === id))
+
+  if (hasMember(localProj.defaultPayerId)) {
+    return localProj.defaultPayerId
+  }
+  const myMemberId = localProj.syncMeta?.myMemberId
+  if (hasMember(myMemberId)) {
+    return myMemberId
+  }
+  if (hasMember(fallbackDefaultPayerId)) {
+    return fallbackDefaultPayerId
+  }
+  return incomingMembers.find((m) => !m.isPool)?.id ?? incomingMembers[0]?.id
+}
+
+/**
+ * 將 Firestore 遠端專案更新合併回本機專案，完整保留所有裝置私有欄位（isArchived、syncMeta、defaultPayerId）
+ */
+export function mergeRemoteProjectPreservingLocalFields(
+  localProj: Project,
+  remoteProject: Project,
+  syncedAt = Date.now(),
+): Project {
+  const sanitizedRemote = sanitizeProjectForCloud(remoteProject)
+  const resolvedDefaultPayerId = resolvePreservedLocalDefaultPayerId(
+    localProj,
+    sanitizedRemote.members,
+    remoteProject.defaultPayerId,
+  )
+
+  return {
+    ...sanitizedRemote,
+    id: localProj.id,
+    ...(localProj.isArchived !== undefined ? { isArchived: localProj.isArchived } : {}),
+    ...(resolvedDefaultPayerId !== undefined
+      ? { defaultPayerId: resolvedDefaultPayerId }
+      : {}),
+    syncMeta: localProj.syncMeta
+      ? { ...localProj.syncMeta, lastSyncedAt: syncedAt }
+      : undefined,
   }
 }
 
@@ -204,4 +267,106 @@ export function reconcileRemoteTransactions(
       deletionRatio: Number(deletionRatio.toFixed(4)),
     },
   }
+}
+
+export interface PendingDeletionGuardEntry {
+  projectId: string
+  projectName: string
+  localActiveCount: number
+  newlyDeletedCount: number
+  deletionRatio: number
+  pendingDeletes: Transaction[]
+}
+
+/**
+ * 將觸發刪除熔斷的專案加入依 projectId 管理的待決佇列：
+ * - 不同專案以 FIFO 排隊，避免新批次覆寫其他專案尚未審核的待決告警
+ * - 同一專案重複觸發時，原地合併待刪交易（同 ID 取 updatedAt 較新者）並重算計數與比例
+ */
+export function enqueuePendingDeletionGuard(
+  queue: readonly PendingDeletionGuardEntry[],
+  incoming: PendingDeletionGuardEntry,
+): PendingDeletionGuardEntry[] {
+  const existingIdx = queue.findIndex((item) => item.projectId === incoming.projectId)
+  if (existingIdx === -1) {
+    return [
+      ...queue,
+      {
+        ...incoming,
+        pendingDeletes: [...incoming.pendingDeletes],
+      },
+    ]
+  }
+
+  const existing = queue[existingIdx]
+  const mergedById = new Map<string, Transaction>()
+  for (const tx of existing.pendingDeletes) {
+    mergedById.set(tx.id, tx)
+  }
+  for (const tx of incoming.pendingDeletes) {
+    const prev = mergedById.get(tx.id)
+    if (!prev || tx.updatedAt >= prev.updatedAt) {
+      mergedById.set(tx.id, tx)
+    }
+  }
+
+  const mergedDeletes = Array.from(mergedById.values())
+  const localActiveCount = incoming.localActiveCount
+  const newlyDeletedCount = mergedDeletes.length
+  const deletionRatio =
+    localActiveCount > 0
+      ? Number((newlyDeletedCount / localActiveCount).toFixed(4))
+      : incoming.deletionRatio
+
+  const mergedEntry: PendingDeletionGuardEntry = {
+    projectId: incoming.projectId,
+    projectName: incoming.projectName,
+    localActiveCount,
+    newlyDeletedCount,
+    deletionRatio,
+    pendingDeletes: mergedDeletes,
+  }
+
+  return queue.map((item, idx) => (idx === existingIdx ? mergedEntry : item))
+}
+
+/**
+ * 從待決熔斷佇列移除指定 projectId（未指定則移除隊首）並回傳被移除項與新佇列
+ */
+export function dequeuePendingDeletionGuard(
+  queue: readonly PendingDeletionGuardEntry[],
+  projectId?: string,
+): {
+  removed: PendingDeletionGuardEntry | null
+  nextQueue: PendingDeletionGuardEntry[]
+} {
+  if (queue.length === 0) {
+    return { removed: null, nextQueue: [] }
+  }
+
+  const targetIdx =
+    projectId !== undefined
+      ? queue.findIndex((item) => item.projectId === projectId)
+      : 0
+
+  if (targetIdx === -1) {
+    return { removed: null, nextQueue: [...queue] }
+  }
+
+  const removed = queue[targetIdx]
+  const nextQueue = queue.filter((_, idx) => idx !== targetIdx)
+  return { removed, nextQueue }
+}
+
+/**
+ * 核准待決遠端刪除前，以最新本地交易重跑 reconcileRemoteTransactions：
+ * 僅保留「本地仍存在、尚未刪除、且遠端刪除時間戳仍嚴格大於本地 updatedAt」的項目，
+ * 避免使用者核准前已於本地編輯的交易被過期刪除覆寫。
+ */
+export function filterApprovableRemoteDeletes(
+  localProjectTxs: Transaction[],
+  pendingDeletes: Transaction[],
+): Transaction[] {
+  if (pendingDeletes.length === 0) return []
+  return reconcileRemoteTransactions(localProjectTxs, pendingDeletes).incomingDeletes
 }

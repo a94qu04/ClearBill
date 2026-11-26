@@ -1,6 +1,8 @@
 import type { Project, Transaction } from '@/schemas/ledgerSchema'
 import type { SettleUpResult } from '@/core/settleUpEngine'
 import { fromMinorUnits, toMinorUnits } from '@/core/currency'
+import { partitionPoolAndHumanBalances } from '@/core/poolFund'
+import { describePayers } from '@/core/txPresentation'
 
 export interface ExcelExportLabels {
   sheets: {
@@ -283,16 +285,13 @@ export function buildProjectExcelBytes(
     const signedBaseAmount = sign * fromMinorUnits(baseUnits, targetCurrency)
     const signedOriginalAmount = sign * tx.amount
 
-    let payersText = ''
+    const payersText = describePayers(tx, nameOf, {
+      includeAmounts: true,
+      separator: ' / ',
+    })
     let sharesText = ''
 
     if (tx.splitConfig) {
-      const multi = (tx.splitConfig.payers ?? []).filter((p) => p.amount > 0)
-      payersText =
-        multi.length > 1
-          ? multi.map((p) => `${nameOf(p.memberId)}: ${p.amount}`).join(' / ')
-          : nameOf(tx.splitConfig.payerId)
-
       sharesText = tx.splitConfig.shares
         .filter((s) => s.finalAmount > 0)
         .map((s) => `${nameOf(s.memberId)}: ${s.finalAmount}`)
@@ -318,9 +317,10 @@ export function buildProjectExcelBytes(
   }
 
   // Sheet 2：成員結算與轉帳建議（公費袋獨立分區，不混入真人成員表）
-  const poolIdSet = new Set(project.members.filter((m) => m.isPool).map((m) => m.id))
-  const poolBalances = settleUp.balances.filter((b) => poolIdSet.has(b.memberId))
-  const humanBalances = settleUp.balances.filter((b) => !poolIdSet.has(b.memberId))
+  const { poolBalances, humanBalances } = partitionPoolAndHumanBalances(
+    settleUp.balances,
+    project.members,
+  )
 
   const summaryRows: Array<{ cells: CellValue[]; isHeader?: boolean }> = [
     {

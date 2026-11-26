@@ -19,7 +19,8 @@ import { useLedgerStore, type ManagedCategory } from '@/stores/ledgerStore'
 import { askConfirm } from '@/composables/useConfirm'
 import { useModalLayer } from '@/composables/useModalLayer'
 import { formatCurrencyAmount } from '@/core/currency'
-import { compressImageFileToDataUrl } from '@/core/imageCompressor'
+import { findPotentialDuplicateTransaction } from '@/core/duplicateDetector'
+import { compressImageFileToDataUrl } from '@/platform/imageCompressor'
 import {
   getCurrentTimeHHmm,
   getSuggestedExchangeRate,
@@ -71,7 +72,9 @@ const splitResetKey = ref(0)
 const amount = ref<number | null>(null)
 const currency = ref('TWD')
 const exchangeRate = ref<number | null>(1)
-const exchangeRateSource = ref<'remembered' | 'live' | 'estimated' | 'saved' | 'custom'>('estimated')
+const exchangeRateSource = ref<
+  'remembered' | 'live' | 'estimated' | 'saved' | 'custom' | 'missing'
+>('estimated')
 const isFetchingLiveRate = ref(false)
 const categoryKey = ref<string>(store.categories[0]?.key ?? 'cat_food')
 const note = ref('')
@@ -294,6 +297,9 @@ function handleUserCurrencyChange(nextCurrency: string) {
   )
   exchangeRate.value = resolved.rate
   exchangeRateSource.value = resolved.source
+  if (resolved.source === 'missing') {
+    ratePanelExpanded.value = true
+  }
 }
 
 function handleInlineCurrencyAdded(code: string) {
@@ -430,8 +436,8 @@ const formattedRateFetchedTime = computed(() => {
 function resolveExchangeRateForCurrency(
   fromCurrency: string,
   baseCurrency: string,
-): { rate: number; source: 'remembered' | 'live' | 'estimated' } {
-  if (fromCurrency.toUpperCase() === baseCurrency.toUpperCase()) {
+): { rate: number | null; source: 'remembered' | 'live' | 'estimated' | 'missing' } {
+  if (fromCurrency.trim().toUpperCase() === baseCurrency.trim().toUpperCase()) {
     return { rate: 1, source: 'estimated' }
   }
   const remembered = store.getRememberedExchangeRate(fromCurrency, baseCurrency)
@@ -442,10 +448,11 @@ function resolveExchangeRateForCurrency(
   if (live !== null) {
     return { rate: live, source: 'live' }
   }
-  return {
-    rate: getSuggestedExchangeRate(fromCurrency, baseCurrency),
-    source: 'estimated',
+  const suggested = getSuggestedExchangeRate(fromCurrency, baseCurrency)
+  if (suggested !== null) {
+    return { rate: suggested, source: 'estimated' }
   }
+  return { rate: null, source: 'missing' }
 }
 
 async function handleApplyLiveRate() {
@@ -532,6 +539,9 @@ function hydrateForm() {
     )
     exchangeRate.value = resolved.rate
     exchangeRateSource.value = resolved.source
+    if (resolved.source === 'missing') {
+      ratePanelExpanded.value = true
+    }
     categoryKey.value = store.categories[0]?.key ?? 'cat_food'
     note.value = pf.merchant || pf.sanitizedNote || ''
     date.value = pf.date || getTodayIso()
@@ -554,6 +564,9 @@ function hydrateForm() {
     )
     exchangeRate.value = resolved.rate
     exchangeRateSource.value = resolved.source
+    if (resolved.source === 'missing') {
+      ratePanelExpanded.value = true
+    }
     categoryKey.value = store.categories[0]?.key ?? 'cat_food'
     note.value = ''
     date.value = getTodayIso()
@@ -654,7 +667,8 @@ function showValidationError(message: string) {
 
 async function handleSubmit(continueAdding = false) {
   errorText.value = ''
-  if (!props.project) return
+  const currentProject = props.project
+  if (!currentProject) return
 
   const numericAmount = amount.value ?? 0
   if (numericAmount <= 0) {
@@ -675,7 +689,7 @@ async function handleSubmit(continueAdding = false) {
   }
 
   const payload = {
-    projectId: props.project.id,
+    projectId: currentProject.id,
     type: txType.value,
     amount: numericAmount,
     currency: currency.value,
@@ -692,26 +706,10 @@ async function handleSubmit(continueAdding = false) {
 
   // 多人協作疑似重複記帳防呆：略過主動「複製再記」，且若兩筆均有填寫不同備註則不誤報重複
   if (!props.editingTx && !props.duplicateTx) {
-    const incomingNote = payload.note.trim().toLowerCase()
-    const duplicate = store.visibleTransactions.find((existing) => {
-      if (
-        existing.projectId !== props.project!.id ||
-        existing.type !== payload.type ||
-        existing.date !== payload.date ||
-        existing.currency.trim().toUpperCase() !== payload.currency.trim().toUpperCase() ||
-        Math.abs(existing.amount - payload.amount) >= 0.005
-      ) {
-        return false
-      }
-      const existingNote = (existing.note ?? '').trim().toLowerCase()
-      if (incomingNote && existingNote && incomingNote !== existingNote) {
-        return false
-      }
-      if (!incomingNote && !existingNote && existing.categoryKey !== payload.categoryKey) {
-        return false
-      }
-      return true
-    })
+    const duplicate = findPotentialDuplicateTransaction(
+      store.visibleTransactions,
+      payload,
+    )
     if (duplicate) {
       const dupLabel =
         duplicate.note?.trim() ||
@@ -903,8 +901,23 @@ async function handleSubmit(continueAdding = false) {
                   @click="ratePanelExpanded = !ratePanelExpanded"
                 >
                   <div class="flex min-w-0 flex-wrap items-center gap-1.5">
-                    <span class="font-semibold tabular-nums text-slate-700 dark:text-slate-200">
-                      1 {{ currency }} = {{ exchangeRate ?? 0 }} {{ project.baseCurrency }}
+                    <span
+                      v-if="exchangeRate !== null && exchangeRate > 0"
+                      class="font-semibold tabular-nums text-slate-700 dark:text-slate-200"
+                    >
+                      1 {{ currency }} = {{ exchangeRate }} {{ project.baseCurrency }}
+                    </span>
+                    <span
+                      v-else
+                      class="rounded-md bg-amber-500/15 px-1.5 py-0.5 text-[11px] font-bold text-amber-700 dark:bg-amber-500/20 dark:text-amber-300"
+                    >
+                      1 {{ currency }} = ? {{ project.baseCurrency }} · {{ t('project.exchangeRateInputRequiredShort') }}
+                    </span>
+                    <span
+                      v-if="exchangeRateSource === 'estimated' && exchangeRate !== null && exchangeRate > 0"
+                      class="rounded-md bg-amber-500/12 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 dark:bg-amber-500/20 dark:text-amber-300"
+                    >
+                      {{ t('rates.sourceEstimatedTag') }}
                     </span>
                     <span
                       v-if="convertedPreviewAmount > 0"
@@ -934,7 +947,7 @@ async function handleSubmit(continueAdding = false) {
                       v-model="exchangeRate"
                       :allow-decimals="true"
                       size="sm"
-                      placeholder="1"
+                      :placeholder="t('rates.needInputShort')"
                       class="w-24"
                     />
                     <span class="font-semibold text-slate-600 dark:text-slate-300">
@@ -954,8 +967,18 @@ async function handleSubmit(continueAdding = false) {
                     </button>
                   </div>
 
-                  <div class="text-[10px] font-medium text-slate-500 dark:text-slate-400">
-                    <template v-if="currentLiveRateValue !== null">
+                  <div
+                    class="text-[10px] font-medium"
+                    :class="
+                      exchangeRate === null || exchangeRate <= 0
+                        ? 'text-amber-700 dark:text-amber-300'
+                        : 'text-slate-500 dark:text-slate-400'
+                    "
+                  >
+                    <template v-if="exchangeRate === null || exchangeRate <= 0">
+                      {{ t('project.exchangeRateMissingHint') }}
+                    </template>
+                    <template v-else-if="currentLiveRateValue !== null">
                       {{
                         t('rates.inlineLiveRef', {
                           rate: currentLiveRateValue,
@@ -969,7 +992,9 @@ async function handleSubmit(continueAdding = false) {
                           ? t('project.exchangeRateRememberedHint')
                           : exchangeRateSource === 'live'
                             ? t('project.exchangeRateLiveHint')
-                            : t('project.exchangeRateEstimatedHint')
+                            : exchangeRateSource === 'missing'
+                              ? t('project.exchangeRateMissingHint')
+                              : t('project.exchangeRateEstimatedHint')
                       }}
                     </template>
                   </div>

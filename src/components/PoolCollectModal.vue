@@ -7,6 +7,7 @@ import { useLedgerStore } from '@/stores/ledgerStore'
 import { useModalLayer } from '@/composables/useModalLayer'
 import { formatCurrencyAmount } from '@/core/currency'
 import { getTodayIso } from '@/core/ledgerHelpers'
+import { isPoolMemberIdInProject } from '@/core/poolFund'
 import CurrencyAmountInput from '@/components/CurrencyAmountInput.vue'
 import MemberAvatar from '@/components/MemberAvatar.vue'
 
@@ -43,6 +44,9 @@ const selectedContributorIds = ref<string[]>([])
 const amountPerMember = ref<number | null>(null)
 const currency = ref('TWD')
 const exchangeRate = ref<number | null>(1)
+const exchangeRateSource = ref<
+  'same' | 'live' | 'remembered' | 'estimated' | 'saved' | 'missing'
+>('same')
 const date = ref(getTodayIso())
 const note = ref('')
 const errorText = ref('')
@@ -99,7 +103,7 @@ watch(
     if (editTx && editTx.splitConfig) {
       const toId = editTx.splitConfig.shares[0]?.memberId ?? ''
       const toMember = props.project.members.find((m) => m.id === toId)
-      const isPoolTarget = Boolean(toMember?.isPool || toId.startsWith('pool_'))
+      const isPoolTarget = isPoolMemberIdInProject(toId, props.project)
       collectorMode.value = isPoolTarget ? 'pool' : 'member'
       customPoolName.value =
         (isPoolTarget ? toMember?.name : existingPoolMember.value?.name) ||
@@ -130,15 +134,20 @@ watch(
           ? activePayers[0].amount
           : editTx.amount / Math.max(1, selectedContributorIds.value.length)
       currency.value = editTx.currency.trim().toUpperCase()
-      exchangeRate.value =
-        currency.value === props.project.baseCurrency.trim().toUpperCase()
-          ? 1
-          : editTx.exchangeRateToBase > 0
-            ? editTx.exchangeRateToBase
-            : store.getEffectiveExchangeRate(
-                currency.value,
-                props.project.baseCurrency,
-              )
+      if (currency.value === props.project.baseCurrency.trim().toUpperCase()) {
+        exchangeRate.value = 1
+        exchangeRateSource.value = 'same'
+      } else if (editTx.exchangeRateToBase > 0) {
+        exchangeRate.value = editTx.exchangeRateToBase
+        exchangeRateSource.value = 'saved'
+      } else {
+        const resolved = store.getEffectiveExchangeRateWithSource(
+          currency.value,
+          props.project.baseCurrency,
+        )
+        exchangeRate.value = resolved.rate
+        exchangeRateSource.value = resolved.source
+      }
       date.value = editTx.date || getTodayIso()
       note.value = editTx.note ?? t('pool.defaultNote')
       return
@@ -155,10 +164,17 @@ watch(
       props.project.id,
       props.project.baseCurrency,
     )
-    exchangeRate.value =
-      currency.value === props.project.baseCurrency.trim().toUpperCase()
-        ? 1
-        : store.getEffectiveExchangeRate(currency.value, props.project.baseCurrency)
+    if (currency.value === props.project.baseCurrency.trim().toUpperCase()) {
+      exchangeRate.value = 1
+      exchangeRateSource.value = 'same'
+    } else {
+      const resolved = store.getEffectiveExchangeRateWithSource(
+        currency.value,
+        props.project.baseCurrency,
+      )
+      exchangeRate.value = resolved.rate
+      exchangeRateSource.value = resolved.source
+    }
     amountPerMember.value = null
     date.value = getTodayIso()
     note.value = t('pool.defaultNote')
@@ -178,7 +194,14 @@ watch(currency, (nextCur) => {
   if (!props.project) return
   const base = props.project.baseCurrency.trim().toUpperCase()
   const cur = nextCur.trim().toUpperCase()
-  exchangeRate.value = cur === base ? 1 : store.getEffectiveExchangeRate(cur, base)
+  if (cur === base) {
+    exchangeRate.value = 1
+    exchangeRateSource.value = 'same'
+  } else {
+    const resolved = store.getEffectiveExchangeRateWithSource(cur, base)
+    exchangeRate.value = resolved.rate
+    exchangeRateSource.value = resolved.source
+  }
 })
 
 function toggleContributor(memberId: string) {
@@ -384,21 +407,41 @@ async function handleSubmit() {
           <!-- 外幣匯率 -->
           <div
             v-if="needsExchangeRate"
-            class="flex flex-wrap items-center gap-2 rounded-xl border border-amber-200 bg-amber-50/70 px-3 py-2 text-xs dark:border-amber-800/60 dark:bg-amber-950/30"
+            class="space-y-1.5 rounded-xl border border-amber-200 bg-amber-50/70 px-3 py-2 text-xs dark:border-amber-800/60 dark:bg-amber-950/30"
           >
-            <span class="font-semibold text-amber-900 dark:text-amber-200">
-              {{ t('project.exchangeRateLabel', { from: currency }) }}
-            </span>
-            <CurrencyAmountInput
-              v-model="exchangeRate"
-              :allow-decimals="true"
-              size="sm"
-              placeholder="1"
-              class="w-24"
-            />
-            <span class="font-semibold text-amber-900 dark:text-amber-200">
-              {{ project.baseCurrency }}
-            </span>
+            <div class="flex flex-wrap items-center gap-2">
+              <span class="font-semibold text-amber-900 dark:text-amber-200">
+                {{ t('project.exchangeRateLabel', { from: currency }) }}
+              </span>
+              <CurrencyAmountInput
+                v-model="exchangeRate"
+                :allow-decimals="true"
+                size="sm"
+                :placeholder="t('rates.needInputShort')"
+                class="w-24"
+              />
+              <span class="font-semibold text-amber-900 dark:text-amber-200">
+                {{ project.baseCurrency }}
+              </span>
+              <span
+                v-if="exchangeRateSource === 'estimated' && exchangeRate !== null && exchangeRate > 0"
+                class="rounded-md bg-amber-200/70 px-1.5 py-0.5 text-[10px] font-bold text-amber-900 dark:bg-amber-900/60 dark:text-amber-200"
+              >
+                {{ t('rates.sourceEstimatedTag') }}
+              </span>
+            </div>
+            <p
+              v-if="exchangeRate === null || exchangeRate <= 0"
+              class="text-[11px] font-semibold text-amber-800 dark:text-amber-300"
+            >
+              {{ t('project.exchangeRateMissingHint') }}
+            </p>
+            <p
+              v-else-if="exchangeRateSource === 'estimated'"
+              class="text-[10px] font-medium text-amber-800/80 dark:text-amber-300/80"
+            >
+              {{ t('project.exchangeRateEstimatedHint') }}
+            </p>
           </div>
 
           <!-- 繳交成員多選區 -->

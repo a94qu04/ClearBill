@@ -1,9 +1,7 @@
-import { computed, ref } from 'vue'
-import { defineStore } from 'pinia'
+import { computed, ref, toRaw } from 'vue'
+import { defineStore, storeToRefs } from 'pinia'
 import {
   CURRENT_SCHEMA_VERSION,
-  CurrencyCodeSchema,
-  SplitConfigSchema,
   type LedgerBackup,
   type Project,
   type ProjectMember,
@@ -12,128 +10,69 @@ import {
   type SplitMode,
   type Transaction,
   type TransactionType,
-  type UserProfile,
 } from '@/schemas/ledgerSchema'
 import {
-  clearProjectSyncOutbox,
   enqueueSyncOutbox,
-  listSyncOutbox,
   normalVaultDb,
-  removeSyncOutboxKeys,
   saveProjectToNormalVault,
   saveTransactionToNormalVault,
 } from '@/db/normalVaultDb'
+import { cloneAsPlain } from '@/core/plainClone'
 import {
   applySettlementRatesToTransactions,
   calculateSettleUp,
-  type SettleUpOptions,
 } from '@/core/settleUpEngine'
-import { fromMinorUnits, toMinorUnits } from '@/core/currency'
-import { getSuggestedExchangeRate } from '@/core/ledgerHelpers'
+import type { LocalSettlementViewPrefs } from '@/core/settlementRateResolver'
+import { sumProjectExpense } from '@/core/memberLedger'
 import {
-  isValidCategoryIconKey,
-  resolveDefaultCategoryIcon,
-} from '@/core/categoryIcons'
+  migrateLoadedLedgerRecords,
+  type QuarantinedRecord,
+} from '@/core/migrationEngine'
+import { assertSplitInvariant } from '@/core/splitInvariant'
 import {
-  computeCrossRateFromUsdTable,
-  loadCachedLiveRates,
-  refreshLiveExchangeRates,
-  type LiveRatesCache,
-} from '@/services/exchangeRateService'
-import {
+  collectRealtimeOutboxEntriesFromMerge,
   createLedgerBackupPayload,
   createSingleProjectBackupPayload,
   parseAndMergeLedgerBackup,
   type LedgerMergeStats,
 } from '@/core/backupMergeEngine'
-import { reconcileRemoteTransactions } from '@/core/realtimeSyncEngine'
 import {
-  isFirebaseConfigured,
-  joinSharedProjectOnFirestore,
-  publishProjectToFirestore,
-  pushProjectUpdateToFirestore,
-  pushTransactionToFirestore,
-  rotateProjectAccessKeyOnFirestore,
-  subscribeSharedProject,
-} from '@/services/firestoreSyncService'
+  AVATAR_PALETTE,
+  DEFAULT_MANAGED_CATEGORIES,
+  INITIAL_CURRENCIES,
+  PROJECT_CARD_PALETTE,
+  sanitizeSplitConfigForMemory,
+  useUserPrefsStore,
+  type ManagedCategory,
+} from '@/stores/userPrefsStore'
+import { useSettlementViewStore } from '@/stores/settlementViewStore'
 import {
-  disconnectGoogleDrive,
-  downloadBackupFromGoogleDrive,
-  getLastGoogleSyncAt,
-  getSavedGoogleAccount,
-  getSavedGoogleClientId,
-  GoogleDriveSyncError,
-  hasGoogleDriveDirtyChanges,
-  isGoogleAutoSyncEnabled,
-  isGoogleDriveConnected,
-  setGoogleAutoSyncEnabled,
-  setGoogleDriveDirtyChanges,
-  syncWithGoogleDrive,
-  type GoogleDriveAccountInfo,
-  type GoogleDriveSyncErrorCode,
-  type GoogleDriveSyncResult,
-} from '@/services/googleDriveSync'
+  useGoogleDriveStore,
+  type GoogleDriveSyncStatus,
+} from '@/stores/googleDriveStore'
+import {
+  useRealtimeSyncStore,
+  type PendingDeletionGuardAlert,
+  type ProjectRealtimeSyncStatus,
+} from '@/stores/realtimeSyncStore'
+import { createPoolActions } from '@/stores/poolActions'
+import { createTrashActions } from '@/stores/trashActions'
 
 const ACTIVE_PROJECT_STORAGE_KEY = 'clearbill_active_project_id'
-const PREFS_STORAGE_KEY = 'clearbill_user_prefs_v2'
 
-export const INITIAL_CURRENCIES = [
-  'TWD',
-  'JPY',
-  'THB',
-  'USD',
-  'KRW',
-  'EUR',
-  'HKD',
-] as const
-
-export const AVATAR_PALETTE = [
-  '#059669', // 翡翠綠
-  '#2563eb', // 寶藍
-  '#d97706', // 琥珀金
-  '#7c3aed', // 靛紫
-  '#db2777', // 洋紅
-  '#0891b2', // 湖水青
-  '#ea580c', // 亮橘
-  '#dc2626', // 正紅
-  '#4f46e5', // 湛藍紫
-  '#65a30d', // 鮮萊姆綠
-  '#c026d3', // 紫紅
-  '#0369a1', // 深海藍
-  '#92400e', // 焦糖棕
-  '#0f766e', // 深水鴨青
-] as const
-
-export const PROJECT_CARD_PALETTE = [
-  '#0f172a',
-  '#065f46',
-  '#1e3a8a',
-  '#0e7490',
-  '#581c87',
-  '#9d174d',
-  '#9a3412',
-  '#854d0e',
-] as const
-
-export interface ManagedCategory {
-  key: string
-  /** 若使用者未修改過內建分類，維持 undefined 以便自動套用當前語系翻譯；修改過則顯示此自訂名稱 */
-  customLabel?: string
-  color: string
-  /** 分類圖示鍵值（對應 categoryIcons.ts） */
-  icon?: string
-  isBuiltin?: boolean
+export {
+  INITIAL_CURRENCIES,
+  AVATAR_PALETTE,
+  PROJECT_CARD_PALETTE,
+  DEFAULT_MANAGED_CATEGORIES,
 }
-
-export const DEFAULT_MANAGED_CATEGORIES: ManagedCategory[] = [
-  { key: 'cat_food', color: '#ea580c', icon: 'utensils', isBuiltin: true },
-  { key: 'cat_transport', color: '#2563eb', icon: 'train', isBuiltin: true },
-  { key: 'cat_lodging', color: '#7c3aed', icon: 'bed', isBuiltin: true },
-  { key: 'cat_shopping', color: '#db2777', icon: 'shopping_bag', isBuiltin: true },
-  { key: 'cat_entertainment', color: '#0891b2', icon: 'ticket', isBuiltin: true },
-  { key: 'cat_daily', color: '#ca8a04', icon: 'package', isBuiltin: true },
-  { key: 'cat_other', color: '#475569', icon: 'tag', isBuiltin: true },
-]
+export type {
+  ManagedCategory,
+  ProjectRealtimeSyncStatus,
+  GoogleDriveSyncStatus,
+  PendingDeletionGuardAlert,
+  LocalSettlementViewPrefs,
+}
 
 function generateUuid(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -144,31 +83,6 @@ function generateUuid(): string {
     const v = c === 'x' ? r : (r & 0x3) | 0x8
     return v.toString(16)
   })
-}
-
-export type ProjectRealtimeSyncStatus =
-  | 'local'
-  | 'connecting'
-  | 'synced'
-  | 'offline'
-  | 'error'
-
-export type GoogleDriveSyncStatus =
-  | 'disconnected'
-  | 'syncing'
-  | 'synced'
-  | 'pending'
-  | 'needs_auth'
-  | 'offline'
-  | 'error'
-
-export interface PendingDeletionGuardAlert {
-  projectId: string
-  projectName: string
-  localActiveCount: number
-  newlyDeletedCount: number
-  deletionRatio: number
-  pendingDeletes: Transaction[]
 }
 
 export interface CreateProjectPayload {
@@ -217,1036 +131,93 @@ export interface RecordSettlementPayload {
   note?: string
 }
 
-interface QuickExchangeRatePresets {
-  cash?: number
-  card?: number
-}
-
-export interface LocalSettlementViewPrefs {
-  settlementCurrency?: string
-  settlementRateMode?: 'per_tx' | 'live' | 'custom'
-  settlementCustomRates?: Record<string, number>
-  settlementCustomRatesByCurrency?: Record<string, Record<string, number>>
-}
-
-interface PersistedUserPrefsV2 {
-  defaultCurrency: string
-  enabledCurrencies: string[]
-  categories: ManagedCategory[]
-  projectOrder?: string[]
-  projectOrderUpdatedAt?: number
-  exchangeRates?: Record<string, number>
-  quickExchangeRates?: Record<string, QuickExchangeRatePresets>
-  lastExpenseProjectId?: string
-  lastCurrencyByProject?: Record<string, string>
-  lastSplitByProject?: Record<string, SplitConfig>
-  settlementViewByProject?: Record<string, LocalSettlementViewPrefs>
-  userProfile?: UserProfile
-}
-
-function createDefaultUserProfile(): UserProfile {
-  return {
-    displayName: '',
-    avatarColor: AVATAR_PALETTE[0],
-    avatarImage: undefined,
-    paymentInfo: undefined,
-  }
-}
-
-function cloneDefaultCategories(): ManagedCategory[] {
-  return DEFAULT_MANAGED_CATEGORIES.map((c) => ({ ...c }))
-}
-
-function loadUserPrefs(): PersistedUserPrefsV2 {
-  const defaults: PersistedUserPrefsV2 = {
-    defaultCurrency: 'TWD',
-    enabledCurrencies: [...INITIAL_CURRENCIES],
-    categories: cloneDefaultCategories(),
-    projectOrder: [],
-    exchangeRates: {},
-  }
-  if (typeof window === 'undefined') return defaults
-
-  try {
-    const rawV2 = window.localStorage.getItem(PREFS_STORAGE_KEY)
-    if (rawV2) {
-      const parsed = JSON.parse(rawV2) as Partial<PersistedUserPrefsV2>
-      const defaultCurrency =
-        typeof parsed.defaultCurrency === 'string' &&
-        /^[A-Z]{3}$/.test(parsed.defaultCurrency)
-          ? parsed.defaultCurrency
-          : 'TWD'
-
-      const enabledSet = new Set<string>(
-        Array.isArray(parsed.enabledCurrencies)
-          ? parsed.enabledCurrencies.filter(
-              (c): c is string => typeof c === 'string' && /^[A-Z]{3}$/.test(c),
-            )
-          : [...INITIAL_CURRENCIES],
-      )
-      enabledSet.add(defaultCurrency)
-
-      const categories =
-        Array.isArray(parsed.categories) && parsed.categories.length > 0
-          ? parsed.categories
-              .filter(
-                (c): c is ManagedCategory =>
-                  typeof c === 'object' &&
-                  c !== null &&
-                  typeof c.key === 'string' &&
-                  c.key.trim().length > 0,
-              )
-              .map((c) => {
-                const key = c.key.trim()
-                return {
-                  key,
-                  customLabel:
-                    typeof c.customLabel === 'string' && c.customLabel.trim()
-                      ? c.customLabel.trim()
-                      : undefined,
-                  color: typeof c.color === 'string' && c.color ? c.color : '#10b981',
-                  icon: isValidCategoryIconKey(c.icon)
-                    ? c.icon
-                    : resolveDefaultCategoryIcon(key),
-                  isBuiltin: Boolean(c.isBuiltin),
-                }
-              })
-          : cloneDefaultCategories()
-
-      const projectOrder = Array.isArray(parsed.projectOrder)
-        ? parsed.projectOrder.filter((id): id is string => typeof id === 'string')
-        : []
-      const projectOrderUpdatedAt =
-        typeof parsed.projectOrderUpdatedAt === 'number' &&
-        Number.isFinite(parsed.projectOrderUpdatedAt) &&
-        parsed.projectOrderUpdatedAt >= 0
-          ? Math.floor(parsed.projectOrderUpdatedAt)
-          : undefined
-
-      const exchangeRates: Record<string, number> = {}
-      if (parsed.exchangeRates && typeof parsed.exchangeRates === 'object') {
-        for (const [pairKey, rate] of Object.entries(parsed.exchangeRates)) {
-          if (
-            /^[A-Z]{3}_[A-Z]{3}$/.test(pairKey) &&
-            typeof rate === 'number' &&
-            Number.isFinite(rate) &&
-            rate > 0
-          ) {
-            exchangeRates[pairKey] = rate
-          }
-        }
-      }
-
-      const quickExchangeRates: Record<string, QuickExchangeRatePresets> = {}
-      if (
-        parsed.quickExchangeRates &&
-        typeof parsed.quickExchangeRates === 'object'
-      ) {
-        for (const [pairKey, preset] of Object.entries(parsed.quickExchangeRates)) {
-          if (!/^[A-Z]{3}_[A-Z]{3}$/.test(pairKey) || !preset || typeof preset !== 'object') {
-            continue
-          }
-          const clean: QuickExchangeRatePresets = {}
-          if (typeof preset.cash === 'number' && Number.isFinite(preset.cash) && preset.cash > 0) {
-            clean.cash = preset.cash
-          }
-          if (typeof preset.card === 'number' && Number.isFinite(preset.card) && preset.card > 0) {
-            clean.card = preset.card
-          }
-          if (clean.cash !== undefined || clean.card !== undefined) {
-            quickExchangeRates[pairKey] = clean
-          }
-        }
-      }
-
-      const lastExpenseProjectId =
-        typeof parsed.lastExpenseProjectId === 'string' &&
-        parsed.lastExpenseProjectId.trim()
-          ? parsed.lastExpenseProjectId.trim()
-          : ''
-
-      const lastCurrencyByProject: Record<string, string> = {}
-      if (
-        parsed.lastCurrencyByProject &&
-        typeof parsed.lastCurrencyByProject === 'object'
-      ) {
-        for (const [projId, cur] of Object.entries(parsed.lastCurrencyByProject)) {
-          if (
-            typeof projId === 'string' &&
-            projId.trim() &&
-            typeof cur === 'string' &&
-            /^[A-Z]{3}$/.test(cur.trim().toUpperCase())
-          ) {
-            lastCurrencyByProject[projId] = cur.trim().toUpperCase()
-          }
-        }
-      }
-
-      const lastSplitByProject: Record<string, SplitConfig> = {}
-      if (
-        parsed.lastSplitByProject &&
-        typeof parsed.lastSplitByProject === 'object'
-      ) {
-        for (const [projId, rawSplit] of Object.entries(parsed.lastSplitByProject)) {
-          if (typeof projId !== 'string' || !projId.trim()) continue
-          const parsedSplit = SplitConfigSchema.safeParse(rawSplit)
-          if (parsedSplit.success) {
-            lastSplitByProject[projId] = parsedSplit.data
-          }
-        }
-      }
-
-      const settlementViewByProject: Record<string, LocalSettlementViewPrefs> = {}
-      if (
-        parsed.settlementViewByProject &&
-        typeof parsed.settlementViewByProject === 'object'
-      ) {
-        for (const [projId, rawView] of Object.entries(parsed.settlementViewByProject)) {
-          if (!projId.trim() || !rawView || typeof rawView !== 'object') continue
-          const cleanView: LocalSettlementViewPrefs = {}
-          if (
-            typeof rawView.settlementCurrency === 'string' &&
-            /^[A-Z]{3}$/.test(rawView.settlementCurrency.trim().toUpperCase())
-          ) {
-            cleanView.settlementCurrency = rawView.settlementCurrency.trim().toUpperCase()
-          }
-          if (
-            rawView.settlementRateMode === 'per_tx' ||
-            rawView.settlementRateMode === 'live' ||
-            rawView.settlementRateMode === 'custom'
-          ) {
-            cleanView.settlementRateMode = rawView.settlementRateMode
-          }
-          if (
-            rawView.settlementCustomRates &&
-            typeof rawView.settlementCustomRates === 'object'
-          ) {
-            const cleanFlat: Record<string, number> = {}
-            for (const [k, v] of Object.entries(rawView.settlementCustomRates)) {
-              const code = k.trim().toUpperCase()
-              if (/^[A-Z]{3}$/.test(code) && typeof v === 'number' && Number.isFinite(v) && v > 0) {
-                cleanFlat[code] = v
-              }
-            }
-            if (Object.keys(cleanFlat).length > 0) {
-              cleanView.settlementCustomRates = cleanFlat
-            }
-          }
-          if (
-            rawView.settlementCustomRatesByCurrency &&
-            typeof rawView.settlementCustomRatesByCurrency === 'object'
-          ) {
-            const cleanByCur: Record<string, Record<string, number>> = {}
-            for (const [targetCur, bucket] of Object.entries(
-              rawView.settlementCustomRatesByCurrency,
-            )) {
-              const tCode = targetCur.trim().toUpperCase()
-              if (!/^[A-Z]{3}$/.test(tCode) || !bucket || typeof bucket !== 'object') continue
-              const cleanBucket: Record<string, number> = {}
-              for (const [k, v] of Object.entries(bucket)) {
-                const code = k.trim().toUpperCase()
-                if (/^[A-Z]{3}$/.test(code) && typeof v === 'number' && Number.isFinite(v) && v > 0) {
-                  cleanBucket[code] = v
-                }
-              }
-              if (Object.keys(cleanBucket).length > 0) {
-                cleanByCur[tCode] = cleanBucket
-              }
-            }
-            if (Object.keys(cleanByCur).length > 0) {
-              cleanView.settlementCustomRatesByCurrency = cleanByCur
-            }
-          }
-          if (Object.keys(cleanView).length > 0) {
-            settlementViewByProject[projId] = cleanView
-          }
-        }
-      }
-
-      const rawProfile = parsed.userProfile
-      const userProfile: UserProfile =
-        rawProfile && typeof rawProfile === 'object'
-          ? {
-              displayName:
-                typeof rawProfile.displayName === 'string'
-                  ? rawProfile.displayName.trim().slice(0, 50)
-                  : '',
-              avatarColor:
-                typeof rawProfile.avatarColor === 'string' &&
-                rawProfile.avatarColor.trim()
-                  ? rawProfile.avatarColor.trim()
-                  : AVATAR_PALETTE[0],
-              avatarImage:
-                typeof rawProfile.avatarImage === 'string' &&
-                rawProfile.avatarImage.startsWith('data:image/')
-                  ? rawProfile.avatarImage
-                  : undefined,
-              paymentInfo:
-                typeof rawProfile.paymentInfo === 'string' &&
-                rawProfile.paymentInfo.trim()
-                  ? rawProfile.paymentInfo.trim().slice(0, 120)
-                  : undefined,
-              updatedAt:
-                typeof rawProfile.updatedAt === 'number' &&
-                Number.isFinite(rawProfile.updatedAt) &&
-                rawProfile.updatedAt >= 0
-                  ? Math.floor(rawProfile.updatedAt)
-                  : undefined,
-            }
-          : createDefaultUserProfile()
-
-      return {
-        defaultCurrency,
-        enabledCurrencies: Array.from(enabledSet),
-        categories,
-        projectOrder,
-        projectOrderUpdatedAt,
-        exchangeRates,
-        quickExchangeRates,
-        lastExpenseProjectId,
-        lastCurrencyByProject,
-        lastSplitByProject,
-        settlementViewByProject,
-        userProfile,
-      }
-    }
-
-    // 向下相容遷移 v1 偏好設定
-    const rawV1 = window.localStorage.getItem('clearbill_user_prefs_v1')
-    if (rawV1) {
-      const v1 = JSON.parse(rawV1) as {
-        defaultCurrency?: string
-        customCurrencies?: string[]
-        customCategories?: Array<{ key: string; label: string; color?: string }>
-      }
-      const defCur =
-        typeof v1.defaultCurrency === 'string' && /^[A-Z]{3}$/.test(v1.defaultCurrency)
-          ? v1.defaultCurrency
-          : 'TWD'
-      const curSet = new Set<string>([
-        ...INITIAL_CURRENCIES,
-        ...(Array.isArray(v1.customCurrencies) ? v1.customCurrencies : []),
-        defCur,
-      ])
-      const cats: ManagedCategory[] = [
-        ...cloneDefaultCategories(),
-        ...(Array.isArray(v1.customCategories)
-          ? v1.customCategories.map((c) => ({
-              key: c.key,
-              customLabel: c.label,
-              color: c.color || '#10b981',
-              isBuiltin: false,
-            }))
-          : []),
-      ]
-      return {
-        defaultCurrency: defCur,
-        enabledCurrencies: Array.from(curSet),
-        categories: cats,
-      }
-    }
-  } catch {
-    return defaults
-  }
-
-  return defaults
-}
-
 export const useLedgerStore = defineStore('ledger', () => {
-  const initialPrefs = loadUserPrefs()
+  // 領域子 Store
+  const userPrefsStore = useUserPrefsStore()
+  const settlementViewStore = useSettlementViewStore()
+  const googleDriveStore = useGoogleDriveStore()
+  const realtimeSyncStore = useRealtimeSyncStore()
 
+  // 透傳各領域子 Store 之響應式狀態（使用 storeToRefs 保持對外響應式 API 完全一致）
+  const {
+    defaultCurrency,
+    enabledCurrencies,
+    categories,
+    projectOrder,
+    projectOrderUpdatedAt,
+    lastExpenseProjectId,
+    lastCurrencyByProject,
+    lastSplitByProject,
+    settlementViewByProject,
+    userProfile,
+    liveRatesCache,
+    isRefreshingLiveRates,
+    liveRatesFetchedAt,
+    liveRatesSource,
+    availableCurrencies,
+  } = storeToRefs(userPrefsStore)
+
+  const {
+    googleDriveAccount,
+    googleDriveAutoSync,
+    googleDriveLastSyncAt,
+    googleDriveDirty,
+    googleDriveLastErrorCode,
+    googleDriveLastErrorDetail,
+    googleDriveStatus,
+  } = storeToRefs(googleDriveStore)
+
+  const {
+    syncStatusByProject,
+    lastSyncedAtByProject,
+    outboxCountByProject,
+    pendingDeletionGuard,
+    pendingDeletionGuardCount,
+  } = storeToRefs(realtimeSyncStore)
+
+  // 帳本核心狀態
   const projects = ref<Project[]>([])
   const transactions = ref<Transaction[]>([])
+  const quarantinedRecords = ref<QuarantinedRecord[]>([])
   const activeProjectId = ref<string | null>(null)
   const isLoaded = ref(false)
   const isStoragePersisted = ref(false)
 
-  // 即時多人協作同步狀態、最後同步時間、離線待補傳計數與異常大量刪除熔斷告警
-  const syncStatusByProject = ref<Record<string, ProjectRealtimeSyncStatus>>({})
-  const lastSyncedAtByProject = ref<Record<string, number>>({})
-  const outboxCountByProject = ref<Record<string, number>>({})
-  const pendingDeletionGuard = ref<PendingDeletionGuardAlert | null>(null)
-  const activeRealtimeUnsubscribers = new Map<string, () => void>()
-  const flushingProjectIds = new Set<string>()
-
-  // Google 雲端跨裝置自動同步狀態
-  const googleDriveAccount = ref<GoogleDriveAccountInfo | null>(
-    getSavedGoogleAccount(),
-  )
-  const googleDriveAutoSync = ref<boolean>(isGoogleAutoSyncEnabled())
-  const googleDriveLastSyncAt = ref<number | null>(getLastGoogleSyncAt())
-  const googleDriveDirty = ref<boolean>(hasGoogleDriveDirtyChanges())
-  const googleDriveLastErrorCode = ref<GoogleDriveSyncErrorCode | null>(null)
-  const googleDriveLastErrorDetail = ref<string | null>(null)
-  const googleDriveStatus = ref<GoogleDriveSyncStatus>(
-    resolveInitialGoogleDriveStatus(),
-  )
-  let googleAutoSyncTimer: ReturnType<typeof setTimeout> | null = null
-  let googleSyncInFlight: Promise<GoogleDriveSyncResult | null> | null = null
-
-  function resolveInitialGoogleDriveStatus(): GoogleDriveSyncStatus {
-    if (isGoogleDriveConnected()) {
-      return hasGoogleDriveDirtyChanges() ? 'pending' : 'synced'
-    }
-    if (isGoogleAutoSyncEnabled() || getSavedGoogleAccount()) {
-      return typeof navigator !== 'undefined' && navigator.onLine === false
-        ? 'offline'
-        : 'needs_auth'
-    }
-    return 'disconnected'
+  /** 將含 Vue Reactive Proxy 的資料深拷貝為純淨 Plain Object（採 structuredClone + toRaw，保留 undefined 與原生型別並避免 JSON 大字串序列化開銷） */
+  function toPlainClone<T>(value: T): T {
+    return cloneAsPlain(value, toRaw)
   }
 
-  // 使用者自訂偏好（預設幣別、可自由增刪的常用幣別、可自由增刪改的消費分類、專案排序、記憶匯率、個人成員檔案）
-  const defaultCurrency = ref<string>(initialPrefs.defaultCurrency)
-  const enabledCurrencies = ref<string[]>(initialPrefs.enabledCurrencies)
-  const categories = ref<ManagedCategory[]>(initialPrefs.categories)
-  const projectOrder = ref<string[]>(initialPrefs.projectOrder ?? [])
-  const projectOrderUpdatedAt = ref<number>(
-    initialPrefs.projectOrderUpdatedAt ?? 0,
-  )
-  const rememberedExchangeRates = ref<Record<string, number>>(
-    initialPrefs.exchangeRates ?? {},
-  )
-  const quickExchangeRates = ref<Record<string, QuickExchangeRatePresets>>(
-    initialPrefs.quickExchangeRates ?? {},
-  )
-  const lastExpenseProjectId = ref<string>(
-    initialPrefs.lastExpenseProjectId ?? '',
-  )
-  const lastCurrencyByProject = ref<Record<string, string>>(
-    initialPrefs.lastCurrencyByProject ?? {},
-  )
-  const lastSplitByProject = ref<Record<string, SplitConfig>>(
-    initialPrefs.lastSplitByProject ?? {},
-  )
-  const settlementViewByProject = ref<Record<string, LocalSettlementViewPrefs>>(
-    initialPrefs.settlementViewByProject ?? {},
-  )
-  const userProfile = ref<UserProfile>(
-    initialPrefs.userProfile ?? createDefaultUserProfile(),
-  )
-
-  // 即時參考匯率響應式快取（每小時自動向免費公開資料庫更新，含抓取時間戳）
-  const liveRatesCache = ref<LiveRatesCache | null>(loadCachedLiveRates())
-  const isRefreshingLiveRates = ref(false)
-  const liveRatesFetchedAt = computed<number | null>(
-    () => liveRatesCache.value?.fetchedAt ?? null,
-  )
-  const liveRatesSource = computed<string>(
-    () => liveRatesCache.value?.source ?? '',
-  )
-
-  async function refreshExchangeRates(force = false): Promise<LiveRatesCache | null> {
-    if (isRefreshingLiveRates.value && !force) return liveRatesCache.value
-    isRefreshingLiveRates.value = true
-    try {
-      const fresh = await refreshLiveExchangeRates(force)
-      if (fresh) {
-        liveRatesCache.value = fresh
-      }
-      return liveRatesCache.value
-    } finally {
-      isRefreshingLiveRates.value = false
-    }
-  }
-
-  function getLiveExchangeRate(from: string, to: string): number | null {
-    const f = from.trim().toUpperCase()
-    const tCode = to.trim().toUpperCase()
-    if (!f || !tCode) return null
-    if (f === tCode) return 1
-    const cache = liveRatesCache.value
-    if (!cache) return null
-    return computeCrossRateFromUsdTable(cache.ratesPerUsd, f, tCode)
-  }
-
-  function saveUserPrefs() {
+  function persistActiveProjectId(id: string | null): void {
     if (typeof window === 'undefined') return
     try {
-      const data: PersistedUserPrefsV2 = {
-        defaultCurrency: defaultCurrency.value,
-        enabledCurrencies: enabledCurrencies.value,
-        categories: categories.value,
-        projectOrder: projectOrder.value,
-        projectOrderUpdatedAt: projectOrderUpdatedAt.value || undefined,
-        exchangeRates: rememberedExchangeRates.value,
-        quickExchangeRates: quickExchangeRates.value,
-        lastExpenseProjectId: lastExpenseProjectId.value || undefined,
-        lastCurrencyByProject: lastCurrencyByProject.value,
-        lastSplitByProject: lastSplitByProject.value,
-        settlementViewByProject: settlementViewByProject.value,
-        userProfile: userProfile.value,
+      if (id) {
+        window.localStorage.setItem(ACTIVE_PROJECT_STORAGE_KEY, id)
+      } else {
+        window.localStorage.removeItem(ACTIVE_PROJECT_STORAGE_KEY)
       }
-      window.localStorage.setItem(PREFS_STORAGE_KEY, JSON.stringify(data))
     } catch {
-      // 忽略受限儲存環境
+      // 忽略受限環境
     }
   }
 
-  async function updateUserProfile(
-    patch: {
-      displayName?: string
-      avatarColor?: string
-      avatarImage?: string | null
-      paymentInfo?: string | null
-    },
-    options?: { applyToExistingProjects?: boolean },
-  ): Promise<number> {
-    const nextPaymentInfo =
-      patch.paymentInfo === null
-        ? undefined
-        : patch.paymentInfo !== undefined
-          ? patch.paymentInfo.trim().slice(0, 120) || undefined
-          : userProfile.value.paymentInfo
-
-    const next: UserProfile = {
-      displayName:
-        patch.displayName !== undefined
-          ? patch.displayName.trim().slice(0, 50)
-          : userProfile.value.displayName,
-      avatarColor:
-        patch.avatarColor !== undefined && patch.avatarColor.trim()
-          ? patch.avatarColor.trim()
-          : userProfile.value.avatarColor || AVATAR_PALETTE[0],
-      avatarImage:
-        patch.avatarImage === null
-          ? undefined
-          : patch.avatarImage !== undefined
-            ? patch.avatarImage
-            : userProfile.value.avatarImage,
-      paymentInfo: nextPaymentInfo,
-      updatedAt: Date.now(),
-    }
-    userProfile.value = next
-    saveUserPrefs()
-    markGoogleDriveDirty()
-
-    let updatedProjectsCount = 0
-    if (options?.applyToExistingProjects) {
-      const nonDeleted = projects.value.filter((p) => !p.isDeleted)
-      for (const proj of nonDeleted) {
-        const myId =
-          proj.syncMeta?.myMemberId ||
-          proj.defaultPayerId ||
-          proj.members[0]?.id
-        if (!myId) continue
-        const targetMember = proj.members.find((m) => m.id === myId)
-        if (!targetMember) continue
-        await updateProjectMember(proj.id, myId, {
-          name: next.displayName || targetMember.name,
-          avatarColor: next.avatarColor,
-          avatarImage: next.avatarImage ?? null,
-          paymentInfo: next.paymentInfo ?? null,
-        })
-        updatedProjectsCount += 1
-      }
-    }
-    return updatedProjectsCount
-  }
-
-  function getRememberedExchangeRate(from: string, to: string): number | null {
-    const f = from.trim().toUpperCase()
-    const tCode = to.trim().toUpperCase()
-    if (!f || !tCode || f === tCode) return 1
-    const val = rememberedExchangeRates.value[`${f}_${tCode}`]
-    return typeof val === 'number' && Number.isFinite(val) && val > 0 ? val : null
-  }
-
-  function rememberExchangeRate(from: string, to: string, rate: number): void {
-    const f = from.trim().toUpperCase()
-    const tCode = to.trim().toUpperCase()
-    if (!f || !tCode || f === tCode) return
-    if (!Number.isFinite(rate) || rate <= 0) return
-    rememberedExchangeRates.value = {
-      ...rememberedExchangeRates.value,
-      [`${f}_${tCode}`]: rate,
-    }
-    saveUserPrefs()
-  }
-
-  function clearRememberedExchangeRate(from: string, to: string): void {
-    const f = from.trim().toUpperCase()
-    const tCode = to.trim().toUpperCase()
-    const key = `${f}_${tCode}`
-    if (!(key in rememberedExchangeRates.value)) return
-    const next = { ...rememberedExchangeRates.value }
-    delete next[key]
-    rememberedExchangeRates.value = next
-    saveUserPrefs()
-  }
-
-  function getQuickExchangeRatePresets(
-    from: string,
-    to: string,
-  ): QuickExchangeRatePresets {
-    const f = from.trim().toUpperCase()
-    const tCode = to.trim().toUpperCase()
-    if (!f || !tCode || f === tCode) return {}
-    return quickExchangeRates.value[`${f}_${tCode}`] ?? {}
-  }
-
-  function saveQuickExchangeRatePreset(
-    from: string,
-    to: string,
-    slot: 'cash' | 'card',
-    rate: number,
-  ): void {
-    const f = from.trim().toUpperCase()
-    const tCode = to.trim().toUpperCase()
-    if (!f || !tCode || f === tCode) return
-    if (!Number.isFinite(rate) || rate <= 0) return
-    const key = `${f}_${tCode}`
-    quickExchangeRates.value = {
-      ...quickExchangeRates.value,
-      [key]: {
-        ...(quickExchangeRates.value[key] ?? {}),
-        [slot]: rate,
-      },
-    }
-    saveUserPrefs()
-  }
-
-  /** 將消費拆帳結果正規化為可重用記憶模板（保留墊付人、拆帳模式與分攤名單／比例，不帶入舊帳單固定金額避免阻擋下筆） */
-  function sanitizeSplitConfigForMemory(config: SplitConfig): SplitConfig {
-    const primaryPayerId =
-      config.payers && config.payers.length > 0
-        ? [...config.payers].sort((a, b) => b.amount - a.amount)[0].memberId
-        : config.payerId
-    return {
-      payerId: primaryPayerId,
-      mode: config.mode,
-      shares: config.shares.map((s) => {
-        if (config.mode === 'weight') {
-          const weight =
-            s.weight !== undefined ? s.weight : s.finalAmount > 0 ? 1 : 0
-          return {
-            memberId: s.memberId,
-            finalAmount: 0,
-            isIncludedInRemainder: weight > 0,
-            weight,
-          }
-        }
-        if (config.mode === 'percentage') {
-          const percent = s.percent ?? 0
-          return {
-            memberId: s.memberId,
-            finalAmount: 0,
-            isIncludedInRemainder: percent > 0,
-            percent,
-          }
-        }
-        if (config.mode === 'custom_plus_equal') {
-          const included = Boolean(
-            s.isIncludedInRemainder ||
-              (s.customAmount ?? 0) > 0 ||
-              s.finalAmount > 0,
-          )
-          return {
-            memberId: s.memberId,
-            finalAmount: 0,
-            customAmount: 0,
-            isIncludedInRemainder: included,
-          }
-        }
-        const included =
-          s.isIncludedInRemainder !== undefined
-            ? s.isIncludedInRemainder
-            : s.finalAmount > 0
-        return {
-          memberId: s.memberId,
-          finalAmount: 0,
-          isIncludedInRemainder: included,
-        }
-      }),
-    }
-  }
-
-  function getLatestExpenseTx(projectId?: string): Transaction | null {
-    const activeSet = new Set(activeProjects.value.map((p) => p.id))
-    let best: Transaction | null = null
-    for (const tx of transactions.value) {
-      if (tx.isDeleted || tx.type === 'transfer' || !tx.projectId) continue
-      if (projectId) {
-        if (tx.projectId !== projectId) continue
-      } else if (!activeSet.has(tx.projectId)) {
-        continue
-      }
-      if (
-        !best ||
-        tx.updatedAt > best.updatedAt ||
-        (tx.updatedAt === best.updatedAt && tx.date > best.date)
-      ) {
-        best = tx
-      }
-    }
-    return best
-  }
-
-  function rememberLastExpenseProject(projectId: string): void {
-    const id = projectId.trim()
-    if (!id || lastExpenseProjectId.value === id) return
-    lastExpenseProjectId.value = id
-    saveUserPrefs()
-  }
-
-  function getLastExpenseProject(): Project | null {
-    const list = activeProjects.value
-    if (list.length === 0) return null
-    if (lastExpenseProjectId.value) {
-      const remembered = list.find((p) => p.id === lastExpenseProjectId.value)
-      if (remembered) return remembered
-    }
-    const latestTx = getLatestExpenseTx()
-    if (latestTx) {
-      const fromTx = list.find((p) => p.id === latestTx.projectId)
-      if (fromTx) return fromTx
-    }
-    if (activeProject.value && list.some((p) => p.id === activeProject.value?.id)) {
-      return activeProject.value
-    }
-    return list[0] ?? null
-  }
-
-  function getProjectLastCurrency(projectId: string, fallbackCurrency: string): string {
-    const remembered = lastCurrencyByProject.value[projectId]
-    if (remembered && /^[A-Z]{3}$/.test(remembered)) {
-      return remembered
-    }
-    const latestTx = getLatestExpenseTx(projectId)
-    if (latestTx && /^[A-Z]{3}$/.test(latestTx.currency.trim().toUpperCase())) {
-      return latestTx.currency.trim().toUpperCase()
-    }
-    return fallbackCurrency.trim().toUpperCase()
-  }
-
-  function rememberProjectLastCurrency(projectId: string, currency: string): void {
-    const code = currency.trim().toUpperCase()
-    if (!projectId || !/^[A-Z]{3}$/.test(code)) return
-    if (lastCurrencyByProject.value[projectId] === code) return
-    lastCurrencyByProject.value = {
-      ...lastCurrencyByProject.value,
-      [projectId]: code,
-    }
-    saveUserPrefs()
-  }
-
-  function rememberProjectLastSplitConfig(
-    projectId: string,
-    config: SplitConfig,
-  ): void {
-    if (!projectId || !config) return
-    const sanitized = sanitizeSplitConfigForMemory(config)
-    lastSplitByProject.value = {
-      ...lastSplitByProject.value,
-      [projectId]: sanitized,
-    }
-    saveUserPrefs()
-  }
-
-  function getProjectLastSplitConfig(projectId: string): SplitConfig | null {
-    const proj = projects.value.find((p) => p.id === projectId && !p.isDeleted)
-    if (!proj) return null
-    const raw =
-      lastSplitByProject.value[projectId] ??
-      (getLatestExpenseTx(projectId)?.splitConfig
-        ? sanitizeSplitConfigForMemory(
-            getLatestExpenseTx(projectId)!.splitConfig!,
-          )
-        : null)
-    if (!raw) return null
-    const memberIds = new Set(proj.members.map((m) => m.id))
-    const validShares = raw.shares.filter((s) => memberIds.has(s.memberId))
-    if (validShares.length === 0) return null
-    const resolvedPayerId = memberIds.has(raw.payerId)
-      ? raw.payerId
-      : proj.defaultPayerId && memberIds.has(proj.defaultPayerId)
-        ? proj.defaultPayerId
-        : proj.members[0]?.id ?? raw.payerId
-    return {
-      payerId: resolvedPayerId,
-      mode: raw.mode,
-      shares: validShares.map((s) => ({ ...s })),
-    }
-  }
-
-  /** 當使用者主動切換「公費優先墊付」或在設定頁改「預設墊付人」時，同步更新該專案記憶之墊付人 */
-  function syncRememberedPayerForProject(
-    projectId: string,
-    nextPayerId: string | undefined,
-  ): void {
-    if (!projectId || !nextPayerId) return
-    const base = getProjectLastSplitConfig(projectId)
-    if (!base) return
-    if (lastSplitByProject.value[projectId]?.payerId === nextPayerId) return
-    lastSplitByProject.value = {
-      ...lastSplitByProject.value,
-      [projectId]: {
-        ...base,
-        payerId: nextPayerId,
-      },
-    }
-    saveUserPrefs()
-  }
-
-  /** 取得專案目前於此裝置結算頁使用的結帳幣別（優先讀取本機視角偏好，未設定時回退專案設定／記帳主幣別） */
-  function getProjectSettlementCurrency(
-    project: Pick<Project, 'baseCurrency' | 'settlementCurrency'> & { id?: string },
-  ): string {
-    const localCur = project.id
-      ? settlementViewByProject.value[project.id]?.settlementCurrency
-      : undefined
-    return (localCur || project.settlementCurrency || project.baseCurrency)
-      .trim()
-      .toUpperCase()
-  }
-
-  /** 取得專案目前於此裝置結算頁使用的匯率模式（本機偏好獨立保存，不與旅伴透過 Firestore 互蓋） */
-  function getProjectSettlementRateMode(
-    project: Pick<Project, 'id' | 'settlementRateMode'>,
-  ): 'per_tx' | 'live' | 'custom' {
-    return (
-      settlementViewByProject.value[project.id]?.settlementRateMode ??
-      project.settlementRateMode ??
-      'per_tx'
-    )
-  }
-
-  /** 取得任意兩幣別的最佳參考匯率（即時快取 > 記憶自訂 > 離線估算） */
-  function getEffectiveExchangeRate(from: string, to: string): number {
-    const f = from.trim().toUpperCase()
-    const tCode = to.trim().toUpperCase()
-    if (!f || !tCode || f === tCode) return 1
-    const live = getLiveExchangeRate(f, tCode)
-    if (live !== null && live > 0) return live
-    const remembered = getRememberedExchangeRate(f, tCode)
-    if (remembered !== null && remembered > 0) return remembered
-    return getSuggestedExchangeRate(f, tCode)
-  }
-
-  function getProjectCustomRatesForTarget(
-    project: Project,
-    targetCurrency: string,
-  ): Record<string, number> | undefined {
-    const target = targetCurrency.trim().toUpperCase()
-    const localView = settlementViewByProject.value[project.id]
-    const localBucket = localView?.settlementCustomRatesByCurrency?.[target]
-    if (localBucket && Object.keys(localBucket).length > 0) {
-      return localBucket
-    }
-    const currentSettle = getProjectSettlementCurrency(project)
-    if (
-      target === currentSettle &&
-      localView?.settlementCustomRates &&
-      Object.keys(localView.settlementCustomRates).length > 0
-    ) {
-      return localView.settlementCustomRates
-    }
-    const bucket = project.settlementCustomRatesByCurrency?.[target]
-    if (bucket && Object.keys(bucket).length > 0) {
-      return bucket
-    }
-    if (
-      target === currentSettle &&
-      project.settlementCustomRates &&
-      Object.keys(project.settlementCustomRates).length > 0
-    ) {
-      return project.settlementCustomRates
-    }
-    return undefined
-  }
-
-  /**
-   * 依據專案設定的結帳幣別與匯率模式（per_tx / live / custom）產出結算幣別與匯率覆寫設定
-   */
-  function getProjectSettlementRateOverrides(
-    project: Project,
-    projectTxs?: Transaction[],
-  ): Record<string, number> | undefined {
-    const mode = getProjectSettlementRateMode(project)
-    if (mode === 'per_tx') return undefined
-
-    const settleCurrency = getProjectSettlementCurrency(project)
-    const savedCustomForTarget = getProjectCustomRatesForTarget(
-      project,
-      settleCurrency,
-    )
-    const txs =
-      projectTxs ??
-      visibleTransactions.value.filter((tx) => tx.projectId === project.id)
-    const foreignCurrencies = new Set<string>()
-    for (const tx of txs) {
-      const c = tx.currency.trim().toUpperCase()
-      if (c && c !== settleCurrency) foreignCurrencies.add(c)
-    }
-
-    const overrides: Record<string, number> = {}
-    for (const cur of foreignCurrencies) {
-      if (mode === 'live') {
-        const rate = getEffectiveExchangeRate(cur, settleCurrency)
-        if (rate > 0) {
-          overrides[cur] = rate
-        }
-      } else if (mode === 'custom') {
-        const custom = savedCustomForTarget?.[cur]
-        if (typeof custom === 'number' && Number.isFinite(custom) && custom > 0) {
-          overrides[cur] = custom
-        } else {
-          const fallback = getEffectiveExchangeRate(cur, settleCurrency)
-          if (fallback > 0) {
-            overrides[cur] = fallback
-          }
-        }
-      }
-    }
-
-    return Object.keys(overrides).length > 0 ? overrides : undefined
-  }
-
-  function getProjectSettlementOptions(
-    project: Project,
-    projectTxs?: Transaction[],
-  ): { settlementCurrency: string; options: SettleUpOptions } {
-    const settlementCurrency = getProjectSettlementCurrency(project)
-    const projectBaseCurrency = project.baseCurrency.trim().toUpperCase()
-    const overrideRatesByCurrency = getProjectSettlementRateOverrides(
-      project,
-      projectTxs,
-    )
-    const baseToSettlementRate =
-      projectBaseCurrency === settlementCurrency
-        ? 1
-        : getEffectiveExchangeRate(projectBaseCurrency, settlementCurrency)
-
-    return {
-      settlementCurrency,
-      options: {
-        ...(overrideRatesByCurrency ? { overrideRatesByCurrency } : {}),
-        projectBaseCurrency,
-        baseToSettlementRate,
-      },
-    }
-  }
-
-  /**
-   * 切換此裝置上的結帳幣別（純本機視角偏好，不推送 Firestore 避免多人結帳時互相覆寫打架）
-   */
-  async function updateProjectSettlementCurrency(
-    projectId: string,
-    currency: string,
-  ): Promise<Project | null> {
-    const existing = projects.value.find((p) => p.id === projectId && !p.isDeleted)
-    if (!existing) return null
-
-    const normalized = CurrencyCodeSchema.parse(currency)
-    const prevLocal = settlementViewByProject.value[projectId]
-    const prevSettleCurrency = getProjectSettlementCurrency(existing)
-    if (normalized === prevSettleCurrency && prevLocal?.settlementCurrency === normalized) {
-      return existing
-    }
-
-    // 依目標結帳幣別分桶完整保留各幣別曾設定的自訂結算匯率，切換後再切回絕不洗掉
-    const nextByCurrency: Record<string, Record<string, number>> = {}
-    const sourceByCur =
-      prevLocal?.settlementCustomRatesByCurrency ??
-      existing.settlementCustomRatesByCurrency
-    if (sourceByCur) {
-      for (const [targetCur, map] of Object.entries(sourceByCur)) {
-        nextByCurrency[targetCur] = { ...map }
-      }
-    }
-    const prevFlat =
-      prevLocal?.settlementCustomRates ?? existing.settlementCustomRates
-    if (prevFlat && Object.keys(prevFlat).length > 0) {
-      nextByCurrency[prevSettleCurrency] = {
-        ...(nextByCurrency[prevSettleCurrency] ?? {}),
-        ...prevFlat,
-      }
-    }
-
-    const prevMode = getProjectSettlementRateMode(existing)
-    const restoredCustomForNewTarget = nextByCurrency[normalized]
-    const nextMode =
-      prevMode === 'custom' && !restoredCustomForNewTarget ? 'live' : prevMode
-
-    settlementViewByProject.value = {
-      ...settlementViewByProject.value,
-      [projectId]: {
-        settlementCurrency: normalized,
-        settlementRateMode: nextMode,
-        settlementCustomRates: restoredCustomForNewTarget
-          ? { ...restoredCustomForNewTarget }
-          : undefined,
-        settlementCustomRatesByCurrency:
-          Object.keys(nextByCurrency).length > 0 ? nextByCurrency : undefined,
-      },
-    }
-    saveUserPrefs()
-    return existing
-  }
-
-  /**
-   * 切換此裝置上的結算匯率模式／自訂結算匯率（純本機視角偏好，不推送 Firestore）
-   */
-  async function updateProjectSettlementRateConfig(
-    projectId: string,
-    mode: 'per_tx' | 'live' | 'custom',
-    customRates?: Record<string, number>,
-  ): Promise<Project | null> {
-    const existing = projects.value.find((p) => p.id === projectId && !p.isDeleted)
-    if (!existing) return null
-
-    const prevLocal = settlementViewByProject.value[projectId]
-    const settleCurrency = getProjectSettlementCurrency(existing)
-    const cleanCustom: Record<string, number> = {}
-    if (customRates) {
-      for (const [k, v] of Object.entries(customRates)) {
-        const code = k.trim().toUpperCase()
-        if (/^[A-Z]{3}$/.test(code) && typeof v === 'number' && Number.isFinite(v) && v > 0) {
-          cleanCustom[code] = v
-        }
-      }
-    }
-
-    const mergedCurrentCustom =
-      Object.keys(cleanCustom).length > 0
-        ? cleanCustom
-        : getProjectCustomRatesForTarget(existing, settleCurrency)
-
-    const nextByCurrency: Record<string, Record<string, number>> = {}
-    const sourceByCur =
-      prevLocal?.settlementCustomRatesByCurrency ??
-      existing.settlementCustomRatesByCurrency
-    if (sourceByCur) {
-      for (const [targetCur, map] of Object.entries(sourceByCur)) {
-        nextByCurrency[targetCur] = { ...map }
-      }
-    }
-    if (mergedCurrentCustom && Object.keys(mergedCurrentCustom).length > 0) {
-      nextByCurrency[settleCurrency] = { ...mergedCurrentCustom }
-    }
-
-    settlementViewByProject.value = {
-      ...settlementViewByProject.value,
-      [projectId]: {
-        settlementCurrency: settleCurrency,
-        settlementRateMode: mode,
-        settlementCustomRates: mergedCurrentCustom
-          ? { ...mergedCurrentCustom }
-          : prevLocal?.settlementCustomRates,
-        settlementCustomRatesByCurrency:
-          Object.keys(nextByCurrency).length > 0 ? nextByCurrency : undefined,
-      },
-    }
-    saveUserPrefs()
-    return existing
-  }
-
-  const availableCurrencies = computed(() => {
-    const set = new Set<string>(enabledCurrencies.value)
-    if (defaultCurrency.value) set.add(defaultCurrency.value)
-    return Array.from(set)
+  // 綁定領域子 Store 跨模組橋接（維持單向依賴、零循環）
+  userPrefsStore.bindDriveDirtyHook(() => {
+    googleDriveStore.markGoogleDriveDirty()
   })
 
+  realtimeSyncStore.bindLedgerContext({
+    projects,
+    transactions,
+    activeProjectId,
+    projectOrder,
+    userProfile,
+    persistActiveProjectId,
+    saveUserPrefs: userPrefsStore.saveUserPrefs,
+    toPlainClone,
+  })
+
+  // ==================== 專案與交易衍生視圖 ====================
   /** 所有未刪除之專案（含已封存），供查詢與總額對照使用 */
   const allNonDeletedProjects = computed(() => {
     const orderIndex = new Map<string, number>()
@@ -1273,43 +244,6 @@ export const useLedgerStore = defineStore('ledger', () => {
   const archivedProjects = computed(() =>
     allNonDeletedProjects.value.filter((p) => Boolean(p.isArchived)),
   )
-
-  function reorderProjects(sourceId: string, targetId: string): void {
-    if (!sourceId || !targetId || sourceId === targetId) return
-    const currentIds = activeProjects.value.map((p) => p.id)
-    const fromIdx = currentIds.indexOf(sourceId)
-    const toIdx = currentIds.indexOf(targetId)
-    if (fromIdx === -1 || toIdx === -1) return
-
-    const next = [...currentIds]
-    const [moved] = next.splice(fromIdx, 1)
-    next.splice(toIdx, 0, moved)
-    projectOrder.value = next
-    projectOrderUpdatedAt.value = Date.now()
-    saveUserPrefs()
-    markGoogleDriveDirty()
-  }
-
-  function moveProjectOrder(
-    projectId: string,
-    direction: 'up' | 'down',
-  ): boolean {
-    const currentIds = activeProjects.value.map((p) => p.id)
-    const idx = currentIds.indexOf(projectId)
-    if (idx === -1) return false
-
-    const targetIdx = direction === 'up' ? idx - 1 : idx + 1
-    if (targetIdx < 0 || targetIdx >= currentIds.length) return false
-
-    const next = [...currentIds]
-    const [moved] = next.splice(idx, 1)
-    next.splice(targetIdx, 0, moved)
-    projectOrder.value = next
-    projectOrderUpdatedAt.value = Date.now()
-    saveUserPrefs()
-    markGoogleDriveDirty()
-    return true
-  }
 
   const activeProject = computed<Project | null>(() => {
     if (!activeProjectId.value) {
@@ -1351,24 +285,152 @@ export const useLedgerStore = defineStore('ledger', () => {
   )
 
   const activeProjectTransactions = computed(() => {
-    if (!activeProject.value) return []
+    const currentProject = activeProject.value
+    if (!currentProject) return []
     return visibleTransactions.value.filter(
-      (tx) => tx.projectId === activeProject.value!.id,
+      (tx) => tx.projectId === currentProject.id,
     )
   })
 
-  /** 判斷該筆交易是否為「繳公費」轉帳（收款對象為公費袋，或多人共同繳交之公費紀錄） */
-  function isPoolCollectionTransaction(tx: Transaction, project?: Project | null): boolean {
-    if (tx.type !== 'transfer' || !tx.splitConfig) return false
-    const activePayers = (tx.splitConfig.payers ?? []).filter((p) => p.amount > 0)
-    if (activePayers.length > 1) return true
-    const toId = tx.splitConfig.shares[0]?.memberId
-    if (!toId) return false
-    if (toId.startsWith('pool_')) return true
-    const proj = project ?? projects.value.find((p) => p.id === tx.projectId)
-    return Boolean(proj?.members.some((m) => m.id === toId && m.isPool))
+  settlementViewStore.bindDataSource({
+    findNonDeletedProject: (projectId) =>
+      projects.value.find((p) => p.id === projectId && !p.isDeleted),
+    getVisibleProjectTransactions: (projectId) =>
+      visibleTransactions.value.filter((tx) => tx.projectId === projectId),
+  })
+
+  // ==================== 記帳記憶查詢（跨專案與偏好） ====================
+  function getLatestExpenseTx(projectId?: string): Transaction | null {
+    const activeSet = new Set(activeProjects.value.map((p) => p.id))
+    let best: Transaction | null = null
+    for (const tx of transactions.value) {
+      if (tx.isDeleted || tx.type === 'transfer' || !tx.projectId) continue
+      if (projectId) {
+        if (tx.projectId !== projectId) continue
+      } else if (!activeSet.has(tx.projectId)) {
+        continue
+      }
+      if (
+        !best ||
+        tx.updatedAt > best.updatedAt ||
+        (tx.updatedAt === best.updatedAt && tx.date > best.date)
+      ) {
+        best = tx
+      }
+    }
+    return best
   }
 
+  function getLastExpenseProject(): Project | null {
+    const list = activeProjects.value
+    if (list.length === 0) return null
+    if (lastExpenseProjectId.value) {
+      const remembered = list.find((p) => p.id === lastExpenseProjectId.value)
+      if (remembered) return remembered
+    }
+    const latestTx = getLatestExpenseTx()
+    if (latestTx) {
+      const fromTx = list.find((p) => p.id === latestTx.projectId)
+      if (fromTx) return fromTx
+    }
+    if (
+      activeProject.value &&
+      list.some((p) => p.id === activeProject.value?.id)
+    ) {
+      return activeProject.value
+    }
+    return list[0] ?? null
+  }
+
+  function getProjectLastCurrency(
+    projectId: string,
+    fallbackCurrency: string,
+  ): string {
+    const remembered = lastCurrencyByProject.value[projectId]
+    if (remembered && /^[A-Z]{3}$/.test(remembered)) {
+      return remembered
+    }
+    const latestTx = getLatestExpenseTx(projectId)
+    if (latestTx && /^[A-Z]{3}$/.test(latestTx.currency.trim().toUpperCase())) {
+      return latestTx.currency.trim().toUpperCase()
+    }
+    return fallbackCurrency.trim().toUpperCase()
+  }
+
+  function getProjectLastSplitConfig(projectId: string): SplitConfig | null {
+    const proj = projects.value.find((p) => p.id === projectId && !p.isDeleted)
+    if (!proj) return null
+    const latestSplitConfig = getLatestExpenseTx(projectId)?.splitConfig
+    const raw =
+      lastSplitByProject.value[projectId] ??
+      (latestSplitConfig ? sanitizeSplitConfigForMemory(latestSplitConfig) : null)
+    if (!raw) return null
+    const memberIds = new Set(proj.members.map((m) => m.id))
+    const validShares = raw.shares.filter((s) => memberIds.has(s.memberId))
+    if (validShares.length === 0) return null
+    const resolvedPayerId = memberIds.has(raw.payerId)
+      ? raw.payerId
+      : proj.defaultPayerId && memberIds.has(proj.defaultPayerId)
+        ? proj.defaultPayerId
+        : proj.members[0]?.id ?? raw.payerId
+    return {
+      payerId: resolvedPayerId,
+      mode: raw.mode,
+      shares: validShares.map((s) => ({ ...s })),
+    }
+  }
+
+  /** 當使用者主動切換「公費優先墊付」或在設定頁改「預設墊付人」時，同步更新該專案記憶之墊付人 */
+  function syncRememberedPayerForProject(
+    projectId: string,
+    nextPayerId: string | undefined,
+  ): void {
+    if (!projectId || !nextPayerId) return
+    const base = getProjectLastSplitConfig(projectId)
+    if (!base) return
+    if (lastSplitByProject.value[projectId]?.payerId === nextPayerId) return
+    lastSplitByProject.value = {
+      ...lastSplitByProject.value,
+      [projectId]: {
+        ...base,
+        payerId: nextPayerId,
+      },
+    }
+    userPrefsStore.saveUserPrefs()
+  }
+
+  // ==================== 公費與回收桶模組掛載 ====================
+  const poolActions = createPoolActions({
+    projects,
+    transactions,
+    getEffectiveExchangeRate: userPrefsStore.getEffectiveExchangeRate,
+    addTransaction,
+    updateTransaction,
+    syncRememberedPayerForProject,
+    enqueueAndFlushProjectChange: realtimeSyncStore.enqueueAndFlushProjectChange,
+    markGoogleDriveDirty: googleDriveStore.markGoogleDriveDirty,
+    toPlainClone,
+  })
+
+  const trashActions = createTrashActions({
+    projects,
+    transactions,
+    activeProjectId,
+    activeProject,
+    activeProjects,
+    deletedProjects,
+    deletedTransactions,
+    projectOrder,
+    persistActiveProjectId,
+    saveUserPrefs: userPrefsStore.saveUserPrefs,
+    unsubscribeProjectRealtime: realtimeSyncStore.unsubscribeProjectRealtime,
+    refreshOutboxCounts: realtimeSyncStore.refreshOutboxCounts,
+    enqueueAndFlushProjectChange: realtimeSyncStore.enqueueAndFlushProjectChange,
+    markGoogleDriveDirty: googleDriveStore.markGoogleDriveDirty,
+    toPlainClone,
+  })
+
+  // ==================== 專案結算與統計視圖 ====================
   /** 專案內消費/退款支出（不含還款與繳公費 transfer，避免累計總支出與圓餅圖重複計算） */
   const activeProjectExpenses = computed(() =>
     activeProjectTransactions.value.filter((tx) => tx.type !== 'transfer'),
@@ -1379,7 +441,7 @@ export const useLedgerStore = defineStore('ledger', () => {
     activeProjectTransactions.value.filter(
       (tx) =>
         tx.type !== 'transfer' ||
-        isPoolCollectionTransaction(tx, activeProject.value),
+        poolActions.isPoolCollectionTransaction(tx, activeProject.value),
     ),
   )
 
@@ -1392,10 +454,11 @@ export const useLedgerStore = defineStore('ledger', () => {
   const activeProjectEffectiveExpenses = computed(() => {
     const proj = activeProject.value
     if (!proj) return []
-    const { settlementCurrency, options } = getProjectSettlementOptions(
-      proj,
-      activeProjectTransactions.value,
-    )
+    const { settlementCurrency, options } =
+      settlementViewStore.getProjectSettlementOptions(
+        proj,
+        activeProjectTransactions.value,
+      )
     return applySettlementRatesToTransactions(
       activeProjectExpenses.value,
       settlementCurrency,
@@ -1408,10 +471,11 @@ export const useLedgerStore = defineStore('ledger', () => {
   const activeProjectSettleUp = computed(() => {
     const proj = activeProject.value
     if (!proj) return null
-    const { settlementCurrency, options } = getProjectSettlementOptions(
-      proj,
-      activeProjectTransactions.value,
-    )
+    const { settlementCurrency, options } =
+      settlementViewStore.getProjectSettlementOptions(
+        proj,
+        activeProjectTransactions.value,
+      )
     return calculateSettleUp(
       activeProjectTransactions.value,
       settlementCurrency,
@@ -1431,7 +495,7 @@ export const useLedgerStore = defineStore('ledger', () => {
     )
   })
 
-  /** 各專案累計淨消費總額對照表（以記帳主幣別 baseCurrency 計算，供首頁小卡與頂部標頭顯示） */
+  /** 各專案累計淨消費總額對照表（明確採 per_tx 原始匯率口徑換算至專案主幣別 baseCurrency，供首頁小卡與頂部標頭顯示） */
   const projectTotalExpenseMap = computed<Record<string, number>>(() => {
     const txByProject = new Map<string, Transaction[]>()
     for (const tx of visibleTransactions.value) {
@@ -1444,22 +508,8 @@ export const useLedgerStore = defineStore('ledger', () => {
     const result: Record<string, number> = {}
     for (const proj of allNonDeletedProjects.value) {
       const projTxs = txByProject.get(proj.id) ?? []
-      if (projTxs.length === 0) {
-        result[proj.id] = 0
-        continue
-      }
-      const sameCurrency =
-        getProjectSettlementCurrency(proj) === proj.baseCurrency.trim().toUpperCase()
-      const overrides = sameCurrency
-        ? getProjectSettlementRateOverrides(proj, projTxs)
-        : undefined
-      const settle = calculateSettleUp(
-        projTxs,
-        proj.baseCurrency,
-        proj.members.map((m) => m.id),
-        overrides ? { overrideRatesByCurrency: overrides } : undefined,
-      )
-      result[proj.id] = settle.totalProjectExpense
+      result[proj.id] =
+        projTxs.length === 0 ? 0 : sumProjectExpense(projTxs, proj.baseCurrency)
     }
     return result
   })
@@ -1469,20 +519,8 @@ export const useLedgerStore = defineStore('ledger', () => {
   }
 
   function getProjectTransactionCount(projectId: string): number {
-    return visibleTransactions.value.filter((tx) => tx.projectId === projectId).length
-  }
-
-  function persistActiveProjectId(id: string | null): void {
-    if (typeof window === 'undefined') return
-    try {
-      if (id) {
-        window.localStorage.setItem(ACTIVE_PROJECT_STORAGE_KEY, id)
-      } else {
-        window.localStorage.removeItem(ACTIVE_PROJECT_STORAGE_KEY)
-      }
-    } catch {
-      // 忽略受限環境
-    }
+    return visibleTransactions.value.filter((tx) => tx.projectId === projectId)
+      .length
   }
 
   function getProjectById(projectId: string | undefined): Project | null {
@@ -1495,874 +533,132 @@ export const useLedgerStore = defineStore('ledger', () => {
     return projects.value.find((p) => p.id === projectId) ?? null
   }
 
-  // ==================== 幣別管理（除預設幣別外皆可刪除、搜尋新增） ====================
-  function setDefaultCurrency(code: string): void {
-    const normalized = CurrencyCodeSchema.parse(code)
-    defaultCurrency.value = normalized
-    if (!enabledCurrencies.value.includes(normalized)) {
-      enabledCurrencies.value = [...enabledCurrencies.value, normalized]
-    }
-    saveUserPrefs()
+  function reorderProjects(sourceId: string, targetId: string): void {
+    if (!sourceId || !targetId || sourceId === targetId) return
+    const currentIds = activeProjects.value.map((p) => p.id)
+    const fromIdx = currentIds.indexOf(sourceId)
+    const toIdx = currentIds.indexOf(targetId)
+    if (fromIdx === -1 || toIdx === -1) return
+
+    const next = [...currentIds]
+    const [moved] = next.splice(fromIdx, 1)
+    next.splice(toIdx, 0, moved)
+    projectOrder.value = next
+    projectOrderUpdatedAt.value = Date.now()
+    userPrefsStore.saveUserPrefs()
+    googleDriveStore.markGoogleDriveDirty()
   }
 
-  function addCurrency(code: string): string {
-    const normalized = CurrencyCodeSchema.parse(code)
-    if (!enabledCurrencies.value.includes(normalized)) {
-      enabledCurrencies.value = [...enabledCurrencies.value, normalized]
-      saveUserPrefs()
-    }
-    return normalized
-  }
+  function moveProjectOrder(
+    projectId: string,
+    direction: 'up' | 'down',
+  ): boolean {
+    const currentIds = activeProjects.value.map((p) => p.id)
+    const idx = currentIds.indexOf(projectId)
+    if (idx === -1) return false
 
-  function removeCurrency(code: string): boolean {
-    const normalized = code.trim().toUpperCase()
-    // 預設幣別不可刪除，須先切換其他預設幣別後才可移除
-    if (normalized === defaultCurrency.value) {
-      return false
-    }
-    enabledCurrencies.value = enabledCurrencies.value.filter(
-      (c) => c !== normalized,
-    )
-    saveUserPrefs()
+    const targetIdx = direction === 'up' ? idx - 1 : idx + 1
+    if (targetIdx < 0 || targetIdx >= currentIds.length) return false
+
+    const next = [...currentIds]
+    const [moved] = next.splice(idx, 1)
+    next.splice(targetIdx, 0, moved)
+    projectOrder.value = next
+    projectOrderUpdatedAt.value = Date.now()
+    userPrefsStore.saveUserPrefs()
+    googleDriveStore.markGoogleDriveDirty()
     return true
   }
 
-  // ==================== 消費分類管理（所有分類皆可新增、修改、刪除） ====================
-  function addCategory(
-    label: string,
-    color?: string,
-    icon?: string,
-  ): ManagedCategory {
-    const trimmed = label.trim()
-    const key = `custom_${Date.now().toString(36)}`
-    const cat: ManagedCategory = {
-      key,
-      customLabel: trimmed,
-      color:
-        color || AVATAR_PALETTE[categories.value.length % AVATAR_PALETTE.length],
-      icon: isValidCategoryIconKey(icon) ? icon : 'tag',
-      isBuiltin: false,
-    }
-    categories.value = [...categories.value, cat]
-    saveUserPrefs()
-    markGoogleDriveDirty()
-    return cat
-  }
+  async function updateUserProfile(
+    patch: {
+      displayName?: string
+      avatarColor?: string
+      avatarImage?: string | null
+      paymentInfo?: string | null
+    },
+    options?: { applyToExistingProjects?: boolean },
+  ): Promise<number> {
+    const next = userPrefsStore.applyUserProfilePatch(patch)
 
-  function updateCategory(
-    key: string,
-    patch: { customLabel?: string; color?: string; icon?: string },
-  ): void {
-    categories.value = categories.value.map((cat) => {
-      if (cat.key !== key) return cat
-      const nextLabel =
-        patch.customLabel !== undefined
-          ? patch.customLabel.trim() || cat.customLabel
-          : cat.customLabel
-      return {
-        ...cat,
-        customLabel: nextLabel,
-        color: patch.color ?? cat.color,
-        icon: isValidCategoryIconKey(patch.icon) ? patch.icon : cat.icon,
-      }
-    })
-    saveUserPrefs()
-    markGoogleDriveDirty()
-  }
-
-  function removeCategory(key: string): boolean {
-    if (categories.value.length <= 1) {
-      return false
-    }
-    categories.value = categories.value.filter((c) => c.key !== key)
-    saveUserPrefs()
-    markGoogleDriveDirty()
-    return true
-  }
-
-  function resetDefaultCategories(): void {
-    const existingCustom = categories.value.filter((c) => !c.isBuiltin)
-    categories.value = [...cloneDefaultCategories(), ...existingCustom]
-    saveUserPrefs()
-    markGoogleDriveDirty()
-  }
-
-  // ==================== Google 雲端跨裝置自動同步協調器 ====================
-  function scheduleGoogleDriveAutoSync(delayMs = 2500): void {
-    if (typeof window === 'undefined') return
-    if (googleAutoSyncTimer) {
-      clearTimeout(googleAutoSyncTimer)
-      googleAutoSyncTimer = null
-    }
-    if (!googleDriveAutoSync.value || !getSavedGoogleClientId()) return
-    googleAutoSyncTimer = setTimeout(() => {
-      googleAutoSyncTimer = null
-      void syncGoogleDriveNow({ silentOnly: true })
-    }, delayMs)
-  }
-
-  function markGoogleDriveDirty(): void {
-    googleDriveDirty.value = true
-    setGoogleDriveDirtyChanges(true)
-    if (!googleDriveAutoSync.value) return
-    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
-      googleDriveStatus.value = 'offline'
-      return
-    }
-    if (googleDriveStatus.value !== 'syncing') {
-      googleDriveStatus.value = 'pending'
-    }
-    scheduleGoogleDriveAutoSync(2500)
-  }
-
-  function setGoogleDriveAutoSync(enabled: boolean): void {
-    googleDriveAutoSync.value = enabled
-    setGoogleAutoSyncEnabled(enabled)
-    if (enabled) {
-      if (isGoogleDriveConnected()) {
-        googleDriveStatus.value = googleDriveDirty.value ? 'pending' : 'synced'
-        if (googleDriveDirty.value) {
-          scheduleGoogleDriveAutoSync(600)
-        }
-      } else if (googleDriveAccount.value) {
-        googleDriveStatus.value = 'needs_auth'
-      }
-    } else if (googleAutoSyncTimer) {
-      clearTimeout(googleAutoSyncTimer)
-      googleAutoSyncTimer = null
-    }
-  }
-
-  async function syncGoogleDriveNow(options?: {
-    clientId?: string
-    silentOnly?: boolean
-    selectAccount?: boolean
-    enableAutoSyncOnSuccess?: boolean
-  }): Promise<GoogleDriveSyncResult | null> {
-    if (googleSyncInFlight) {
-      return googleSyncInFlight
-    }
-
-    const silentOnly = Boolean(options?.silentOnly)
-    const effectiveClientId = (
-      options?.clientId ?? getSavedGoogleClientId()
-    ).trim()
-
-    if (!effectiveClientId) {
-      if (silentOnly) return null
-      throw new GoogleDriveSyncError('ERR_MISSING_CLIENT_ID')
-    }
-
-    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
-      googleDriveStatus.value = 'offline'
-      if (silentOnly) return null
-      throw new GoogleDriveSyncError('ERR_GIS_LOAD', 'Offline')
-    }
-
-    const run = async (): Promise<GoogleDriveSyncResult | null> => {
-      googleDriveStatus.value = 'syncing'
-      googleDriveLastErrorCode.value = null
-      googleDriveLastErrorDetail.value = null
-      try {
-        const res = await syncWithGoogleDrive({
-          clientId: effectiveClientId,
-          silentOnly,
-          selectAccount: options?.selectAccount,
-          hasLocalChanges: googleDriveDirty.value || !googleDriveLastSyncAt.value,
-          onMergeRemote: (rawJson) => importAndMergeLedgerBackup(rawJson),
-          getMergedBackup: () => exportLedgerBackup(),
+    let updatedProjectsCount = 0
+    if (options?.applyToExistingProjects) {
+      const nonDeleted = projects.value.filter((p) => !p.isDeleted)
+      for (const proj of nonDeleted) {
+        const myId =
+          proj.syncMeta?.myMemberId ||
+          proj.defaultPayerId ||
+          proj.members[0]?.id
+        if (!myId) continue
+        const targetMember = proj.members.find((m) => m.id === myId)
+        if (!targetMember) continue
+        await updateProjectMember(proj.id, myId, {
+          name: next.displayName || targetMember.name,
+          avatarColor: next.avatarColor,
+          avatarImage: next.avatarImage ?? null,
+          paymentInfo: next.paymentInfo ?? null,
         })
-
-        googleDriveLastSyncAt.value = res.syncedAt
-        if (res.account) {
-          googleDriveAccount.value = res.account
-        }
-        googleDriveDirty.value = false
-        setGoogleDriveDirtyChanges(false)
-        googleDriveLastErrorCode.value = null
-        googleDriveLastErrorDetail.value = null
-        googleDriveStatus.value = 'synced'
-
-        // 首次透過互動式按鈕連結成功時，預設開啟跨裝置自動同步
-        if (!silentOnly && options?.enableAutoSyncOnSuccess !== false) {
-          if (!googleDriveAutoSync.value) {
-            googleDriveAutoSync.value = true
-            setGoogleAutoSyncEnabled(true)
-          }
-        }
-        return res
-      } catch (err) {
-        if (err instanceof GoogleDriveSyncError) {
-          if (err.code === 'ERR_OAUTH_SILENT_REQUIRED') {
-            googleDriveStatus.value = 'needs_auth'
-            googleDriveLastErrorCode.value = null
-            googleDriveLastErrorDetail.value = null
-            if (silentOnly) return null
-            throw err
-          }
-          googleDriveLastErrorCode.value = err.code
-          googleDriveLastErrorDetail.value = err.message
-          googleDriveStatus.value = 'error'
-          if (silentOnly) return null
-          throw err
-        }
-        googleDriveLastErrorCode.value = null
-        googleDriveLastErrorDetail.value =
-          err instanceof Error ? err.message : String(err)
-        googleDriveStatus.value = 'error'
-        if (silentOnly) return null
-        throw err
-      } finally {
-        googleSyncInFlight = null
+        updatedProjectsCount += 1
       }
     }
-
-    googleSyncInFlight = run()
-    return googleSyncInFlight
+    return updatedProjectsCount
   }
 
-  async function pullGoogleDriveNow(clientId?: string): Promise<{
-    stats: LedgerMergeStats
-    syncedAt: number
-  }> {
-    googleDriveStatus.value = 'syncing'
-    googleDriveLastErrorCode.value = null
-    googleDriveLastErrorDetail.value = null
-    try {
-      const downloaded = await downloadBackupFromGoogleDrive(clientId, false)
-      if (!downloaded) {
-        throw new GoogleDriveSyncError('ERR_DRIVE_NOT_FOUND')
-      }
-      const stats = await importAndMergeLedgerBackup(downloaded.rawJson)
-      googleDriveLastSyncAt.value = downloaded.syncedAt
-      if (downloaded.account) {
-        googleDriveAccount.value = downloaded.account
-      }
-      googleDriveStatus.value = googleDriveDirty.value ? 'pending' : 'synced'
-      return { stats, syncedAt: downloaded.syncedAt }
-    } catch (err) {
-      if (err instanceof GoogleDriveSyncError) {
-        googleDriveLastErrorCode.value = err.code
-        googleDriveLastErrorDetail.value = err.message
-        if (err.code === 'ERR_OAUTH_SILENT_REQUIRED') {
-          googleDriveStatus.value = 'needs_auth'
-          throw err
-        }
-      } else {
-        googleDriveLastErrorDetail.value =
-          err instanceof Error ? err.message : String(err)
-      }
-      googleDriveStatus.value = 'error'
-      throw err
-    }
-  }
-
-  function disconnectGoogleDriveAccount(): void {
-    if (googleAutoSyncTimer) {
-      clearTimeout(googleAutoSyncTimer)
-      googleAutoSyncTimer = null
-    }
-    disconnectGoogleDrive()
-    googleDriveAccount.value = null
-    googleDriveAutoSync.value = false
-    googleDriveLastErrorCode.value = null
-    googleDriveLastErrorDetail.value = null
-    googleDriveStatus.value = 'disconnected'
-  }
-
-  async function tryBackgroundGoogleDriveSync(force = false): Promise<void> {
-    if (!googleDriveAutoSync.value) return
-    if (!getSavedGoogleClientId()) return
-    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
-      googleDriveStatus.value = 'offline'
-      return
-    }
-    const elapsed = googleDriveLastSyncAt.value
-      ? Date.now() - googleDriveLastSyncAt.value
-      : Infinity
-    if (!force && !googleDriveDirty.value && elapsed < 15_000) {
-      return
-    }
-    await syncGoogleDriveNow({ silentOnly: true })
-  }
-
-  async function refreshOutboxCounts(): Promise<void> {
-    try {
-      const items = await listSyncOutbox()
-      const counts: Record<string, number> = {}
-      for (const item of items) {
-        counts[item.projectId] = (counts[item.projectId] ?? 0) + 1
-      }
-      outboxCountByProject.value = counts
-    } catch {
-      // 忽略受限環境
-    }
-  }
-
-  function isProjectRealtimeSynced(projectId: string | undefined): boolean {
-    if (!projectId) return false
-    const proj = projects.value.find((p) => p.id === projectId && !p.isDeleted)
-    return Boolean(proj?.syncMeta?.mode === 'firestore' && proj.syncMeta.shareId)
-  }
-
-  async function enqueueAndFlushProjectChange(
-    projectId: string | undefined,
-    entityType: 'project' | 'transaction',
-    entityId: string,
-    updatedAt: number,
-  ): Promise<void> {
-    if (!projectId || !isProjectRealtimeSynced(projectId)) return
-    await enqueueSyncOutbox(projectId, entityType, entityId, updatedAt)
-    await refreshOutboxCounts()
-    void flushProjectOutbox(projectId)
-  }
-
-  async function flushProjectOutbox(projectId: string): Promise<void> {
-    const proj = projects.value.find((p) => p.id === projectId && !p.isDeleted)
-    const shareId = proj?.syncMeta?.shareId
-    if (!proj || proj.syncMeta?.mode !== 'firestore' || !shareId) return
-    if (!isFirebaseConfigured()) return
-    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
-      syncStatusByProject.value = {
-        ...syncStatusByProject.value,
-        [projectId]: 'offline',
-      }
-      return
-    }
-    if (flushingProjectIds.has(projectId)) return
-
-    flushingProjectIds.add(projectId)
-    try {
-      const pendingItems = await listSyncOutbox(projectId)
-      if (pendingItems.length === 0) return
-
-      const syncImages = proj.syncMeta.syncReceiptImages !== false
-      const succeededKeys: string[] = []
-
-      for (const item of pendingItems) {
-        if (item.entityType === 'project') {
-          const latestProj = projects.value.find((p) => p.id === projectId)
-          if (latestProj) {
-            await pushProjectUpdateToFirestore(shareId, latestProj)
-          }
-          succeededKeys.push(item.key)
-        } else {
-          const latestTx = transactions.value.find((t) => t.id === item.entityId)
-          if (latestTx) {
-            await pushTransactionToFirestore(shareId, latestTx, syncImages)
-          }
-          succeededKeys.push(item.key)
-        }
-      }
-
-      await removeSyncOutboxKeys(succeededKeys)
-      await refreshOutboxCounts()
-      syncStatusByProject.value = {
-        ...syncStatusByProject.value,
-        [projectId]: 'synced',
-      }
-      lastSyncedAtByProject.value = {
-        ...lastSyncedAtByProject.value,
-        [projectId]: Date.now(),
-      }
-    } catch {
-      syncStatusByProject.value = {
-        ...syncStatusByProject.value,
-        [projectId]:
-          typeof navigator !== 'undefined' && navigator.onLine === false
-            ? 'offline'
-            : 'error',
-      }
-    } finally {
-      flushingProjectIds.delete(projectId)
-    }
-  }
-
-  async function flushAllSharedProjectsOutbox(): Promise<void> {
-    const sharedIds = projects.value
-      .filter((p) => !p.isDeleted && p.syncMeta?.mode === 'firestore' && p.syncMeta.shareId)
-      .map((p) => p.id)
-    for (const id of sharedIds) {
-      await flushProjectOutbox(id)
-    }
-  }
-
-  async function applyRemoteProjectUpdate(
-    localProjectId: string,
-    remoteProject: Project,
-  ): Promise<void> {
-    const localProj = projects.value.find((p) => p.id === localProjectId)
-    if (!localProj) return
-    if (remoteProject.updatedAt <= localProj.updatedAt) return
-
-    const mergedProject: Project = {
-      ...remoteProject,
-      id: localProj.id,
-      // 保留此裝置私有欄位（封存狀態、同步資訊與本機認領身分）
-      isArchived: localProj.isArchived,
-      defaultPayerId:
-        localProj.syncMeta?.myMemberId &&
-        remoteProject.members.some((m) => m.id === localProj.syncMeta?.myMemberId)
-          ? localProj.syncMeta.myMemberId
-          : remoteProject.defaultPayerId,
-      syncMeta: localProj.syncMeta
-        ? { ...localProj.syncMeta, lastSyncedAt: Date.now() }
-        : undefined,
-    }
-
-    const saved = await saveProjectToNormalVault(mergedProject)
-    projects.value = projects.value.map((p) => (p.id === localProjectId ? saved : p))
-    lastSyncedAtByProject.value = {
-      ...lastSyncedAtByProject.value,
-      [localProjectId]: Date.now(),
-    }
-  }
-
-  async function applyRemoteTransactionsList(
-    localProjectId: string,
-    txList: Transaction[],
-  ): Promise<void> {
-    if (txList.length === 0) return
-
-    const plainIncomingList = toPlainClone(txList)
-    const localMap = new Map(transactions.value.map((t) => [t.id, toPlainClone(t)]))
-    const toPersist: Transaction[] = []
-
-    for (const incoming of plainIncomingList) {
-      const existing = localMap.get(incoming.id)
-      // 若遠端因圖片體積過大略過圖片，保留本地既有圖片避免遺失
-      const preservedImages =
-        (!incoming.receiptImages || incoming.receiptImages.length === 0) &&
-        existing?.receiptImages &&
-        existing.receiptImages.length > 0
-          ? [...existing.receiptImages]
-          : incoming.receiptImages
-
-      const normalized: Transaction = {
-        ...incoming,
-        projectId: localProjectId,
-        receiptImages: preservedImages,
-      }
-      toPersist.push(normalized)
-      localMap.set(normalized.id, normalized)
-    }
-
-    const plainToPersist = toPlainClone(toPersist)
-    await normalVaultDb.transactions.bulkPut(plainToPersist)
-    transactions.value = Array.from(localMap.values())
-  }
-
-  async function handleRemoteTransactionsBatch(
-    localProjectId: string,
-    remoteTxs: Transaction[],
-  ): Promise<void> {
-    const localProj = projects.value.find((p) => p.id === localProjectId)
-    if (!localProj) return
-
-    const localProjectTxs = transactions.value.filter(
-      (tx) => tx.projectId === localProjectId,
-    )
-    const reconciled = reconcileRemoteTransactions(localProjectTxs, remoteTxs)
-
-    // 先安全套用遠端的新增與一般修改
-    if (reconciled.safeUpserts.length > 0) {
-      await applyRemoteTransactionsList(localProjectId, reconciled.safeUpserts)
-    }
-
-    // 異常大量刪除熔斷器：達門檻時自動攔截並要求使用者確認
-    if (reconciled.circuitBreaker.triggered) {
-      pendingDeletionGuard.value = {
-        projectId: localProjectId,
-        projectName: localProj.name,
-        localActiveCount: reconciled.circuitBreaker.localActiveCount,
-        newlyDeletedCount: reconciled.circuitBreaker.newlyDeletedCount,
-        deletionRatio: reconciled.circuitBreaker.deletionRatio,
-        pendingDeletes: reconciled.incomingDeletes,
-      }
-      return
-    }
-
-    if (reconciled.incomingDeletes.length > 0) {
-      await applyRemoteTransactionsList(localProjectId, reconciled.incomingDeletes)
-    }
-
-    syncStatusByProject.value = {
-      ...syncStatusByProject.value,
-      [localProjectId]: 'synced',
-    }
-    lastSyncedAtByProject.value = {
-      ...lastSyncedAtByProject.value,
-      [localProjectId]: Date.now(),
-    }
-  }
-
-  async function approvePendingRemoteDeletes(): Promise<number> {
-    const guard = pendingDeletionGuard.value
-    if (!guard) return 0
-    pendingDeletionGuard.value = null
-    await applyRemoteTransactionsList(guard.projectId, guard.pendingDeletes)
-    return guard.pendingDeletes.length
-  }
-
-  async function rejectPendingRemoteDeletes(): Promise<number> {
-    const guard = pendingDeletionGuard.value
-    if (!guard) return 0
-    pendingDeletionGuard.value = null
-
-    const now = Date.now()
-    let restoredCount = 0
-    for (const blockedDelete of guard.pendingDeletes) {
-      const localTx = transactions.value.find((t) => t.id === blockedDelete.id)
-      if (!localTx || localTx.isDeleted) continue
-      const bumped: Transaction = {
-        ...localTx,
-        isDeleted: false,
-        updatedAt: Math.max(now, blockedDelete.updatedAt + 1),
-      }
-      const saved = await saveTransactionToNormalVault(bumped)
-      transactions.value = transactions.value.map((t) =>
-        t.id === saved.id ? saved : t,
-      )
-      await enqueueAndFlushProjectChange(
-        guard.projectId,
-        'transaction',
-        saved.id,
-        saved.updatedAt,
-      )
-      restoredCount += 1
-    }
-    return restoredCount
-  }
-
-  function unsubscribeProjectRealtime(projectId: string): void {
-    const unsub = activeRealtimeUnsubscribers.get(projectId)
-    if (unsub) {
-      unsub()
-      activeRealtimeUnsubscribers.delete(projectId)
-    }
-  }
-
-  async function startProjectRealtimeListener(projectId: string): Promise<void> {
-    const proj = projects.value.find((p) => p.id === projectId && !p.isDeleted)
-    const shareId = proj?.syncMeta?.shareId
-    if (!proj || proj.syncMeta?.mode !== 'firestore' || !shareId) return
-    if (!isFirebaseConfigured()) {
-      syncStatusByProject.value = {
-        ...syncStatusByProject.value,
-        [projectId]: 'error',
-      }
-      return
-    }
-    if (activeRealtimeUnsubscribers.has(projectId)) return
-
-    syncStatusByProject.value = {
-      ...syncStatusByProject.value,
-      [projectId]: 'connecting',
-    }
-
-    try {
-      const unsub = await subscribeSharedProject(shareId, {
-        onProjectChange: (remoteProj) => {
-          void applyRemoteProjectUpdate(projectId, remoteProj)
-        },
-        onTransactionsBatch: (remoteTxs) => {
-          void handleRemoteTransactionsBatch(projectId, remoteTxs)
-        },
-        onError: () => {
-          syncStatusByProject.value = {
-            ...syncStatusByProject.value,
-            [projectId]:
-              typeof navigator !== 'undefined' && navigator.onLine === false
-                ? 'offline'
-                : 'error',
-          }
-        },
-      })
-      activeRealtimeUnsubscribers.set(projectId, unsub)
-      syncStatusByProject.value = {
-        ...syncStatusByProject.value,
-        [projectId]: 'synced',
-      }
-      lastSyncedAtByProject.value = {
-        ...lastSyncedAtByProject.value,
-        [projectId]: Date.now(),
-      }
-      void flushProjectOutbox(projectId)
-    } catch {
-      syncStatusByProject.value = {
-        ...syncStatusByProject.value,
-        [projectId]:
-          typeof navigator !== 'undefined' && navigator.onLine === false
-            ? 'offline'
-            : 'error',
-      }
-    }
-  }
-
-  async function startAllSharedProjectListeners(): Promise<void> {
-    if (!isFirebaseConfigured()) return
-    const sharedProjects = projects.value.filter(
-      (p) => !p.isDeleted && p.syncMeta?.mode === 'firestore' && p.syncMeta.shareId,
-    )
-    for (const proj of sharedProjects) {
-      await startProjectRealtimeListener(proj.id)
-    }
-  }
-
-  function stopAllSharedProjectListeners(): void {
-    for (const unsub of activeRealtimeUnsubscribers.values()) {
-      unsub()
-    }
-    activeRealtimeUnsubscribers.clear()
-  }
-
-  async function enableProjectRealtimeSync(
-    projectId: string,
-    options: { myMemberId?: string; syncReceiptImages?: boolean } = {},
-  ): Promise<{ shareId: string; accessKey: string; omittedImageTxCount: number }> {
-    const existing = projects.value.find((p) => p.id === projectId && !p.isDeleted)
-    if (!existing) {
-      throw new Error('ERR_PROJECT_NOT_FOUND')
-    }
-
-    const syncImages = options.syncReceiptImages !== false
-    const projTxs = transactions.value.filter((tx) => tx.projectId === projectId)
-    const published = await publishProjectToFirestore(existing, projTxs, syncImages)
-
-    const updated: Project = {
-      ...existing,
-      defaultPayerId: options.myMemberId || existing.defaultPayerId,
-      syncMeta: {
-        mode: 'firestore',
-        shareId: published.shareId,
-        accessKey: published.accessKey,
-        role: 'owner',
-        myMemberId: options.myMemberId || existing.defaultPayerId,
-        syncReceiptImages: syncImages,
-        lastSyncedAt: published.syncedAt,
-      },
-      members: existing.members.map((m) => ({ ...m })),
-    }
-
-    const saved = await saveProjectToNormalVault(updated)
-    projects.value = projects.value.map((p) => (p.id === projectId ? saved : p))
-    await startProjectRealtimeListener(projectId)
-
-    return {
-      shareId: published.shareId,
-      accessKey: published.accessKey,
-      omittedImageTxCount: published.omittedImageTxCount,
-    }
-  }
-
-  async function fetchSharedProjectForJoin(
-    shareId: string,
-    accessKey: string,
-  ): Promise<{ project: Project; transactions: Transaction[] }> {
-    const res = await joinSharedProjectOnFirestore(shareId, accessKey)
-    return { project: res.project, transactions: res.transactions }
-  }
-
-  async function finalizeJoinSharedProject(params: {
-    shareId: string
-    accessKey: string
-    remoteProject: Project
-    remoteTransactions: Transaction[]
-    selectedMemberId?: string
-    newMemberName?: string
-    applyMyProfile?: boolean
-  }): Promise<Project> {
-    const now = Date.now()
-    const plainRemoteProject = toPlainClone(params.remoteProject)
-    const plainRemoteTransactions = toPlainClone(params.remoteTransactions)
-
-    let members = plainRemoteProject.members.map((m) => ({ ...m }))
-    let claimedMemberId = params.selectedMemberId
-    let projectMemberChanged = false
-
-    const trimmedNewName = params.newMemberName?.trim()
-    if (!claimedMemberId && trimmedNewName) {
-      const createdMember: ProjectMember = {
-        id: `m_${members.length + 1}_${now.toString(36)}`,
-        name: trimmedNewName,
-        avatarColor:
-          userProfile.value.avatarColor ||
-          AVATAR_PALETTE[members.length % AVATAR_PALETTE.length],
-        ...(userProfile.value.avatarImage
-          ? { avatarImage: userProfile.value.avatarImage }
-          : {}),
-        ...(userProfile.value.paymentInfo
-          ? { paymentInfo: userProfile.value.paymentInfo }
-          : {}),
-      }
-      members = [...members, createdMember]
-      claimedMemberId = createdMember.id
-      projectMemberChanged = true
-    } else if (claimedMemberId && params.applyMyProfile) {
-      const profile = userProfile.value
-      const hasProfileCustom = Boolean(
-        profile.displayName ||
-          profile.avatarImage ||
-          profile.avatarColor ||
-          profile.paymentInfo,
-      )
-      if (hasProfileCustom) {
-        members = members.map((m) => {
-          if (m.id !== claimedMemberId) return m
-          return {
-            ...m,
-            name: profile.displayName || m.name,
-            avatarColor: profile.avatarColor || m.avatarColor,
-            ...(profile.avatarImage
-              ? { avatarImage: profile.avatarImage }
-              : {}),
-            ...(profile.paymentInfo
-              ? { paymentInfo: profile.paymentInfo }
-              : {}),
-          }
-        })
-        projectMemberChanged = true
-      }
-    }
-
-    const existingLocal = projects.value.find(
-      (p) => p.id === plainRemoteProject.id,
-    )
-
-    const joinedProject: Project = {
-      ...plainRemoteProject,
-      members,
-      isActive: true,
-      isDeleted: false,
-      isArchived: false,
-      defaultPayerId: claimedMemberId || members[0]?.id,
-      updatedAt: projectMemberChanged
-        ? Math.max(now, plainRemoteProject.updatedAt + 1)
-        : plainRemoteProject.updatedAt,
-      syncMeta: {
-        mode: 'firestore',
-        shareId: params.shareId,
-        accessKey: params.accessKey,
-        role: existingLocal?.syncMeta?.role ?? 'editor',
-        myMemberId: claimedMemberId || members[0]?.id,
-        syncReceiptImages: true,
-        lastSyncedAt: now,
-      },
-    }
-
-    const savedProj = await saveProjectToNormalVault(joinedProject)
-    if (existingLocal) {
-      projects.value = projects.value.map((p) =>
-        p.id === savedProj.id ? savedProj : p,
-      )
-    } else {
-      projects.value = [savedProj, ...projects.value]
-      projectOrder.value = [
-        savedProj.id,
-        ...projectOrder.value.filter((id) => id !== savedProj.id),
-      ]
-      saveUserPrefs()
-    }
-
-    await applyRemoteTransactionsList(savedProj.id, plainRemoteTransactions)
-
-    if (projectMemberChanged) {
-      await enqueueAndFlushProjectChange(
-        savedProj.id,
-        'project',
-        savedProj.id,
-        savedProj.updatedAt,
-      )
-    }
-
-    activeProjectId.value = savedProj.id
-    persistActiveProjectId(savedProj.id)
-    await startProjectRealtimeListener(savedProj.id)
-    return savedProj
-  }
-
-  async function setMyMemberForProject(
-    projectId: string,
-    memberId: string,
-  ): Promise<void> {
-    const existing = projects.value.find((p) => p.id === projectId && !p.isDeleted)
-    if (!existing) return
-    if (!existing.members.some((m) => m.id === memberId)) return
-
-    const updated: Project = {
-      ...existing,
-      defaultPayerId: memberId,
-      syncMeta: existing.syncMeta
-        ? { ...existing.syncMeta, myMemberId: memberId }
-        : undefined,
-      members: existing.members.map((m) => ({ ...m })),
-    }
-    const saved = await saveProjectToNormalVault(updated)
-    projects.value = projects.value.map((p) => (p.id === projectId ? saved : p))
-  }
-
-  async function rotateProjectInviteLink(
-    projectId: string,
-  ): Promise<{ shareId: string; accessKey: string } | null> {
-    const existing = projects.value.find((p) => p.id === projectId && !p.isDeleted)
-    const shareId = existing?.syncMeta?.shareId
-    if (!existing || existing.syncMeta?.mode !== 'firestore' || !shareId) {
-      return null
-    }
-    const nextAccessKey = await rotateProjectAccessKeyOnFirestore(shareId)
-    const updated: Project = {
-      ...existing,
-      syncMeta: {
-        ...existing.syncMeta,
-        accessKey: nextAccessKey,
-        lastSyncedAt: Date.now(),
-      },
-      members: existing.members.map((m) => ({ ...m })),
-    }
-    const saved = await saveProjectToNormalVault(updated)
-    projects.value = projects.value.map((p) => (p.id === projectId ? saved : p))
-    return { shareId, accessKey: nextAccessKey }
-  }
-
-  async function stopProjectRealtimeSync(projectId: string): Promise<void> {
-    unsubscribeProjectRealtime(projectId)
-    await clearProjectSyncOutbox(projectId)
-    await refreshOutboxCounts()
-
-    const existing = projects.value.find((p) => p.id === projectId)
-    if (!existing) return
-    const updated: Project = {
-      ...existing,
-      syncMeta: undefined,
-      members: existing.members.map((m) => ({ ...m })),
-    }
-    const saved = await saveProjectToNormalVault(updated)
-    projects.value = projects.value.map((p) => (p.id === projectId ? saved : p))
-    syncStatusByProject.value = {
-      ...syncStatusByProject.value,
-      [projectId]: 'local',
-    }
-  }
-
+  // ==================== IndexedDB 初始化與專案／成員 CRUD ====================
   async function initFromIndexedDb(): Promise<void> {
     if (isLoaded.value) return
     try {
-      const [loadedProjects, loadedTransactions] = await Promise.all([
+      const [rawProjects, rawTransactions] = await Promise.all([
         normalVaultDb.projects.toArray(),
         normalVaultDb.transactions.toArray(),
       ])
-      projects.value = loadedProjects
-      transactions.value = loadedTransactions
-      await refreshOutboxCounts()
+      const migrated = migrateLoadedLedgerRecords(rawProjects, rawTransactions)
+      projects.value = migrated.projects
+      transactions.value = migrated.transactions
+      quarantinedRecords.value = migrated.quarantined
+      settlementViewStore.migrateLegacyProjectViews(migrated.projects)
+
+      if (migrated.quarantined.length > 0) {
+        console.warn(
+          `[ClearBill] 載入本機資料庫時隔離了 ${migrated.quarantined.length} 筆無法遷移的異常紀錄`,
+          migrated.quarantined.map((item) => ({
+            entityType: item.entityType,
+            id: item.id,
+            error: item.error,
+          })),
+        )
+      }
+
+      // 若有舊版（如 v0）資料完成升級，靜默回寫 IndexedDB 完成落盤遷移（不改動既有 updatedAt）
+      if (
+        migrated.upgradedProjects.length > 0 ||
+        migrated.upgradedTransactions.length > 0
+      ) {
+        await Promise.all([
+          migrated.upgradedProjects.length > 0
+            ? normalVaultDb.projects.bulkPut(migrated.upgradedProjects)
+            : Promise.resolve(),
+          migrated.upgradedTransactions.length > 0
+            ? normalVaultDb.transactions.bulkPut(migrated.upgradedTransactions)
+            : Promise.resolve(),
+        ]).catch((err) => {
+          console.warn(
+            '[ClearBill] 回寫遷移後之本機資料失敗，下次啟動將重新遷移',
+            err,
+          )
+        })
+      }
+
+      await realtimeSyncStore.refreshOutboxCounts()
 
       const savedId =
         typeof window !== 'undefined'
           ? window.localStorage.getItem(ACTIVE_PROJECT_STORAGE_KEY)
           : null
       const savedStillActive = savedId
-        ? loadedProjects.find((p) => p.id === savedId && !p.isDeleted)
+        ? migrated.projects.find((p) => p.id === savedId && !p.isDeleted)
         : undefined
-      const fallbackActive = loadedProjects
+      const fallbackActive = migrated.projects
         .filter((p) => !p.isDeleted && p.isActive)
         .sort((a, b) => b.updatedAt - a.updatedAt)[0]
 
@@ -2410,7 +706,9 @@ export const useLedgerStore = defineStore('ledger', () => {
       defaultPayerId: members[0]?.id,
       isActive: true,
       ...(payload.cardColor ? { cardColor: payload.cardColor } : {}),
-      ...(payload.cardCoverImage ? { cardCoverImage: payload.cardCoverImage } : {}),
+      ...(payload.cardCoverImage
+        ? { cardCoverImage: payload.cardCoverImage }
+        : {}),
       createdAt: now,
       updatedAt: now,
     }
@@ -2422,10 +720,10 @@ export const useLedgerStore = defineStore('ledger', () => {
       ...projectOrder.value.filter((id) => id !== saved.id),
     ]
     projectOrderUpdatedAt.value = Date.now()
-    saveUserPrefs()
+    userPrefsStore.saveUserPrefs()
     activeProjectId.value = saved.id
     persistActiveProjectId(saved.id)
-    markGoogleDriveDirty()
+    googleDriveStore.markGoogleDriveDirty()
     return saved
   }
 
@@ -2433,7 +731,9 @@ export const useLedgerStore = defineStore('ledger', () => {
     projectId: string,
     patch: UpdateProjectPayload,
   ): Promise<Project | null> {
-    const existing = projects.value.find((p) => p.id === projectId && !p.isDeleted)
+    const existing = projects.value.find(
+      (p) => p.id === projectId && !p.isDeleted,
+    )
     if (!existing) return null
 
     const nextCardColor =
@@ -2455,18 +755,29 @@ export const useLedgerStore = defineStore('ledger', () => {
         ? patch.baseCurrency.trim().toUpperCase()
         : oldBase
     const baseCurrencyChanged = nextBase !== oldBase
+    const nextName = patch.name !== undefined ? patch.name.trim() : existing.name
+    const nextDefaultSplitMode =
+      patch.defaultSplitMode ?? existing.defaultSplitMode
+    const sharedFieldsChanged =
+      nextName !== existing.name ||
+      baseCurrencyChanged ||
+      nextDefaultSplitMode !== existing.defaultSplitMode ||
+      nextCardColor !== existing.cardColor ||
+      nextCardCoverImage !== existing.cardCoverImage
     const now = Date.now()
 
+    // defaultPayerId 屬本機裝置偏好；若本次僅調整預設墊付人而未改動任何共享欄位，
+    // 僅更新本機 IndexedDB，不遞增 updatedAt 亦不推播雲端，避免與多人協作遠端更新衝突
     const updated: Project = {
       ...existing,
-      name: patch.name !== undefined ? patch.name.trim() : existing.name,
+      name: nextName,
       baseCurrency: nextBase,
-      defaultSplitMode: patch.defaultSplitMode ?? existing.defaultSplitMode,
+      defaultSplitMode: nextDefaultSplitMode,
       defaultPayerId: patch.defaultPayerId ?? existing.defaultPayerId,
       cardColor: nextCardColor,
       cardCoverImage: nextCardCoverImage,
       members: existing.members.map((m) => ({ ...m })),
-      updatedAt: now,
+      updatedAt: sharedFieldsChanged ? now : existing.updatedAt,
     }
 
     const saved = await saveProjectToNormalVault(updated)
@@ -2475,10 +786,21 @@ export const useLedgerStore = defineStore('ledger', () => {
       syncRememberedPayerForProject(projectId, patch.defaultPayerId)
     }
 
+    if (!sharedFieldsChanged) {
+      return saved
+    }
+
     // 變更專案記帳主幣別時，自動依舊主幣別➔新主幣別匯率重算既有交易之 exchangeRateToBase（保留原幣金額不毀帳）
     if (baseCurrencyChanged) {
-      const oldToNewRate = getEffectiveExchangeRate(oldBase, nextBase)
-      if (Number.isFinite(oldToNewRate) && oldToNewRate > 0) {
+      const oldToNewRate = userPrefsStore.getEffectiveExchangeRate(
+        oldBase,
+        nextBase,
+      )
+      if (
+        oldToNewRate !== null &&
+        Number.isFinite(oldToNewRate) &&
+        oldToNewRate > 0
+      ) {
         const affected = transactions.value.filter(
           (tx) => tx.projectId === projectId && !tx.isDeleted,
         )
@@ -2504,7 +826,7 @@ export const useLedgerStore = defineStore('ledger', () => {
           }
           const savedTx = await saveTransactionToNormalVault(updatedTx)
           updatedMap.set(savedTx.id, savedTx)
-          await enqueueAndFlushProjectChange(
+          await realtimeSyncStore.enqueueAndFlushProjectChange(
             projectId,
             'transaction',
             savedTx.id,
@@ -2519,8 +841,13 @@ export const useLedgerStore = defineStore('ledger', () => {
       }
     }
 
-    await enqueueAndFlushProjectChange(projectId, 'project', saved.id, saved.updatedAt)
-    markGoogleDriveDirty()
+    await realtimeSyncStore.enqueueAndFlushProjectChange(
+      projectId,
+      'project',
+      saved.id,
+      saved.updatedAt,
+    )
+    googleDriveStore.markGoogleDriveDirty()
     return saved
   }
 
@@ -2531,7 +858,9 @@ export const useLedgerStore = defineStore('ledger', () => {
   ): boolean {
     const normalized = candidateName.trim().toLowerCase()
     if (!normalized) return false
-    const existing = projects.value.find((p) => p.id === projectId && !p.isDeleted)
+    const existing = projects.value.find(
+      (p) => p.id === projectId && !p.isDeleted,
+    )
     if (!existing) return false
     return existing.members.some(
       (m) =>
@@ -2545,7 +874,9 @@ export const useLedgerStore = defineStore('ledger', () => {
     avatarColor?: string,
     avatarImage?: string,
   ): Promise<Project | null> {
-    const existing = projects.value.find((p) => p.id === projectId && !p.isDeleted)
+    const existing = projects.value.find(
+      (p) => p.id === projectId && !p.isDeleted,
+    )
     const trimmed = memberName.trim()
     if (!existing || !trimmed) return null
     if (hasDuplicateMemberName(projectId, trimmed)) return null
@@ -2568,8 +899,13 @@ export const useLedgerStore = defineStore('ledger', () => {
 
     const saved = await saveProjectToNormalVault(updated)
     projects.value = projects.value.map((p) => (p.id === projectId ? saved : p))
-    await enqueueAndFlushProjectChange(projectId, 'project', saved.id, saved.updatedAt)
-    markGoogleDriveDirty()
+    await realtimeSyncStore.enqueueAndFlushProjectChange(
+      projectId,
+      'project',
+      saved.id,
+      saved.updatedAt,
+    )
+    googleDriveStore.markGoogleDriveDirty()
     return saved
   }
 
@@ -2583,7 +919,9 @@ export const useLedgerStore = defineStore('ledger', () => {
       paymentInfo?: string | null
     },
   ): Promise<Project | null> {
-    const existing = projects.value.find((p) => p.id === projectId && !p.isDeleted)
+    const existing = projects.value.find(
+      (p) => p.id === projectId && !p.isDeleted,
+    )
     if (!existing) return null
     if (
       patch.name !== undefined &&
@@ -2611,8 +949,12 @@ export const useLedgerStore = defineStore('ledger', () => {
         ...m,
         name: patch.name !== undefined ? patch.name.trim() || m.name : m.name,
         avatarColor: patch.avatarColor ?? m.avatarColor,
-        ...(nextAvatarImage ? { avatarImage: nextAvatarImage } : { avatarImage: undefined }),
-        ...(nextPaymentInfo ? { paymentInfo: nextPaymentInfo } : { paymentInfo: undefined }),
+        ...(nextAvatarImage
+          ? { avatarImage: nextAvatarImage }
+          : { avatarImage: undefined }),
+        ...(nextPaymentInfo
+          ? { paymentInfo: nextPaymentInfo }
+          : { paymentInfo: undefined }),
       }
     })
 
@@ -2624,8 +966,13 @@ export const useLedgerStore = defineStore('ledger', () => {
 
     const saved = await saveProjectToNormalVault(updated)
     projects.value = projects.value.map((p) => (p.id === projectId ? saved : p))
-    await enqueueAndFlushProjectChange(projectId, 'project', saved.id, saved.updatedAt)
-    markGoogleDriveDirty()
+    await realtimeSyncStore.enqueueAndFlushProjectChange(
+      projectId,
+      'project',
+      saved.id,
+      saved.updatedAt,
+    )
+    googleDriveStore.markGoogleDriveDirty()
     return saved
   }
 
@@ -2638,7 +985,11 @@ export const useLedgerStore = defineStore('ledger', () => {
         return false
       }
       if (tx.splitConfig.payerId === memberId) return true
-      if (tx.splitConfig.payers?.some((p) => p.memberId === memberId && p.amount > 0)) {
+      if (
+        tx.splitConfig.payers?.some(
+          (p) => p.memberId === memberId && p.amount > 0,
+        )
+      ) {
         return true
       }
       return tx.splitConfig.shares.some(
@@ -2651,7 +1002,9 @@ export const useLedgerStore = defineStore('ledger', () => {
     projectId: string,
     memberId: string,
   ): Promise<{ ok: boolean; reason?: 'last_member' | 'in_use' }> {
-    const existing = projects.value.find((p) => p.id === projectId && !p.isDeleted)
+    const existing = projects.value.find(
+      (p) => p.id === projectId && !p.isDeleted,
+    )
     if (!existing) return { ok: false }
 
     if (existing.members.length <= 1) {
@@ -2712,17 +1065,18 @@ export const useLedgerStore = defineStore('ledger', () => {
         )
         if (nextShares.length === 0) continue
         const plainTx = toPlainClone(tx)
+        if (!plainTx.splitConfig) continue
         const cleanedTx: Transaction = {
           ...plainTx,
           splitConfig: {
-            ...plainTx.splitConfig!,
+            ...plainTx.splitConfig,
             shares: nextShares,
           },
           updatedAt: now,
         }
         const savedTx = await saveTransactionToNormalVault(cleanedTx)
         cleanedTxMap.set(savedTx.id, savedTx)
-        await enqueueAndFlushProjectChange(
+        await realtimeSyncStore.enqueueAndFlushProjectChange(
           projectId,
           'transaction',
           savedTx.id,
@@ -2736,15 +1090,22 @@ export const useLedgerStore = defineStore('ledger', () => {
       }
     }
 
-    await enqueueAndFlushProjectChange(projectId, 'project', saved.id, saved.updatedAt)
-    markGoogleDriveDirty()
+    await realtimeSyncStore.enqueueAndFlushProjectChange(
+      projectId,
+      'project',
+      saved.id,
+      saved.updatedAt,
+    )
+    googleDriveStore.markGoogleDriveDirty()
     return { ok: true }
   }
 
   async function toggleArchiveProject(
     projectId: string,
   ): Promise<Project | null> {
-    const existing = projects.value.find((p) => p.id === projectId && !p.isDeleted)
+    const existing = projects.value.find(
+      (p) => p.id === projectId && !p.isDeleted,
+    )
     if (!existing) return null
 
     const nextArchived = !existing.isArchived
@@ -2766,7 +1127,7 @@ export const useLedgerStore = defineStore('ledger', () => {
       activeProjectId.value = saved.id
       persistActiveProjectId(saved.id)
     }
-    markGoogleDriveDirty()
+    googleDriveStore.markGoogleDriveDirty()
     return saved
   }
 
@@ -2895,52 +1256,6 @@ export const useLedgerStore = defineStore('ledger', () => {
     return proj
   }
 
-  async function softDeleteProject(projectId: string): Promise<void> {
-    const existing = projects.value.find((p) => p.id === projectId)
-    if (!existing) return
-
-    unsubscribeProjectRealtime(projectId)
-    await clearProjectSyncOutbox(projectId)
-    await refreshOutboxCounts()
-
-    const now = Date.now()
-    const updatedProject: Project = {
-      ...existing,
-      isActive: false,
-      isDeleted: true,
-      updatedAt: now,
-    }
-    await saveProjectToNormalVault(updatedProject)
-    projects.value = projects.value.map((p) =>
-      p.id === projectId ? updatedProject : p,
-    )
-
-    const relatedTxs = transactions.value.filter(
-      (tx) => tx.projectId === projectId && !tx.isDeleted,
-    )
-    for (const tx of relatedTxs) {
-      const deletedTx: Transaction = {
-        ...tx,
-        isDeleted: true,
-        updatedAt: now,
-      }
-      await saveTransactionToNormalVault(deletedTx)
-    }
-    if (relatedTxs.length > 0) {
-      const relatedIds = new Set(relatedTxs.map((tx) => tx.id))
-      transactions.value = transactions.value.map((tx) =>
-        relatedIds.has(tx.id) ? { ...tx, isDeleted: true, updatedAt: now } : tx,
-      )
-    }
-
-    if (activeProjectId.value === projectId) {
-      const next = activeProjects.value[0]?.id ?? null
-      activeProjectId.value = next
-      persistActiveProjectId(next)
-    }
-    markGoogleDriveDirty()
-  }
-
   function selectProject(projectId: string | null): void {
     activeProjectId.value = projectId
     persistActiveProjectId(projectId)
@@ -2959,6 +1274,7 @@ export const useLedgerStore = defineStore('ledger', () => {
     return profileName ? profileName.slice(0, 50) : undefined
   }
 
+  // ==================== 交易新增、更新與還款 ====================
   async function addTransaction(
     payload: CreateTransactionPayload,
   ): Promise<Transaction> {
@@ -2994,15 +1310,16 @@ export const useLedgerStore = defineStore('ledger', () => {
       splitConfig: payload.splitConfig,
     }
 
+    assertSplitInvariant(tx)
     const saved = await saveTransactionToNormalVault(tx)
     transactions.value = [saved, ...transactions.value]
-    await enqueueAndFlushProjectChange(
+    await realtimeSyncStore.enqueueAndFlushProjectChange(
       saved.projectId,
       'transaction',
       saved.id,
       saved.updatedAt,
     )
-    markGoogleDriveDirty()
+    googleDriveStore.markGoogleDriveDirty()
     return saved
   }
 
@@ -3011,20 +1328,30 @@ export const useLedgerStore = defineStore('ledger', () => {
     name: string,
     memberIds: string[],
   ): Promise<ProjectSplitGroup | null> {
-    const existing = projects.value.find((p) => p.id === projectId && !p.isDeleted)
+    const existing = projects.value.find(
+      (p) => p.id === projectId && !p.isDeleted,
+    )
     if (!existing) return null
     const trimmed = name.trim().slice(0, 32)
     const validIds = new Set(existing.members.map((m) => m.id))
-    const cleanIds = Array.from(new Set(memberIds.filter((id) => validIds.has(id))))
+    const cleanIds = Array.from(
+      new Set(memberIds.filter((id) => validIds.has(id))),
+    )
     if (!trimmed || cleanIds.length === 0) return null
 
-    const currentGroups = existing.splitGroups ? existing.splitGroups.map((g) => ({ ...g, memberIds: [...g.memberIds] })) : []
+    const currentGroups = existing.splitGroups
+      ? existing.splitGroups.map((g) => ({ ...g, memberIds: [...g.memberIds] }))
+      : []
     const existingIdx = currentGroups.findIndex(
       (g) => g.name.toLowerCase() === trimmed.toLowerCase(),
     )
     let savedGroup: ProjectSplitGroup
     if (existingIdx >= 0) {
-      savedGroup = { ...currentGroups[existingIdx], name: trimmed, memberIds: cleanIds }
+      savedGroup = {
+        ...currentGroups[existingIdx],
+        name: trimmed,
+        memberIds: cleanIds,
+      }
       currentGroups[existingIdx] = savedGroup
     } else {
       if (currentGroups.length >= 20) return null
@@ -3045,8 +1372,13 @@ export const useLedgerStore = defineStore('ledger', () => {
     }
     const saved = await saveProjectToNormalVault(updated)
     projects.value = projects.value.map((p) => (p.id === projectId ? saved : p))
-    await enqueueAndFlushProjectChange(projectId, 'project', saved.id, saved.updatedAt)
-    markGoogleDriveDirty()
+    await realtimeSyncStore.enqueueAndFlushProjectChange(
+      projectId,
+      'project',
+      saved.id,
+      saved.updatedAt,
+    )
+    googleDriveStore.markGoogleDriveDirty()
     return savedGroup
   }
 
@@ -3054,7 +1386,9 @@ export const useLedgerStore = defineStore('ledger', () => {
     projectId: string,
     groupId: string,
   ): Promise<void> {
-    const existing = projects.value.find((p) => p.id === projectId && !p.isDeleted)
+    const existing = projects.value.find(
+      (p) => p.id === projectId && !p.isDeleted,
+    )
     if (!existing || !existing.splitGroups?.length) return
 
     const nextGroups = existing.splitGroups.filter((g) => g.id !== groupId)
@@ -3067,201 +1401,13 @@ export const useLedgerStore = defineStore('ledger', () => {
     }
     const saved = await saveProjectToNormalVault(updated)
     projects.value = projects.value.map((p) => (p.id === projectId ? saved : p))
-    await enqueueAndFlushProjectChange(projectId, 'project', saved.id, saved.updatedAt)
-    markGoogleDriveDirty()
-  }
-
-  /** 查找專案有效交易中是否遺留尚未掛回成員清單之孤兒公費袋 ID（例如先刪公費成員又復原紀錄） */
-  function findOrphanedPoolMemberIdInTransactions(
-    projectId: string,
-    existingMemberIds: Set<string>,
-  ): string | null {
-    for (const tx of transactions.value) {
-      if (tx.isDeleted || tx.projectId !== projectId || !tx.splitConfig) continue
-      const candidateIds: string[] = [
-        tx.splitConfig.payerId,
-        ...(tx.splitConfig.payers ?? [])
-          .filter((p) => p.amount > 0)
-          .map((p) => p.memberId),
-        ...tx.splitConfig.shares
-          .filter((s) => s.finalAmount > 0)
-          .map((s) => s.memberId),
-      ]
-      for (const id of candidateIds) {
-        if (id.startsWith('pool_') && !existingMemberIds.has(id)) {
-          return id
-        }
-      }
-    }
-    return null
-  }
-
-  /** 記住切換「公費袋優先支出」前原本的真人預設墊付人，方便取消時無縫切回 */
-  const previousHumanPayerByProject = ref<Record<string, string>>({})
-
-  async function togglePreferPoolPayer(
-    projectId: string,
-    defaultPoolName = 'Pool',
-  ): Promise<{ enabled: boolean } | null> {
-    const existing = projects.value.find((p) => p.id === projectId && !p.isDeleted)
-    if (!existing) return null
-
-    let poolMember = existing.members.find((m) => m.isPool) ?? null
-    if (!poolMember) {
-      poolMember = await ensureProjectPoolMember(projectId, defaultPoolName)
-    }
-    const latest = projects.value.find((p) => p.id === projectId && !p.isDeleted)
-    if (!latest || !poolMember) return null
-
-    const currentlyEnabled = latest.defaultPayerId === poolMember.id
-    let nextDefaultPayerId: string | undefined
-
-    if (!currentlyEnabled) {
-      if (latest.defaultPayerId && latest.defaultPayerId !== poolMember.id) {
-        previousHumanPayerByProject.value = {
-          ...previousHumanPayerByProject.value,
-          [projectId]: latest.defaultPayerId,
-        }
-      }
-      nextDefaultPayerId = poolMember.id
-    } else {
-      const remembered = previousHumanPayerByProject.value[projectId]
-      const fallbackHuman =
-        (remembered &&
-        latest.members.some((m) => m.id === remembered && !m.isPool)
-          ? remembered
-          : undefined) ||
-        (latest.syncMeta?.myMemberId &&
-        latest.members.some(
-          (m) => m.id === latest.syncMeta?.myMemberId && !m.isPool,
-        )
-          ? latest.syncMeta.myMemberId
-          : undefined) ||
-        latest.members.find((m) => !m.isPool)?.id ||
-        latest.members[0]?.id
-      nextDefaultPayerId = fallbackHuman
-    }
-
-    const baseLatest = toPlainClone(latest)
-    const updated: Project = {
-      ...baseLatest,
-      defaultPayerId: nextDefaultPayerId,
-      members: baseLatest.members.map((m) => ({ ...m })),
-    }
-    const saved = await saveProjectToNormalVault(updated)
-    projects.value = projects.value.map((p) => (p.id === projectId ? saved : p))
-    syncRememberedPayerForProject(projectId, nextDefaultPayerId)
-    return { enabled: !currentlyEnabled }
-  }
-
-  async function ensureProjectPoolMember(
-    projectId: string,
-    poolName: string,
-  ): Promise<ProjectMember | null> {
-    const existing = projects.value.find((p) => p.id === projectId && !p.isDeleted)
-    if (!existing) return null
-
-    const already = existing.members.find((m) => m.isPool)
-    if (already) return already
-
-    const existingMemberIds = new Set(existing.members.map((m) => m.id))
-    const orphanedPoolId = findOrphanedPoolMemberIdInTransactions(
+    await realtimeSyncStore.enqueueAndFlushProjectChange(
       projectId,
-      existingMemberIds,
+      'project',
+      saved.id,
+      saved.updatedAt,
     )
-
-    const poolMember: ProjectMember = {
-      id: orphanedPoolId ?? `pool_${Date.now().toString(36)}`,
-      name: poolName.trim().slice(0, 50) || 'Pool',
-      avatarColor: '#0f766e',
-      isPool: true,
-    }
-
-    const baseExisting = toPlainClone(existing)
-    const updated: Project = {
-      ...baseExisting,
-      members: [...baseExisting.members.map((m) => ({ ...m })), poolMember],
-      updatedAt: Date.now(),
-    }
-    const saved = await saveProjectToNormalVault(updated)
-    projects.value = projects.value.map((p) => (p.id === projectId ? saved : p))
-    await enqueueAndFlushProjectChange(projectId, 'project', saved.id, saved.updatedAt)
-    markGoogleDriveDirty()
-    return poolMember
-  }
-
-  async function batchCollectPoolFund(params: {
-    projectId: string
-    collectorMemberId: string
-    contributorMemberIds: string[]
-    amountPerMember: number
-    currency: string
-    exchangeRateToBase?: number
-    date: string
-    note?: string
-    editingTxId?: string
-  }): Promise<number> {
-    const validContributors = Array.from(
-      new Set(
-        params.contributorMemberIds.filter(
-          (id) => id && id !== params.collectorMemberId,
-        ),
-      ),
-    )
-    if (validContributors.length === 0 || params.amountPerMember <= 0) return 0
-
-    const proj = projects.value.find((p) => p.id === params.projectId)
-    const payCurrency = params.currency.trim().toUpperCase()
-    const baseCurrency = proj?.baseCurrency.trim().toUpperCase() ?? payCurrency
-    const effectiveRate =
-      params.exchangeRateToBase && params.exchangeRateToBase > 0
-        ? params.exchangeRateToBase
-        : payCurrency === baseCurrency
-          ? 1
-          : getEffectiveExchangeRate(payCurrency, baseCurrency)
-
-    // 統一收斂為單筆多人繳交之公費帳目，避免一次收公費產生大量零散紀錄
-    const perMemberUnits = toMinorUnits(params.amountPerMember, payCurrency)
-    const normalizedPerMember = fromMinorUnits(perMemberUnits, payCurrency)
-    const totalAmount = fromMinorUnits(
-      perMemberUnits * validContributors.length,
-      payCurrency,
-    )
-
-    const payload: CreateTransactionPayload = {
-      projectId: params.projectId,
-      type: 'transfer',
-      amount: totalAmount,
-      currency: payCurrency,
-      exchangeRateToBase: effectiveRate,
-      categoryKey: 'cat_settlement',
-      date: params.date,
-      time: '00:00',
-      note: params.note,
-      splitConfig: {
-        payerId: validContributors[0],
-        payers: validContributors.map((memberId) => ({
-          memberId,
-          amount: normalizedPerMember,
-        })),
-        mode: 'custom_plus_equal',
-        shares: [
-          {
-            memberId: params.collectorMemberId,
-            finalAmount: totalAmount,
-            customAmount: totalAmount,
-            isIncludedInRemainder: false,
-          },
-        ],
-      },
-    }
-
-    if (params.editingTxId) {
-      await updateTransaction(params.editingTxId, payload)
-    } else {
-      await addTransaction(payload)
-    }
-    return validContributors.length
+    googleDriveStore.markGoogleDriveDirty()
   }
 
   async function recordSettlementPayment(
@@ -3270,12 +1416,20 @@ export const useLedgerStore = defineStore('ledger', () => {
     const proj = projects.value.find((p) => p.id === payload.projectId)
     const payCurrency = payload.currency.trim().toUpperCase()
     const baseCurrency = proj?.baseCurrency.trim().toUpperCase() ?? payCurrency
-    const effectiveRate =
+    const resolvedRate =
       payload.exchangeRateToBase && payload.exchangeRateToBase > 0
         ? payload.exchangeRateToBase
         : payCurrency === baseCurrency
           ? 1
-          : getEffectiveExchangeRate(payCurrency, baseCurrency)
+          : userPrefsStore.getEffectiveExchangeRate(payCurrency, baseCurrency)
+    if (
+      resolvedRate === null ||
+      !Number.isFinite(resolvedRate) ||
+      resolvedRate <= 0
+    ) {
+      throw new Error('ERR_EXCHANGE_RATE_REQUIRED')
+    }
+    const effectiveRate = resolvedRate
 
     return addTransaction({
       projectId: payload.projectId,
@@ -3318,7 +1472,9 @@ export const useLedgerStore = defineStore('ledger', () => {
         ? payload.receiptImages.slice(0, 3)
         : undefined
 
-    const editorName = resolveCurrentEditorName(payload.projectId ?? existing.projectId)
+    const editorName = resolveCurrentEditorName(
+      payload.projectId ?? existing.projectId,
+    )
 
     const updated: Transaction = {
       ...existing,
@@ -3341,259 +1497,22 @@ export const useLedgerStore = defineStore('ledger', () => {
       splitConfig: payload.splitConfig,
     }
 
+    assertSplitInvariant(updated)
     const saved = await saveTransactionToNormalVault(updated)
     transactions.value = transactions.value.map((tx) =>
       tx.id === id ? saved : tx,
     )
-    await enqueueAndFlushProjectChange(
+    await realtimeSyncStore.enqueueAndFlushProjectChange(
       saved.projectId,
       'transaction',
       saved.id,
       saved.updatedAt,
     )
-    markGoogleDriveDirty()
+    googleDriveStore.markGoogleDriveDirty()
     return saved
   }
 
-  async function softDeleteTransaction(id: string): Promise<void> {
-    const target = transactions.value.find((tx) => tx.id === id)
-    if (!target) return
-    const updated: Transaction = {
-      ...target,
-      isDeleted: true,
-      updatedAt: Date.now(),
-    }
-    await saveTransactionToNormalVault(updated)
-    transactions.value = transactions.value.map((tx) =>
-      tx.id === id ? updated : tx,
-    )
-    await enqueueAndFlushProjectChange(
-      updated.projectId,
-      'transaction',
-      updated.id,
-      updated.updatedAt,
-    )
-    markGoogleDriveDirty()
-  }
-
-  async function softDeleteTransactionsBatch(ids: string[]): Promise<string[]> {
-    const uniqueIds = Array.from(new Set(ids.filter(Boolean)))
-    if (uniqueIds.length === 0) return []
-    const now = Date.now()
-    const deletedMap = new Map<string, Transaction>()
-    for (const id of uniqueIds) {
-      const target = transactions.value.find((tx) => tx.id === id && !tx.isDeleted)
-      if (!target) continue
-      const updated: Transaction = {
-        ...target,
-        isDeleted: true,
-        updatedAt: now,
-      }
-      await saveTransactionToNormalVault(updated)
-      deletedMap.set(id, updated)
-    }
-    if (deletedMap.size === 0) return []
-    transactions.value = transactions.value.map(
-      (tx) => deletedMap.get(tx.id) ?? tx,
-    )
-    for (const updated of deletedMap.values()) {
-      await enqueueAndFlushProjectChange(
-        updated.projectId,
-        'transaction',
-        updated.id,
-        updated.updatedAt,
-      )
-    }
-    markGoogleDriveDirty()
-    return Array.from(deletedMap.keys())
-  }
-
-  async function restoreTransaction(
-    id: string,
-  ): Promise<{ ok: boolean; projectId?: string }> {
-    const target = transactions.value.find((tx) => tx.id === id && tx.isDeleted)
-    if (!target) return { ok: false }
-
-    const now = Date.now()
-
-    // 若該筆消費原本屬於某個專案且該專案目前處於軟刪除狀態，一併復原專案；若交易指向已刪除的公費袋 ID，亦自動補回該公費袋成員避免出現孤兒 ID
-    let targetProjectId = target.projectId
-    if (targetProjectId) {
-      const parentProject = projects.value.find((p) => p.id === targetProjectId)
-      if (parentProject) {
-        const existingMemberIds = new Set(parentProject.members.map((m) => m.id))
-        const missingPoolIds = new Set<string>()
-        if (target.splitConfig) {
-          const refIds = [
-            target.splitConfig.payerId,
-            ...(target.splitConfig.payers ?? [])
-              .filter((p) => p.amount > 0)
-              .map((p) => p.memberId),
-            ...target.splitConfig.shares
-              .filter((s) => s.finalAmount > 0)
-              .map((s) => s.memberId),
-          ]
-          for (const refId of refIds) {
-            if (refId.startsWith('pool_') && !existingMemberIds.has(refId)) {
-              missingPoolIds.add(refId)
-            }
-          }
-        }
-
-        if (parentProject.isDeleted || missingPoolIds.size > 0) {
-          const plainParent = toPlainClone(parentProject)
-          const extraPoolMembers: ProjectMember[] = Array.from(missingPoolIds).map(
-            (poolId) => ({
-              id: poolId,
-              name: '公費袋',
-              avatarColor: '#0f766e',
-              isPool: true,
-            }),
-          )
-          const restoredProject = await saveProjectToNormalVault({
-            ...plainParent,
-            isDeleted: false,
-            isActive: true,
-            members: [
-              ...plainParent.members.map((m) => ({ ...m })),
-              ...extraPoolMembers,
-            ],
-            updatedAt: now,
-          })
-          projects.value = projects.value.map((p) =>
-            p.id === restoredProject.id ? restoredProject : p,
-          )
-          await enqueueAndFlushProjectChange(
-            restoredProject.id,
-            'project',
-            restoredProject.id,
-            restoredProject.updatedAt,
-          )
-        }
-      }
-      // 同步切換回該專案，讓使用者馬上看到復原後的帳目與更新後結算
-      activeProjectId.value = targetProjectId
-      persistActiveProjectId(targetProjectId)
-    } else if (activeProject.value) {
-      // 若復原的是無專案歸屬的舊消費且目前隱藏日常記帳模式中有進行中專案，仍保留原資料不亂竄改
-      targetProjectId = undefined
-    }
-
-    const restoredPayload: Transaction = {
-      ...target,
-      projectId: targetProjectId,
-      isDeleted: false,
-      updatedAt: now,
-    }
-    const saved = await saveTransactionToNormalVault(restoredPayload)
-    transactions.value = transactions.value.map((tx) =>
-      tx.id === id ? saved : tx,
-    )
-    await enqueueAndFlushProjectChange(
-      saved.projectId,
-      'transaction',
-      saved.id,
-      saved.updatedAt,
-    )
-    markGoogleDriveDirty()
-    return { ok: true, projectId: saved.projectId }
-  }
-
-  async function restoreProject(
-    projectId: string,
-  ): Promise<{ ok: boolean; restoredTxCount: number; projectName?: string }> {
-    const target = projects.value.find((p) => p.id === projectId && p.isDeleted)
-    if (!target) return { ok: false, restoredTxCount: 0 }
-
-    const now = Date.now()
-    const restoredProject: Project = {
-      ...target,
-      isDeleted: false,
-      isActive: true,
-      isArchived: false,
-      members: target.members.map((m) => ({ ...m })),
-      updatedAt: now,
-    }
-    const savedProj = await saveProjectToNormalVault(restoredProject)
-    projects.value = projects.value.map((p) =>
-      p.id === projectId ? savedProj : p,
-    )
-
-    // 一併復原隨該專案軟刪除之關聯交易
-    const relatedDeleted = transactions.value.filter(
-      (tx) => tx.projectId === projectId && tx.isDeleted,
-    )
-    const restoredMap = new Map<string, Transaction>()
-    for (const tx of relatedDeleted) {
-      const savedTx = await saveTransactionToNormalVault({
-        ...tx,
-        isDeleted: false,
-        updatedAt: now,
-      })
-      restoredMap.set(savedTx.id, savedTx)
-    }
-    if (restoredMap.size > 0) {
-      transactions.value = transactions.value.map(
-        (tx) => restoredMap.get(tx.id) ?? tx,
-      )
-    }
-
-    activeProjectId.value = savedProj.id
-    persistActiveProjectId(savedProj.id)
-    markGoogleDriveDirty()
-    return {
-      ok: true,
-      restoredTxCount: restoredMap.size,
-      projectName: savedProj.name,
-    }
-  }
-
-  async function permanentlyDeleteProject(projectId: string): Promise<void> {
-    const relatedIds = transactions.value
-      .filter((tx) => tx.projectId === projectId)
-      .map((tx) => tx.id)
-    if (relatedIds.length > 0) {
-      await normalVaultDb.transactions.bulkDelete(relatedIds)
-      const idSet = new Set(relatedIds)
-      transactions.value = transactions.value.filter((tx) => !idSet.has(tx.id))
-    }
-    await normalVaultDb.projects.delete(projectId)
-    projects.value = projects.value.filter((p) => p.id !== projectId)
-    projectOrder.value = projectOrder.value.filter((id) => id !== projectId)
-    saveUserPrefs()
-  }
-
-  async function permanentlyDeleteTransaction(id: string): Promise<void> {
-    await normalVaultDb.transactions.delete(id)
-    transactions.value = transactions.value.filter((tx) => tx.id !== id)
-  }
-
-  async function emptyTrash(): Promise<number> {
-    const txIds = deletedTransactions.value.map((tx) => tx.id)
-    const projIds = deletedProjects.value.map((p) => p.id)
-    const total = txIds.length + projIds.length
-    if (total === 0) return 0
-
-    if (txIds.length > 0) {
-      await normalVaultDb.transactions.bulkDelete(txIds)
-      const deletedSet = new Set(txIds)
-      transactions.value = transactions.value.filter((tx) => !deletedSet.has(tx.id))
-    }
-    if (projIds.length > 0) {
-      await normalVaultDb.projects.bulkDelete(projIds)
-      const projSet = new Set(projIds)
-      projects.value = projects.value.filter((p) => !projSet.has(p.id))
-      projectOrder.value = projectOrder.value.filter((id) => !projSet.has(id))
-      saveUserPrefs()
-    }
-    return total
-  }
-
-  /** 將含 Vue Reactive Proxy 的資料深拷貝為純淨 Plain Object，徹底避免 IndexedDB structuredClone DataCloneError */
-  function toPlainClone<T>(value: T): T {
-    return JSON.parse(JSON.stringify(value)) as T
-  }
-
+  // ==================== 儲存量統計與備份匯入匯出 ====================
   function cloneProjectsForBackup(list: Project[]): Project[] {
     return toPlainClone(list)
   }
@@ -3647,14 +1566,20 @@ export const useLedgerStore = defineStore('ledger', () => {
     }
   })
 
-  function exportLedgerBackup(options?: { omitReceiptImages?: boolean }): LedgerBackup {
-    const clonedTxs = cloneTransactionsForBackup(transactions.value).map((tx) => {
-      if (options?.omitReceiptImages && tx.receiptImages) {
-        const { receiptImages: _ignored, ...rest } = tx
-        return rest
-      }
-      return tx
-    })
+  function exportLedgerBackup(options?: {
+    omitReceiptImages?: boolean
+  }): LedgerBackup {
+    // 若略過收據圖片，先剔除 receiptImages 再深拷貝，避免白白複製大量 base64 圖片資料
+    const clonedTxs = options?.omitReceiptImages
+      ? transactions.value.map((tx) => {
+          const rawTx = toRaw(tx)
+          if (rawTx.receiptImages) {
+            const { receiptImages: _ignored, ...rest } = rawTx
+            return toPlainClone(rest)
+          }
+          return toPlainClone(rawTx)
+        })
+      : cloneTransactionsForBackup(transactions.value)
     return createLedgerBackupPayload(
       cloneProjectsForBackup(projects.value),
       clonedTxs,
@@ -3667,7 +1592,9 @@ export const useLedgerStore = defineStore('ledger', () => {
   }
 
   function exportProjectBackup(projectId: string): LedgerBackup | null {
-    const target = projects.value.find((p) => p.id === projectId && !p.isDeleted)
+    const target = projects.value.find(
+      (p) => p.id === projectId && !p.isDeleted,
+    )
     if (!target) return null
     const clonedProject = cloneProjectsForBackup([target])[0]
     const clonedTxs = cloneTransactionsForBackup(
@@ -3695,8 +1622,10 @@ export const useLedgerStore = defineStore('ledger', () => {
       raw,
     )
 
-    const plainProjects = toPlainClone(merged.projects)
-    const plainTransactions = toPlainClone(merged.transactions)
+    // parseAndMergeLedgerBackup 之輸入與 Zod 驗證後匯入資料皆已為純淨物件，不需二次全量深拷貝；
+    // 先寫入 IndexedDB 再交由 Vue ref 包裹，確保 bulkPut 過程不含任何 Reactive Proxy。
+    const plainProjects = merged.projects
+    const plainTransactions = merged.transactions
 
     if (plainProjects.length > 0) {
       await normalVaultDb.projects.bulkPut(plainProjects)
@@ -3707,25 +1636,26 @@ export const useLedgerStore = defineStore('ledger', () => {
 
     projects.value = plainProjects
     transactions.value = plainTransactions
+    settlementViewStore.migrateLegacyProjectViews(plainProjects)
 
     let prefsChanged = false
     if (merged.categories.length > 0) {
-      categories.value = toPlainClone(merged.categories)
+      categories.value = merged.categories
       prefsChanged = true
     }
     if (merged.userProfileUpdated && merged.userProfile) {
-      userProfile.value = toPlainClone(merged.userProfile)
+      userProfile.value = merged.userProfile
       prefsChanged = true
     }
     if (merged.projectOrderUpdated && merged.projectOrder) {
-      projectOrder.value = toPlainClone(merged.projectOrder)
+      projectOrder.value = merged.projectOrder
       if (merged.projectOrderUpdatedAt !== undefined) {
         projectOrderUpdatedAt.value = merged.projectOrderUpdatedAt
       }
       prefsChanged = true
     }
     if (prefsChanged) {
-      saveUserPrefs()
+      userPrefsStore.saveUserPrefs()
     }
 
     if (!activeProjectId.value && activeProjects.value.length > 0) {
@@ -3733,8 +1663,35 @@ export const useLedgerStore = defineStore('ledger', () => {
       persistActiveProjectId(activeProjectId.value)
     }
 
+    // 匯入備份或 Google Drive 合併後，將屬於即時共享專案的變更項目補排進 Firestore Outbox，
+    // 確保離線／跨裝置帶入的新交易與專案更新能同步給其他協作成員，避免資料分歧。
+    const outboxEntries = collectRealtimeOutboxEntriesFromMerge(merged).filter(
+      (entry) => realtimeSyncStore.isProjectRealtimeSynced(entry.projectId),
+    )
+    if (outboxEntries.length > 0) {
+      const affectedProjectIds = new Set<string>()
+      for (const entry of outboxEntries) {
+        await enqueueSyncOutbox(
+          entry.projectId,
+          entry.entityType,
+          entry.entityId,
+          entry.updatedAt,
+        )
+        affectedProjectIds.add(entry.projectId)
+      }
+      await realtimeSyncStore.refreshOutboxCounts()
+      for (const projectId of affectedProjectIds) {
+        void realtimeSyncStore.flushProjectOutbox(projectId)
+      }
+    }
+
     return merged.stats
   }
+
+  googleDriveStore.bindBackupBridge({
+    exportLedgerBackup,
+    importAndMergeLedgerBackup,
+  })
 
   return {
     projects,
@@ -3746,6 +1703,7 @@ export const useLedgerStore = defineStore('ledger', () => {
     lastSyncedAtByProject,
     outboxCountByProject,
     pendingDeletionGuard,
+    pendingDeletionGuardCount,
     googleDriveStatus,
     googleDriveAccount,
     googleDriveAutoSync,
@@ -3775,44 +1733,56 @@ export const useLedgerStore = defineStore('ledger', () => {
     activeProjectBaseSettleUp,
     projectTotalExpenseMap,
     liveRatesCache,
+    liveRatesCacheTtlMs: userPrefsStore.liveRatesCacheTtlMs,
     liveRatesFetchedAt,
     liveRatesSource,
     isRefreshingLiveRates,
-    refreshExchangeRates,
-    getLiveExchangeRate,
-    getEffectiveExchangeRate,
-    getProjectSettlementCurrency,
-    getProjectSettlementRateMode,
-    getProjectSettlementOptions,
+    refreshExchangeRates: userPrefsStore.refreshExchangeRates,
+    getLiveExchangeRate: userPrefsStore.getLiveExchangeRate,
+    getEffectiveExchangeRate: userPrefsStore.getEffectiveExchangeRate,
+    getEffectiveExchangeRateWithSource:
+      userPrefsStore.getEffectiveExchangeRateWithSource,
+    getProjectSettlementCurrency:
+      settlementViewStore.getProjectSettlementCurrency,
+    getProjectSettlementRateMode:
+      settlementViewStore.getProjectSettlementRateMode,
+    getProjectSettlementOptions:
+      settlementViewStore.getProjectSettlementOptions,
     settlementViewByProject,
     getProjectTotalExpense,
     getProjectTransactionCount,
-    getRememberedExchangeRate,
-    rememberExchangeRate,
-    clearRememberedExchangeRate,
-    getQuickExchangeRatePresets,
-    saveQuickExchangeRatePreset,
-    rememberLastExpenseProject,
+    getRememberedExchangeRate: userPrefsStore.getRememberedExchangeRate,
+    rememberExchangeRate: userPrefsStore.rememberExchangeRate,
+    clearRememberedExchangeRate: userPrefsStore.clearRememberedExchangeRate,
+    getQuickExchangeRatePresets: userPrefsStore.getQuickExchangeRatePresets,
+    saveQuickExchangeRatePreset: userPrefsStore.saveQuickExchangeRatePreset,
+    rememberLastExpenseProject: userPrefsStore.rememberLastExpenseProject,
     getLastExpenseProject,
     getProjectLastCurrency,
-    rememberProjectLastCurrency,
-    rememberProjectLastSplitConfig,
+    rememberProjectLastCurrency: userPrefsStore.rememberProjectLastCurrency,
+    rememberProjectLastSplitConfig:
+      userPrefsStore.rememberProjectLastSplitConfig,
     getProjectLastSplitConfig,
-    getProjectSettlementRateOverrides,
-    getProjectCustomRatesForTarget,
-    updateProjectSettlementCurrency,
-    updateProjectSettlementRateConfig,
+    getProjectSettlementRateOverrides:
+      settlementViewStore.getProjectSettlementRateOverrides,
+    getProjectCustomRatesForTarget:
+      settlementViewStore.getProjectCustomRatesForTarget,
+    updateProjectSettlementCurrency:
+      settlementViewStore.updateProjectSettlementCurrency,
+    updateProjectSettlementRateConfig:
+      settlementViewStore.updateProjectSettlementRateConfig,
     getProjectById,
     getAnyProjectById,
-    setDefaultCurrency,
-    addCurrency,
-    removeCurrency,
-    addCategory,
-    updateCategory,
-    removeCategory,
-    resetDefaultCategories,
+    setDefaultCurrency: userPrefsStore.setDefaultCurrency,
+    addCurrency: userPrefsStore.addCurrency,
+    removeCurrency: userPrefsStore.removeCurrency,
+    addCategory: userPrefsStore.addCategory,
+    updateCategory: userPrefsStore.updateCategory,
+    removeCategory: userPrefsStore.removeCategory,
+    resetDefaultCategories: userPrefsStore.resetDefaultCategories,
     updateUserProfile,
     initFromIndexedDb,
+    quarantinedRecords,
     setStoragePersisted,
     createProject,
     createDemoProject,
@@ -3826,44 +1796,59 @@ export const useLedgerStore = defineStore('ledger', () => {
     hasDuplicateMemberName,
     saveProjectSplitGroup,
     removeProjectSplitGroup,
-    ensureProjectPoolMember,
-    togglePreferPoolPayer,
-    batchCollectPoolFund,
-    isPoolCollectionTransaction,
+    ensureProjectPoolMember: poolActions.ensureProjectPoolMember,
+    togglePreferPoolPayer: poolActions.togglePreferPoolPayer,
+    batchCollectPoolFund: poolActions.batchCollectPoolFund,
+    isPoolCollectionTransaction: poolActions.isPoolCollectionTransaction,
     isMemberUsedInProjectTransactions,
-    softDeleteProject,
-    restoreProject,
-    permanentlyDeleteProject,
+    softDeleteProject: trashActions.softDeleteProject,
+    restoreProject: trashActions.restoreProject,
+    permanentlyDeleteProject: trashActions.permanentlyDeleteProject,
     selectProject,
     addTransaction,
     recordSettlementPayment,
     updateTransaction,
-    softDeleteTransaction,
-    softDeleteTransactionsBatch,
-    restoreTransaction,
-    permanentlyDeleteTransaction,
-    emptyTrash,
+    softDeleteTransaction: trashActions.softDeleteTransaction,
+    softDeleteTransactionsBatch: trashActions.softDeleteTransactionsBatch,
+    restoreTransaction: trashActions.restoreTransaction,
+    permanentlyDeleteTransaction: trashActions.permanentlyDeleteTransaction,
+    emptyTrash: trashActions.emptyTrash,
     storageUsageStats,
     exportLedgerBackup,
     exportProjectBackup,
     importAndMergeLedgerBackup,
-    enableProjectRealtimeSync,
-    fetchSharedProjectForJoin,
-    finalizeJoinSharedProject,
-    setMyMemberForProject,
-    rotateProjectInviteLink,
-    stopProjectRealtimeSync,
-    startProjectRealtimeListener,
-    startAllSharedProjectListeners,
-    stopAllSharedProjectListeners,
-    flushProjectOutbox,
-    flushAllSharedProjectsOutbox,
-    approvePendingRemoteDeletes,
-    rejectPendingRemoteDeletes,
-    setGoogleDriveAutoSync,
-    syncGoogleDriveNow,
-    pullGoogleDriveNow,
-    disconnectGoogleDriveAccount,
-    tryBackgroundGoogleDriveSync,
+    enableProjectRealtimeSync: realtimeSyncStore.enableProjectRealtimeSync,
+    fetchSharedProjectForJoin: realtimeSyncStore.fetchSharedProjectForJoin,
+    finalizeJoinSharedProject: realtimeSyncStore.finalizeJoinSharedProject,
+    setMyMemberForProject: realtimeSyncStore.setMyMemberForProject,
+    rotateProjectInviteLink: realtimeSyncStore.rotateProjectInviteLink,
+    stopProjectRealtimeSync: realtimeSyncStore.stopProjectRealtimeSync,
+    startProjectRealtimeListener:
+      realtimeSyncStore.startProjectRealtimeListener,
+    startAllSharedProjectListeners:
+      realtimeSyncStore.startAllSharedProjectListeners,
+    stopAllSharedProjectListeners:
+      realtimeSyncStore.stopAllSharedProjectListeners,
+    flushProjectOutbox: realtimeSyncStore.flushProjectOutbox,
+    flushAllSharedProjectsOutbox:
+      realtimeSyncStore.flushAllSharedProjectsOutbox,
+    approvePendingRemoteDeletes: realtimeSyncStore.approvePendingRemoteDeletes,
+    rejectPendingRemoteDeletes: realtimeSyncStore.rejectPendingRemoteDeletes,
+    isFirebaseConfigured: realtimeSyncStore.isFirebaseConfigured,
+    hasBuiltInFirebaseConfig: realtimeSyncStore.hasBuiltInFirebaseConfig,
+    getCustomFirebaseConfig: realtimeSyncStore.getCustomFirebaseConfig,
+    saveCustomFirebaseConfig: realtimeSyncStore.saveCustomFirebaseConfig,
+    clearCustomFirebaseConfig: realtimeSyncStore.clearCustomFirebaseConfig,
+    getRealtimeSyncErrorCode: realtimeSyncStore.getRealtimeSyncErrorCode,
+    setGoogleDriveAutoSync: googleDriveStore.setGoogleDriveAutoSync,
+    syncGoogleDriveNow: googleDriveStore.syncGoogleDriveNow,
+    pullGoogleDriveNow: googleDriveStore.pullGoogleDriveNow,
+    disconnectGoogleDriveAccount: googleDriveStore.disconnectGoogleDriveAccount,
+    tryBackgroundGoogleDriveSync: googleDriveStore.tryBackgroundGoogleDriveSync,
+    getBuiltInGoogleClientId: googleDriveStore.getBuiltInGoogleClientId,
+    hasBuiltInGoogleClientId: googleDriveStore.hasBuiltInGoogleClientId,
+    getCustomGoogleClientId: googleDriveStore.getCustomGoogleClientId,
+    saveGoogleClientId: googleDriveStore.saveGoogleClientId,
+    getGoogleDriveErrorCode: googleDriveStore.getGoogleDriveErrorCode,
   }
 })

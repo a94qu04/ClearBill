@@ -5,16 +5,17 @@
  * - 離線或請求失敗時靜默退回最近快取匯率，絕不阻塞操作
  */
 
+import {
+  parseLiveRatesCacheJson,
+  sanitizeUsdRatesMap,
+  type LiveRatesCache,
+} from '@/schemas/userPrefsSchema'
+
+export type { LiveRatesCache }
+
 const LIVE_RATES_STORAGE_KEY = 'clearbill_live_rates_v1'
 /** 每小時自動重新抓取一次最新免費即時匯率 */
 export const LIVE_RATES_CACHE_TTL_MS = 60 * 60 * 1000
-
-export interface LiveRatesCache {
-  /** 以 USD 為基準（1 USD = N 該幣別）的匯率表 */
-  ratesPerUsd: Record<string, number>
-  fetchedAt: number
-  source: string
-}
 
 let memoryCache: LiveRatesCache | null = null
 let inFlightPromise: Promise<LiveRatesCache | null> | null = null
@@ -24,19 +25,9 @@ export function loadCachedLiveRates(): LiveRatesCache | null {
   if (typeof window === 'undefined') return null
   try {
     const raw = window.localStorage.getItem(LIVE_RATES_STORAGE_KEY)
-    if (!raw) return null
-    const parsed = JSON.parse(raw) as Partial<LiveRatesCache>
-    if (
-      parsed &&
-      typeof parsed.fetchedAt === 'number' &&
-      parsed.ratesPerUsd &&
-      typeof parsed.ratesPerUsd === 'object'
-    ) {
-      memoryCache = {
-        ratesPerUsd: parsed.ratesPerUsd,
-        fetchedAt: parsed.fetchedAt,
-        source: typeof parsed.source === 'string' ? parsed.source : 'cache',
-      }
+    const parsed = parseLiveRatesCacheJson(raw)
+    if (parsed) {
+      memoryCache = parsed
       return memoryCache
     }
   } catch {
@@ -108,17 +99,15 @@ async function fetchFromOpenErApi(): Promise<LiveRatesCache | null> {
       signal: controller.signal,
     })
     if (!res.ok) return null
-    const data = (await res.json()) as {
-      result?: string
-      rates?: Record<string, number>
-    }
-    if (
-      data.rates &&
-      typeof data.rates === 'object' &&
-      Object.keys(data.rates).length > 10
-    ) {
+    const data: unknown = await res.json()
+    const rawRates =
+      data && typeof data === 'object' && 'rates' in data
+        ? (data as { rates?: unknown }).rates
+        : undefined
+    const normalized = sanitizeUsdRatesMap(rawRates)
+    if (normalized && Object.keys(normalized).length > 10) {
       return {
-        ratesPerUsd: { ...data.rates, USD: 1 },
+        ratesPerUsd: normalized,
         fetchedAt: Date.now(),
         source: 'open.er-api.com',
       }
@@ -140,17 +129,13 @@ async function fetchFromFawazCurrencyApi(): Promise<LiveRatesCache | null> {
       { signal: controller.signal },
     )
     if (!res.ok) return null
-    const data = (await res.json()) as {
-      usd?: Record<string, number>
-    }
-    if (!data.usd || typeof data.usd !== 'object') return null
-    const normalized: Record<string, number> = { USD: 1 }
-    for (const [k, v] of Object.entries(data.usd)) {
-      if (/^[a-z]{3}$/i.test(k) && typeof v === 'number' && Number.isFinite(v) && v > 0) {
-        normalized[k.toUpperCase()] = v
-      }
-    }
-    if (Object.keys(normalized).length > 10) {
+    const data: unknown = await res.json()
+    const rawUsd =
+      data && typeof data === 'object' && 'usd' in data
+        ? (data as { usd?: unknown }).usd
+        : undefined
+    const normalized = sanitizeUsdRatesMap(rawUsd)
+    if (normalized && Object.keys(normalized).length > 10) {
       return {
         ratesPerUsd: normalized,
         fetchedAt: Date.now(),
@@ -173,16 +158,15 @@ async function fetchFromFrankfurter(): Promise<LiveRatesCache | null> {
       signal: controller.signal,
     })
     if (!res.ok) return null
-    const data = (await res.json()) as {
-      rates?: Record<string, number>
-    }
-    if (
-      data.rates &&
-      typeof data.rates === 'object' &&
-      Object.keys(data.rates).length > 10
-    ) {
+    const data: unknown = await res.json()
+    const rawRates =
+      data && typeof data === 'object' && 'rates' in data
+        ? (data as { rates?: unknown }).rates
+        : undefined
+    const normalized = sanitizeUsdRatesMap(rawRates)
+    if (normalized && Object.keys(normalized).length > 10) {
       return {
-        ratesPerUsd: { ...data.rates, USD: 1 },
+        ratesPerUsd: normalized,
         fetchedAt: Date.now(),
         source: 'frankfurter.app',
       }

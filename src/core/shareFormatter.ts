@@ -1,6 +1,8 @@
 import type { Project, Transaction } from '@/schemas/ledgerSchema'
 import type { SettleUpResult } from '@/core/settleUpEngine'
 import { formatCurrencyAmount } from '@/core/currency'
+import { partitionPoolAndHumanBalances } from '@/core/poolFund'
+import { describePayers } from '@/core/txPresentation'
 
 export interface ShareSummaryLabels {
   headerPrefix: string
@@ -71,11 +73,10 @@ export function buildProjectSettlementShareText(
   )
   lines.push('')
 
-  const poolIds = new Set(
-    project.members.filter((m) => m.isPool).map((m) => m.id),
+  const { poolBalances, humanBalances } = partitionPoolAndHumanBalances(
+    settleUp.balances,
+    project.members,
   )
-  const poolBalances = settleUp.balances.filter((b) => poolIds.has(b.memberId))
-  const humanBalances = settleUp.balances.filter((b) => !poolIds.has(b.memberId))
 
   // 公費袋獨立摘要（若有啟用公費袋，不與真人成員支出混列）
   if (poolBalances.length > 0) {
@@ -155,17 +156,13 @@ export function buildProjectSettlementShareText(
             ? `${originalText} (≈ ${sign}${fmt(tx.amount * tx.exchangeRateToBase, targetCurrency)})`
             : originalText
 
-        let payerText = ''
-        if (tx.splitConfig) {
-          const multi = (tx.splitConfig.payers ?? []).filter((p) => p.amount > 0)
-          if (multi.length > 1) {
-            payerText = options.formatMultiPayer
-              ? options.formatMultiPayer(multi.length)
-              : multi.map((p) => nameOf(p.memberId)).join('+')
-          } else {
-            payerText = nameOf(tx.splitConfig.payerId)
-          }
-        }
+        const formatMultiPayer = options.formatMultiPayer
+        const payerText = describePayers(tx, nameOf, {
+          separator: '+',
+          formatMultiPayer: formatMultiPayer
+            ? (count) => formatMultiPayer(count)
+            : undefined,
+        })
 
         const formattedLine = labels.detailItemLine
           ? labels.detailItemLine({
@@ -186,11 +183,7 @@ export function buildProjectSettlementShareText(
     lines.push('')
     lines.push(labels.historyTitle)
     for (const tx of settlements) {
-      const multiPayers = (tx.splitConfig?.payers ?? []).filter((p) => p.amount > 0)
-      const fromText =
-        multiPayers.length > 1
-          ? multiPayers.map((p) => nameOf(p.memberId)).join('、')
-          : nameOf(tx.splitConfig?.payerId ?? '')
+      const fromText = describePayers(tx, nameOf, { separator: '、' })
       const toId = tx.splitConfig?.shares[0]?.memberId ?? ''
       lines.push(
         `• ${labels.paidHistoryLine(

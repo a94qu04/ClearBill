@@ -21,16 +21,9 @@ import type { Project } from '@/schemas/ledgerSchema'
 import { useLedgerStore } from '@/stores/ledgerStore'
 import { askConfirm } from '@/composables/useConfirm'
 import { useModalLayer } from '@/composables/useModalLayer'
+import { useClipboardShare } from '@/composables/useClipboardShare'
 import MemberAvatar from '@/components/MemberAvatar.vue'
 import { buildShareInviteUrl } from '@/core/realtimeSyncEngine'
-import {
-  clearCustomFirebaseConfig,
-  FirestoreSyncError,
-  getCustomFirebaseConfig,
-  hasBuiltInFirebaseConfig,
-  isFirebaseConfigured,
-  parseAndSaveCustomFirebaseConfig,
-} from '@/services/firestoreSyncService'
 
 interface Props {
   open: boolean
@@ -70,17 +63,17 @@ const configRevision = ref(0)
 
 const hasBuiltInConfig = computed(() => {
   void configRevision.value
-  return hasBuiltInFirebaseConfig()
+  return store.hasBuiltInFirebaseConfig()
 })
 
 const hasCustomConfig = computed(() => {
   void configRevision.value
-  return getCustomFirebaseConfig() !== null
+  return store.getCustomFirebaseConfig() !== null
 })
 
 const firebaseReady = computed(() => {
   void configRevision.value
-  return isFirebaseConfigured()
+  return store.isFirebaseConfigured()
 })
 
 const isShared = computed(
@@ -151,7 +144,7 @@ watch(
       humanMembers.value[0]?.id ||
       ''
     syncReceiptImages.value = props.project.syncMeta?.syncReceiptImages !== false
-    const custom = getCustomFirebaseConfig()
+    const custom = store.getCustomFirebaseConfig()
     firebaseConfigInput.value = custom ? JSON.stringify(custom, null, 2) : ''
     showAdvancedConfig.value = false
   },
@@ -159,8 +152,9 @@ watch(
 )
 
 function resolveSyncError(err: unknown): string {
-  if (err instanceof FirestoreSyncError) {
-    const key = `realtime.errors.${err.code}`
+  const code = store.getRealtimeSyncErrorCode(err)
+  if (code) {
+    const key = `realtime.errors.${code}`
     const translated = t(key)
     return translated === key ? t('realtime.errors.ERR_SYNC_FAILED') : translated
   }
@@ -169,7 +163,7 @@ function resolveSyncError(err: unknown): string {
 
 function handleSaveFirebaseConfig() {
   try {
-    parseAndSaveCustomFirebaseConfig(firebaseConfigInput.value)
+    store.saveCustomFirebaseConfig(firebaseConfigInput.value)
     configRevision.value += 1
     emit('toast', t('realtime.configSavedToast'))
   } catch (err) {
@@ -178,7 +172,7 @@ function handleSaveFirebaseConfig() {
 }
 
 function handleClearCustomConfig() {
-  clearCustomFirebaseConfig()
+  store.clearCustomFirebaseConfig()
   firebaseConfigInput.value = ''
   configRevision.value += 1
   emit('toast', t('realtime.configResetToast'))
@@ -214,30 +208,15 @@ async function handleSelectMyMember(memberId: string) {
   emit('toast', t('realtime.identityUpdatedToast'))
 }
 
+const { copyText, shareOrCopyText } = useClipboardShare()
+
 async function copyInviteUrl() {
   if (!inviteUrl.value) return
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(inviteUrl.value)
-      emit('toast', t('realtime.inviteCopiedToast'))
-      return
-    }
-  } catch {
-    // 降級複製
-  }
-  try {
-    const ta = document.createElement('textarea')
-    ta.value = inviteUrl.value
-    ta.style.position = 'fixed'
-    ta.style.opacity = '0'
-    document.body.appendChild(ta)
-    ta.select()
-    document.execCommand('copy')
-    document.body.removeChild(ta)
-    emit('toast', t('realtime.inviteCopiedToast'))
-  } catch {
-    emit('toast', t('share.failedToast'))
-  }
+  const copied = await copyText(inviteUrl.value)
+  emit(
+    'toast',
+    copied ? t('realtime.inviteCopiedToast') : t('share.failedToast'),
+  )
 }
 
 async function shareInviteUrl() {
@@ -246,20 +225,19 @@ async function shareInviteUrl() {
     name: props.project.name,
     url: inviteUrl.value,
   })
-  if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
-    try {
-      await navigator.share({
-        title: `${t('app.name')} · ${props.project.name}`,
-        text,
-        url: inviteUrl.value,
-      })
-      emit('toast', t('share.sharedToast'))
-      return
-    } catch (err) {
-      if (err instanceof Error && err.name === 'AbortError') return
-    }
+  const result = await shareOrCopyText({
+    title: `${t('app.name')} · ${props.project.name}`,
+    text,
+    url: inviteUrl.value,
+    fallbackCopyText: inviteUrl.value,
+  })
+  if (result === 'shared') {
+    emit('toast', t('share.sharedToast'))
+  } else if (result === 'copied') {
+    emit('toast', t('realtime.inviteCopiedToast'))
+  } else if (result === 'failed') {
+    emit('toast', t('share.failedToast'))
   }
-  await copyInviteUrl()
 }
 
 async function handleRetrySync() {

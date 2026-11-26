@@ -13,16 +13,17 @@ const APPROX_RATE_TO_TWD: Record<string, number> = {
   CAD: 23.2,
 }
 
-export function getSuggestedExchangeRate(from: string, to: string): number {
-  const f = from.toUpperCase()
-  const tCode = to.toUpperCase()
+export function getSuggestedExchangeRate(from: string, to: string): number | null {
+  const f = from.trim().toUpperCase()
+  const tCode = to.trim().toUpperCase()
+  if (!f || !tCode) return null
   if (f === tCode) return 1
   const fromInTwd = APPROX_RATE_TO_TWD[f]
   const toInTwd = APPROX_RATE_TO_TWD[tCode]
   if (fromInTwd && toInTwd) {
     return Number((fromInTwd / toInTwd).toFixed(4))
   }
-  return 1
+  return null
 }
 
 /**
@@ -127,36 +128,4 @@ export function sanitizeExportFilename(name: string): string {
     .replace(/\s+/g, '-')
     .slice(0, 48)
   return cleaned || 'clearbill-project'
-}
-
-/** 觸發瀏覽器下載文字內容檔案 */
-export function triggerTextFileDownload(
-  content: string,
-  filename: string,
-  mimeType: string,
-): void {
-  if (typeof document === 'undefined' || typeof URL === 'undefined') return
-  const blob = new Blob([content], { type: mimeType })
-  triggerBinaryFileDownload(blob, filename, mimeType)
-}
-
-/** 觸發瀏覽器下載二進位檔案（如 .xlsx 或 .png） */
-export function triggerBinaryFileDownload(
-  data: Uint8Array | Blob,
-  filename: string,
-  mimeType: string,
-): void {
-  if (typeof document === 'undefined' || typeof URL === 'undefined') return
-  const blob =
-    data instanceof Blob
-      ? data
-      : new Blob([data.slice().buffer], { type: mimeType })
-  const url = URL.createObjectURL(blob)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = filename
-  document.body.appendChild(link)
-  link.click()
-  document.body.removeChild(link)
-  URL.revokeObjectURL(url)
 }

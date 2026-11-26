@@ -29,10 +29,11 @@ function fmt(amount: number, currency: string): string {
 }
 
 async function handleRejectAndProtect() {
-  if (isHandling.value) return
+  if (isHandling.value || !guard.value) return
+  const targetProjectId = guard.value.projectId
   isHandling.value = true
   try {
-    const count = await store.rejectPendingRemoteDeletes()
+    const count = await store.rejectPendingRemoteDeletes(targetProjectId)
     emit('toast', t('realtime.guardRejectedToast', { count }))
   } finally {
     isHandling.value = false
@@ -40,10 +41,11 @@ async function handleRejectAndProtect() {
 }
 
 async function handleApproveDeletes() {
-  if (isHandling.value) return
+  if (isHandling.value || !guard.value) return
+  const targetProjectId = guard.value.projectId
   isHandling.value = true
   try {
-    const count = await store.approvePendingRemoteDeletes()
+    const count = await store.approvePendingRemoteDeletes(targetProjectId)
     emit('toast', t('realtime.guardApprovedToast', { count }))
   } finally {
     isHandling.value = false
@@ -70,10 +72,18 @@ async function handleApproveDeletes() {
           >
             <ShieldAlert class="h-5 w-5" />
           </span>
-          <div>
-            <h2 class="text-sm font-extrabold text-rose-700 dark:text-rose-300">
-              {{ t('realtime.guardTitle') }}
-            </h2>
+          <div class="min-w-0 flex-1">
+            <div class="flex items-center justify-between gap-2">
+              <h2 class="text-sm font-extrabold text-rose-700 dark:text-rose-300">
+                {{ t('realtime.guardTitle') }}
+              </h2>
+              <span
+                v-if="store.pendingDeletionGuardCount > 1"
+                class="shrink-0 rounded-full bg-rose-100 px-2 py-0.5 text-[11px] font-bold tabular-nums text-rose-700 dark:bg-rose-950/80 dark:text-rose-300"
+              >
+                1 / {{ store.pendingDeletionGuardCount }}
+              </span>
+            </div>
             <p class="mt-1 text-xs leading-relaxed text-slate-600 dark:text-slate-300">
               {{
                 t('realtime.guardDesc', {

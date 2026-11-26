@@ -7,6 +7,20 @@ import {
   type Project,
   type Transaction,
 } from '@/schemas/ledgerSchema'
+import {
+  validateSplitInvariant,
+  type SplitInvariantViolation,
+} from '@/core/splitInvariant'
+
+export interface MigrateTransactionOptions {
+  /** 是否嚴格強制拆帳金額守恆不變式（預設 false，採寬鬆模式向下相容歷史資料） */
+  strictSplitInvariant?: boolean
+  /** 寬鬆模式下偵測到歷史資料違反拆帳守恆時之回呼 */
+  onSplitInvariantViolation?: (
+    tx: Transaction,
+    violations: SplitInvariantViolation[],
+  ) => void
+}
 
 export class SchemaMigrationError extends Error {
   public readonly code: string
@@ -54,7 +68,10 @@ function readSchemaVersion(obj: RecordObject): number {
 /**
  * 單筆交易資料向下相容遷移並通過 Zod 嚴格驗證
  */
-export function migrateTransaction(raw: unknown): Transaction {
+export function migrateTransaction(
+  raw: unknown,
+  options?: MigrateTransactionOptions,
+): Transaction {
   const payload = assertRecordObject(raw, 'Transaction')
   let version = readSchemaVersion(payload)
 
@@ -87,7 +104,18 @@ export function migrateTransaction(raw: unknown): Transaction {
     delete payload.projectId
   }
 
-  return TransactionSchema.parse(payload)
+  const parsed = TransactionSchema.parse(payload)
+  const invariant = validateSplitInvariant(parsed)
+  if (!invariant.valid) {
+    if (options?.strictSplitInvariant) {
+      throw new SchemaMigrationError(
+        'ERR_SPLIT_INVARIANT_VIOLATION',
+        invariant.violations.map((v) => v.message).join('；'),
+      )
+    }
+    options?.onSplitInvariantViolation?.(parsed, invariant.violations)
+  }
+  return parsed
 }
 
 /**
@@ -112,6 +140,112 @@ export function migrateProject(raw: unknown): Project {
   }
 
   return ProjectSchema.parse(payload)
+}
+
+export interface QuarantinedRecord {
+  entityType: 'project' | 'transaction'
+  id?: string
+  raw: unknown
+  error: string
+}
+
+export interface MigrateLoadedRecordsResult {
+  projects: Project[]
+  transactions: Transaction[]
+  /** 確實發生版本升級（如 v0 → v1）而需要靜默回寫本機資料庫之專案 */
+  upgradedProjects: Project[]
+  /** 確實發生版本升級（如 v0 → v1）而需要靜默回寫本機資料庫之交易 */
+  upgradedTransactions: Transaction[]
+  /** 遷移或 Zod 驗證失敗而被隔離的異常紀錄（不阻斷其餘正常資料載入） */
+  quarantined: QuarantinedRecord[]
+}
+
+function needsSchemaUpgrade(raw: unknown): boolean {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return false
+  }
+  const rawVersion = (raw as RecordObject).schemaVersion
+  return (
+    rawVersion === undefined ||
+    rawVersion === null ||
+    (typeof rawVersion === 'number' && rawVersion < CURRENT_SCHEMA_VERSION)
+  )
+}
+
+function extractRawRecordId(raw: unknown): string | undefined {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return undefined
+  }
+  const id = (raw as RecordObject).id
+  return typeof id === 'string' && id.trim().length > 0 ? id : undefined
+}
+
+function formatMigrationError(err: unknown): string {
+  if (err instanceof Error && err.message) {
+    return err.message
+  }
+  return String(err)
+}
+
+/**
+ * 批次遷移本機 IndexedDB 載入之專案與交易紀錄：
+ * - 舊版（如 v0）資料自動升級至 CURRENT_SCHEMA_VERSION 並標記回寫清單
+ * - 單筆損毀或不支援之較新版本資料自動隔離至 quarantined，不影響其餘正常資料載入
+ */
+export function migrateLoadedLedgerRecords(
+  rawProjects: readonly unknown[],
+  rawTransactions: readonly unknown[],
+  transactionOptions?: MigrateTransactionOptions,
+): MigrateLoadedRecordsResult {
+  const projects: Project[] = []
+  const transactions: Transaction[] = []
+  const upgradedProjects: Project[] = []
+  const upgradedTransactions: Transaction[] = []
+  const quarantined: QuarantinedRecord[] = []
+
+  for (const raw of rawProjects) {
+    try {
+      const upgraded = needsSchemaUpgrade(raw)
+      const migrated = migrateProject(raw)
+      projects.push(migrated)
+      if (upgraded) {
+        upgradedProjects.push(migrated)
+      }
+    } catch (err) {
+      quarantined.push({
+        entityType: 'project',
+        id: extractRawRecordId(raw),
+        raw,
+        error: formatMigrationError(err),
+      })
+    }
+  }
+
+  for (const raw of rawTransactions) {
+    try {
+      const upgraded = needsSchemaUpgrade(raw)
+      const migrated = migrateTransaction(raw, transactionOptions)
+      transactions.push(migrated)
+      if (upgraded) {
+        upgradedTransactions.push(migrated)
+      }
+    } catch (err) {
+      quarantined.push({
+        entityType: 'transaction',
+        id: extractRawRecordId(raw),
+        raw,
+        error: formatMigrationError(err),
+      })
+    }
+  }
+
+  return {
+    projects,
+    transactions,
+    upgradedProjects,
+    upgradedTransactions,
+    quarantined,
+  }
 }
 
 /**

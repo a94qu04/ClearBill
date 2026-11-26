@@ -18,7 +18,7 @@ import MemberAvatar from '@/components/MemberAvatar.vue'
 import {
   compressAvatarImageFileToDataUrl,
   compressCoverImageFileToDataUrl,
-} from '@/core/imageCompressor'
+} from '@/platform/imageCompressor'
 import {
   AVATAR_PALETTE,
   PROJECT_CARD_PALETTE,
@@ -28,8 +28,8 @@ import { askConfirm } from '@/composables/useConfirm'
 import {
   getTodayIso,
   sanitizeExportFilename,
-  triggerTextFileDownload,
 } from '@/core/ledgerHelpers'
+import { triggerTextFileDownload } from '@/platform/download'
 import type { Project, ProjectMember, SplitMode } from '@/schemas/ledgerSchema'
 
 interface Props {
@@ -183,12 +183,19 @@ async function handleSaveProjectSettings() {
     )
     const confirmed = await askConfirm({
       title: t('project.currencyLabel'),
-      message: t('project.changeCurrencyConfirm', {
-        from: props.project.baseCurrency,
-        to: editProjectCurrency.value,
-        count: existingTxCount,
-        rate,
-      }),
+      message:
+        rate !== null
+          ? t('project.changeCurrencyConfirm', {
+              from: props.project.baseCurrency,
+              to: editProjectCurrency.value,
+              count: existingTxCount,
+              rate,
+            })
+          : t('project.changeCurrencyNoRateConfirm', {
+              from: props.project.baseCurrency,
+              to: editProjectCurrency.value,
+              count: existingTxCount,
+            }),
       tone: 'primary',
     })
     if (!confirmed) {

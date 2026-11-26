@@ -15,6 +15,7 @@ import {
   applyPercentFees,
   computeEffectiveCompoundFeePercent,
 } from '@/core/ledgerHelpers'
+import { parseCustomFeeRatesJson } from '@/schemas/userPrefsSchema'
 
 const FEE_RATES_STORAGE_KEY = 'clearbill_custom_fee_rates_v1'
 
@@ -23,24 +24,7 @@ function loadSavedFeeRates(): { service: number; fx: number } {
   if (typeof window === 'undefined') return defaults
   try {
     const raw = window.localStorage.getItem(FEE_RATES_STORAGE_KEY)
-    if (!raw) return defaults
-    const parsed = JSON.parse(raw) as Partial<{ service: number; fx: number }>
-    return {
-      service:
-        typeof parsed.service === 'number' &&
-        Number.isFinite(parsed.service) &&
-        parsed.service > 0 &&
-        parsed.service <= 100
-          ? parsed.service
-          : 10,
-      fx:
-        typeof parsed.fx === 'number' &&
-        Number.isFinite(parsed.fx) &&
-        parsed.fx > 0 &&
-        parsed.fx <= 100
-          ? parsed.fx
-          : 1.5,
-    }
+    return parseCustomFeeRatesJson(raw, defaults)
   } catch {
     return defaults
   }

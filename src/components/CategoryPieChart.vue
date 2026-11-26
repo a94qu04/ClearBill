@@ -25,12 +25,13 @@ const store = useLedgerStore()
 
 const activeKey = ref<string | null>(null)
 
-const showProjectBaseHint = computed(
-  () =>
-    Boolean(props.projectBaseCurrency) &&
-    props.projectBaseCurrency!.trim().toUpperCase() !==
-      props.baseCurrency.trim().toUpperCase(),
-)
+const showProjectBaseHint = computed(() => {
+  const projectBase = props.projectBaseCurrency?.trim().toUpperCase()
+  return (
+    Boolean(projectBase) &&
+    projectBase !== props.baseCurrency.trim().toUpperCase()
+  )
+})
 
 const projectBaseStats = computed(() => {
   if (!showProjectBaseHint.value || !props.projectBaseCurrency) return null
@@ -83,6 +84,7 @@ interface ChartSlice {
   color: string
   icon?: string
   amount: number
+  projectBaseAmount?: number
   percentage: number
   count: number
   dashLength: number
@@ -110,6 +112,7 @@ const slices = computed<ChartSlice[]>(() => {
       color: getCategoryColor(item.categoryKey),
       icon: getCategoryIcon(item.categoryKey),
       amount: item.amount,
+      projectBaseAmount: projectBaseAmountMap.value.get(item.categoryKey),
       percentage: item.percentage,
       count: item.count,
       dashLength,
@@ -279,10 +282,10 @@ function fmt(amount: number, currency = props.baseCurrency): string {
                   </span>
                 </div>
                 <span
-                  v-if="showProjectBaseHint && projectBaseCurrency && projectBaseAmountMap.has(slice.categoryKey)"
+                  v-if="showProjectBaseHint && projectBaseCurrency && slice.projectBaseAmount !== undefined"
                   class="text-[9px] font-semibold text-amber-700/90 dark:text-amber-300/90"
                 >
-                  {{ fmt(projectBaseAmountMap.get(slice.categoryKey)!, projectBaseCurrency) }}
+                  {{ fmt(slice.projectBaseAmount, projectBaseCurrency) }}
                 </span>
               </div>
             </div>

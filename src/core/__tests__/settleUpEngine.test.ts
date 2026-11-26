@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
+  applySettlementRatesToTransactions,
   buildHubSettlementTransfers,
   calculateSettleUp,
   simplifyNetBalances,
+  type MissingSettlementRateInfo,
 } from '@/core/settleUpEngine'
 import type { Transaction } from '@/schemas/ledgerSchema'
 
@@ -578,5 +580,294 @@ describe('settleUpEngine - 多人債務最小化結算演算法', () => {
       })
     }
     expect(result.balances.reduce((acc, b) => acc + b.netAmount, 0)).toBe(0)
+  })
+})
+
+describe('applySettlementRatesToTransactions - 結算匯率套用與無效匯率防護', () => {
+  it('同幣別結算且無覆寫匯率時，直接回傳原陣列不建立多餘副本', () => {
+    const txs: Transaction[] = [
+      createExpenseTx({
+        id: '50000000-0000-4000-8000-000000000001',
+        amount: 500,
+        currency: 'TWD',
+        exchangeRateToBase: 1,
+        splitConfig: {
+          payerId: 'alice',
+          mode: 'equal',
+          shares: [{ memberId: 'alice', finalAmount: 500 }],
+        },
+      }),
+    ]
+
+    const result = applySettlementRatesToTransactions(txs, 'TWD', undefined, 'TWD')
+    expect(result).toBe(txs)
+  })
+
+  it('交易原幣別等於結帳幣別時一律正規化為 1，且覆寫匯率優先於跨幣換算、不修改原始交易', () => {
+    const twdTx = createExpenseTx({
+      id: '50000000-0000-4000-8000-000000000002',
+      amount: 1000,
+      currency: 'TWD',
+      exchangeRateToBase: 40, // 原專案主幣別為 KRW 時的匯率
+      splitConfig: {
+        payerId: 'alice',
+        mode: 'equal',
+        shares: [{ memberId: 'alice', finalAmount: 1000 }],
+      },
+    })
+    const krwTx = createExpenseTx({
+      id: '50000000-0000-4000-8000-000000000003',
+      amount: 100000,
+      currency: 'KRW',
+      exchangeRateToBase: 1,
+      splitConfig: {
+        payerId: 'alice',
+        mode: 'equal',
+        shares: [{ memberId: 'alice', finalAmount: 100000 }],
+      },
+    })
+    const jpyTx = createExpenseTx({
+      id: '50000000-0000-4000-8000-000000000004',
+      amount: 10000,
+      currency: 'JPY',
+      exchangeRateToBase: 9, // 1 JPY = 9 KRW
+      splitConfig: {
+        payerId: 'alice',
+        mode: 'equal',
+        shares: [{ memberId: 'alice', finalAmount: 10000 }],
+      },
+    })
+    const usdTx = createExpenseTx({
+      id: '50000000-0000-4000-8000-000000000005',
+      amount: 100,
+      currency: 'USD',
+      exchangeRateToBase: 1350, // 1 USD = 1350 KRW
+      splitConfig: {
+        payerId: 'alice',
+        mode: 'equal',
+        shares: [{ memberId: 'alice', finalAmount: 100 }],
+      },
+    })
+
+    const effective = applySettlementRatesToTransactions(
+      [twdTx, krwTx, jpyTx, usdTx],
+      'TWD',
+      { JPY: 0.22, USD: -1 }, // USD 無效覆寫應被忽略並改走 baseToSettlementRate
+      'KRW',
+      0.024,
+    )
+
+    expect(effective[0].exchangeRateToBase).toBe(1)
+    expect(effective[1].exchangeRateToBase).toBe(0.024)
+    expect(effective[2].exchangeRateToBase).toBe(0.22)
+    expect(effective[3].exchangeRateToBase).toBe(Number((1350 * 0.024).toFixed(6)))
+
+    // 原物件不得被突變
+    expect(twdTx.exchangeRateToBase).toBe(40)
+    expect(krwTx.exchangeRateToBase).toBe(1)
+    expect(jpyTx.exchangeRateToBase).toBe(9)
+    expect(usdTx.exchangeRateToBase).toBe(1350)
+  })
+
+  it('跨幣結算且 baseToSettlementRate 無效時，strict 模式拋出 ERR_SETTLEMENT_RATE_INVALID，預設模式透過回呼與 anomalies 標記', () => {
+    const krwBaseTx = createExpenseTx({
+      id: '50000000-0000-4000-8000-000000000010',
+      amount: 100000,
+      currency: 'KRW',
+      exchangeRateToBase: 1,
+      splitConfig: {
+        payerId: 'alice',
+        mode: 'equal',
+        shares: [
+          { memberId: 'alice', finalAmount: 50000 },
+          { memberId: 'bob', finalAmount: 50000 },
+        ],
+      },
+    })
+    const jpyThirdTx = createExpenseTx({
+      id: '50000000-0000-4000-8000-000000000011',
+      amount: 10000,
+      currency: 'JPY',
+      exchangeRateToBase: 9,
+      splitConfig: {
+        payerId: 'bob',
+        mode: 'equal',
+        shares: [
+          { memberId: 'alice', finalAmount: 5000 },
+          { memberId: 'bob', finalAmount: 5000 },
+        ],
+      },
+    })
+
+    for (const badRate of [undefined, 0, -0.024, Number.NaN, Number.POSITIVE_INFINITY]) {
+      // 1. strict 模式直接拋錯
+      expect(() =>
+        applySettlementRatesToTransactions([krwBaseTx], 'TWD', undefined, 'KRW', badRate, {
+          strict: true,
+        }),
+      ).toThrow(/ERR_SETTLEMENT_RATE_INVALID/)
+
+      // 2. 非 strict 模式透過 onMissingRate 標記所有缺少有效匯率的交易
+      const missing: MissingSettlementRateInfo[] = []
+      applySettlementRatesToTransactions(
+        [krwBaseTx, jpyThirdTx],
+        'TWD',
+        undefined,
+        'KRW',
+        badRate,
+        {
+          onMissingRate: (info) => missing.push(info),
+        },
+      )
+      expect(missing).toEqual([
+        {
+          transactionId: krwBaseTx.id,
+          sourceCurrency: 'KRW',
+          projectBaseCurrency: 'KRW',
+          settlementCurrency: 'TWD',
+        },
+        {
+          transactionId: jpyThirdTx.id,
+          sourceCurrency: 'JPY',
+          projectBaseCurrency: 'KRW',
+          settlementCurrency: 'TWD',
+        },
+      ])
+    }
+
+    // 3. calculateSettleUp 預設於 anomalies 回報 MISSING_SETTLEMENT_RATE；strictRates=true 則拋錯
+    const settle = calculateSettleUp([krwBaseTx, jpyThirdTx], 'TWD', ['alice', 'bob'], {
+      projectBaseCurrency: 'KRW',
+      baseToSettlementRate: undefined,
+    })
+    expect(settle.anomalies).toEqual([
+      {
+        transactionId: krwBaseTx.id,
+        code: 'MISSING_SETTLEMENT_RATE',
+        diffUnits: 0,
+        toleranceUnits: 0,
+        diffAmount: 0,
+        currency: 'TWD',
+        sourceCurrency: 'KRW',
+      },
+      {
+        transactionId: jpyThirdTx.id,
+        code: 'MISSING_SETTLEMENT_RATE',
+        diffUnits: 0,
+        toleranceUnits: 0,
+        diffAmount: 0,
+        currency: 'TWD',
+        sourceCurrency: 'JPY',
+      },
+    ])
+
+    expect(() =>
+      calculateSettleUp([krwBaseTx], 'TWD', ['alice', 'bob'], {
+        projectBaseCurrency: 'KRW',
+        baseToSettlementRate: 0,
+        strictRates: true,
+      }),
+    ).toThrow(/ERR_SETTLEMENT_RATE_INVALID/)
+  })
+
+  it('跨幣結算無 baseToSettlementRate 時，原幣別已等於結帳幣別、已有有效覆寫匯率或已軟刪除交易不應誤報異常', () => {
+    const twdTx = createExpenseTx({
+      id: '50000000-0000-4000-8000-000000000020',
+      amount: 1000,
+      currency: 'TWD',
+      exchangeRateToBase: 40,
+      splitConfig: {
+        payerId: 'alice',
+        mode: 'equal',
+        shares: [
+          { memberId: 'alice', finalAmount: 500 },
+          { memberId: 'bob', finalAmount: 500 },
+        ],
+      },
+    })
+    const jpyOverriddenTx = createExpenseTx({
+      id: '50000000-0000-4000-8000-000000000021',
+      amount: 10000,
+      currency: 'JPY',
+      exchangeRateToBase: 9,
+      splitConfig: {
+        payerId: 'bob',
+        mode: 'equal',
+        shares: [
+          { memberId: 'alice', finalAmount: 5000 },
+          { memberId: 'bob', finalAmount: 5000 },
+        ],
+      },
+    })
+    const deletedKrwTx = createExpenseTx({
+      id: '50000000-0000-4000-8000-000000000022',
+      amount: 50000,
+      currency: 'KRW',
+      exchangeRateToBase: 1,
+      isDeleted: true,
+      splitConfig: {
+        payerId: 'alice',
+        mode: 'equal',
+        shares: [{ memberId: 'alice', finalAmount: 50000 }],
+      },
+    })
+
+    const missing: MissingSettlementRateInfo[] = []
+    const effective = applySettlementRatesToTransactions(
+      [twdTx, jpyOverriddenTx, deletedKrwTx],
+      'TWD',
+      { JPY: 0.21 },
+      'KRW',
+      undefined,
+      {
+        strict: true,
+        onMissingRate: (info) => missing.push(info),
+      },
+    )
+
+    expect(missing).toEqual([])
+    expect(effective[0].exchangeRateToBase).toBe(1)
+    expect(effective[1].exchangeRateToBase).toBe(0.21)
+
+    const settle = calculateSettleUp(
+      [twdTx, jpyOverriddenTx, deletedKrwTx],
+      'TWD',
+      ['alice', 'bob'],
+      {
+        overrideRatesByCurrency: { JPY: 0.21 },
+        projectBaseCurrency: 'KRW',
+        baseToSettlementRate: undefined,
+        strictRates: true,
+      },
+    )
+    expect(settle.anomalies).toEqual([])
+    expect(settle.totalProjectExpense).toBe(3100) // 1000 + 2100
+  })
+
+  it('跨幣換算後匯率因極小值四捨五入歸 0 時，亦視為無效匯率並標記或拋錯', () => {
+    const tinyTx = createExpenseTx({
+      id: '50000000-0000-4000-8000-000000000030',
+      amount: 1000,
+      currency: 'VND',
+      exchangeRateToBase: 0.0001,
+      splitConfig: {
+        payerId: 'alice',
+        mode: 'equal',
+        shares: [{ memberId: 'alice', finalAmount: 1000 }],
+      },
+    })
+
+    const missing: MissingSettlementRateInfo[] = []
+    applySettlementRatesToTransactions([tinyTx], 'USD', undefined, 'TWD', 0.0001, {
+      onMissingRate: (info) => missing.push(info),
+    })
+    expect(missing).toHaveLength(1)
+    expect(missing[0].sourceCurrency).toBe('VND')
+
+    expect(() =>
+      applySettlementRatesToTransactions([tinyTx], 'USD', undefined, 'TWD', 0.0001, {
+        strict: true,
+      }),
+    ).toThrow(/ERR_SETTLEMENT_RATE_INVALID/)
   })
 })

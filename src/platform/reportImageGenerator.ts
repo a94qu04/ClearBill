@@ -2,6 +2,8 @@ import type { Project, Transaction } from '@/schemas/ledgerSchema'
 import type { SettleUpResult } from '@/core/settleUpEngine'
 import { calculateCategoryStats } from '@/core/categoryStats'
 import { formatCurrencyAmount } from '@/core/currency'
+import { partitionPoolAndHumanBalances } from '@/core/poolFund'
+import { describePayers } from '@/core/txPresentation'
 
 export interface LongReportLabels {
   brandTitle: string
@@ -112,9 +114,10 @@ export async function generateProjectReportPngBlob(
     : []
 
   // 將公費袋虛擬成員與真人成員分區呈現，避免長截圖把公費混進團員餘額
-  const poolIdSet = new Set(project.members.filter((m) => m.isPool).map((m) => m.id))
-  const poolBalances = settleUp.balances.filter((b) => poolIdSet.has(b.memberId))
-  const humanBalances = settleUp.balances.filter((b) => !poolIdSet.has(b.memberId))
+  const { poolBalances, humanBalances } = partitionPoolAndHumanBalances(
+    settleUp.balances,
+    project.members,
+  )
 
   // 6 位以上成員自動改為雙欄網格，高度減半且在 LINE 預覽字體更清楚
   const useTwoColMembers = humanBalances.length >= 6
@@ -553,9 +556,7 @@ export async function generateProjectReportPngBlob(
       ctx.font = `700 16px ${fontStack}`
       ctx.fillText(truncateText(ctx, title, CARD_W - 210), PAD + 24, ey + 14)
 
-      const payerText = tx.splitConfig
-        ? nameOf(tx.splitConfig.payerId)
-        : ''
+      const payerText = describePayers(tx, nameOf, { separator: '+' })
       ctx.fillStyle = '#64748b'
       ctx.font = `500 13px ${fontStack}`
       ctx.fillText(

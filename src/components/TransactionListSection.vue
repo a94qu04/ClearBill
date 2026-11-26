@@ -15,8 +15,8 @@ import {
   X,
 } from 'lucide-vue-next'
 import { useLedgerStore, type ManagedCategory } from '@/stores/ledgerStore'
-import { formatCurrencyAmount, fromMinorUnits, toMinorUnits } from '@/core/currency'
-import { matchesDateQuery } from '@/core/ledgerHelpers'
+import { useTxFilters } from '@/composables/useTxFilters'
+import { formatCurrencyAmount } from '@/core/currency'
 import type { ProjectMember, Transaction } from '@/schemas/ledgerSchema'
 import CategoryIconBadge from '@/components/CategoryIconBadge.vue'
 import MemberAvatar from '@/components/MemberAvatar.vue'
@@ -55,39 +55,7 @@ const emit = defineEmits<{
 const { t, locale } = useI18n()
 const store = useLedgerStore()
 
-const searchQuery = ref('')
-const selectedCategoryFilters = ref<string[]>([])
-const selectedMemberFilter = ref<string>('all')
-const selectedProjectFilter = ref<string>('all')
-const onlyRefunds = ref(false)
-const onlyWithPhotos = ref(false)
-const filterDrawerOpen = ref(false)
-const homeSearchOpen = ref(false)
-const showAll = ref(false)
 const expandedTxId = ref<string | null>(null)
-
-const activeFilterChipCount = computed(() => {
-  let count = 0
-  if (selectedProjectFilter.value !== 'all') count += 1
-  count += selectedCategoryFilters.value.length
-  if (selectedMemberFilter.value !== 'all') count += 1
-  if (onlyRefunds.value) count += 1
-  if (onlyWithPhotos.value) count += 1
-  return count
-})
-
-function toggleCategoryFilter(categoryKey: string) {
-  if (selectedCategoryFilters.value.includes(categoryKey)) {
-    selectedCategoryFilters.value = selectedCategoryFilters.value.filter(
-      (key) => key !== categoryKey,
-    )
-  } else {
-    selectedCategoryFilters.value = [
-      ...selectedCategoryFilters.value,
-      categoryKey,
-    ]
-  }
-}
 
 function toggleExpandTx(txId: string) {
   expandedTxId.value = expandedTxId.value === txId ? null : txId
@@ -98,14 +66,6 @@ function resolveCategoryLabel(cat: ManagedCategory): string {
   const translated = t(`categories.${cat.key}`)
   return translated === `categories.${cat.key}` ? cat.key : translated
 }
-
-const orderedFilterMembers = computed<ProjectMember[]>(() => {
-  const list = props.projectMembers ?? []
-  if (!props.myMemberId) return list
-  const mine = list.find((m) => m.id === props.myMemberId)
-  if (!mine) return list
-  return [mine, ...list.filter((m) => m.id !== props.myMemberId)]
-})
 
 const allCategories = computed(() =>
   store.categories.map((cat) => ({
@@ -233,256 +193,44 @@ function getTxShareBreakdown(
   return tx.splitConfig.shares.filter((s) => s.finalAmount > 0)
 }
 
-function isMemberInvolvedInTx(tx: Transaction, memberId: string): boolean {
-  if (!tx.splitConfig) return false
-  if (tx.splitConfig.payerId === memberId) return true
-  if (
-    tx.splitConfig.payers?.some(
-      (p) => p.memberId === memberId && p.amount > 0,
-    )
-  ) {
-    return true
-  }
-  return tx.splitConfig.shares.some(
-    (s) => s.memberId === memberId && s.finalAmount > 0,
-  )
-}
-
-function matchesFilter(tx: Transaction): boolean {
-  if (
-    selectedProjectFilter.value !== 'all' &&
-    tx.projectId !== selectedProjectFilter.value
-  ) {
-    return false
-  }
-  if (
-    selectedCategoryFilters.value.length > 0 &&
-    !selectedCategoryFilters.value.includes(tx.categoryKey)
-  ) {
-    return false
-  }
-  if (
-    selectedMemberFilter.value !== 'all' &&
-    !isMemberInvolvedInTx(tx, selectedMemberFilter.value)
-  ) {
-    return false
-  }
-  if (onlyRefunds.value && tx.type !== 'refund') {
-    return false
-  }
-  if (onlyWithPhotos.value && (!tx.receiptImages || tx.receiptImages.length === 0)) {
-    return false
-  }
-  const q = searchQuery.value.trim().toLowerCase()
-  if (!q) return true
-
-  const note = (tx.note ?? '').toLowerCase()
-  const catName = getCategoryLabel(tx.categoryKey).toLowerCase()
-  const timeStr = tx.time.toLowerCase()
-  const amountStr = String(tx.amount)
-  const qWithoutComma = q.replace(/,/g, '')
-  const rate = tx.exchangeRateToBase > 0 ? tx.exchangeRateToBase : 1
-  const convertedBase = tx.amount * rate
-  const convertedIntStr = String(Math.round(convertedBase))
-  const convertedFixedStr = String(Number(convertedBase.toFixed(2)))
-  const currencyStr = tx.currency.toLowerCase()
-  const projectName = (store.getProjectById(tx.projectId)?.name ?? '').toLowerCase()
-  const payerNames = tx.splitConfig
-    ? [
-        getMemberName(tx.splitConfig.payerId, tx.projectId),
-        ...(tx.splitConfig.payers ?? []).map((p) =>
-          getMemberName(p.memberId, tx.projectId),
-        ),
-      ]
-        .join(' ')
-        .toLowerCase()
-    : ''
-  const shareNames = tx.splitConfig
-    ? tx.splitConfig.shares
-        .filter((s) => s.finalAmount > 0)
-        .map((s) => getMemberName(s.memberId, tx.projectId))
-        .join(' ')
-        .toLowerCase()
-    : ''
-
-  return (
-    note.includes(q) ||
-    catName.includes(q) ||
-    matchesDateQuery(tx.date, q) ||
-    timeStr.includes(q) ||
-    amountStr.includes(qWithoutComma) ||
-    convertedIntStr.includes(qWithoutComma) ||
-    convertedFixedStr.includes(qWithoutComma) ||
-    currencyStr.includes(q) ||
-    projectName.includes(q) ||
-    payerNames.includes(q) ||
-    shareNames.includes(q)
-  )
-}
-
-const hasActiveFilter = computed(
-  () =>
-    Boolean(searchQuery.value.trim()) ||
-    selectedCategoryFilters.value.length > 0 ||
-    selectedMemberFilter.value !== 'all' ||
-    selectedProjectFilter.value !== 'all' ||
-    onlyRefunds.value ||
-    onlyWithPhotos.value,
-)
-
-const filteredMemberShareSubtotal = computed<number | null>(() => {
-  if (
-    selectedMemberFilter.value === 'all' ||
-    props.context !== 'project' ||
-    !props.projectBaseCurrency
-  ) {
-    return null
-  }
-  const memberId = selectedMemberFilter.value
-  let units = 0
-  for (const tx of filteredTransactions.value) {
-    if (tx.type !== 'expense' && tx.type !== 'refund') continue
-    const share = tx.splitConfig?.shares.find((s) => s.memberId === memberId)
-    if (!share || share.finalAmount <= 0) continue
-    const rate = tx.exchangeRateToBase > 0 ? tx.exchangeRateToBase : 1
-    const sign = tx.type === 'refund' ? -1 : 1
-    units += sign * toMinorUnits(share.finalAmount * rate, props.projectBaseCurrency)
-  }
-  return fromMinorUnits(units, props.projectBaseCurrency)
-})
-
-/** 成員篩選時同步計算該成員於篩選清單內實際墊付小計（方便核對刷卡帳單） */
-const filteredMemberPaidSubtotal = computed<number | null>(() => {
-  if (
-    selectedMemberFilter.value === 'all' ||
-    props.context !== 'project' ||
-    !props.projectBaseCurrency
-  ) {
-    return null
-  }
-  const memberId = selectedMemberFilter.value
-  let units = 0
-  for (const tx of filteredTransactions.value) {
-    if (tx.type !== 'expense' && tx.type !== 'refund') continue
-    if (!tx.splitConfig) continue
-    const rate = tx.exchangeRateToBase > 0 ? tx.exchangeRateToBase : 1
-    const sign = tx.type === 'refund' ? -1 : 1
-    const multi = (tx.splitConfig.payers ?? []).filter((p) => p.amount > 0)
-    let paidAmt = 0
-    if (multi.length > 0) {
-      paidAmt = multi.find((p) => p.memberId === memberId)?.amount ?? 0
-    } else if (tx.splitConfig.payerId === memberId) {
-      paidAmt = tx.amount
-    }
-    if (paidAmt > 0) {
-      units += sign * toMinorUnits(paidAmt * rate, props.projectBaseCurrency)
-    }
-  }
-  return fromMinorUnits(units, props.projectBaseCurrency)
-})
-
-const filteredTransactions = computed(() =>
-  props.transactions
-    .filter(matchesFilter)
-    .sort((a, b) => {
-      const dateCmp = b.date.localeCompare(a.date)
-      if (dateCmp !== 0) return dateCmp
-      const timeCmp = b.time.localeCompare(a.time)
-      if (timeCmp !== 0) return timeCmp
-      return b.updatedAt - a.updatedAt
-    }),
-)
-
-const displayedTransactions = computed(() => {
-  if (!props.collapsibleLimit || showAll.value) {
-    return filteredTransactions.value
-  }
-  return filteredTransactions.value.slice(0, props.collapsibleLimit)
-})
-
-interface DateGroup {
-  date: string
-  dateLabel: string
-  items: Transaction[]
-  projectNetSubtotal: number | null
-}
-
-function formatGroupDateHeading(isoDate: string): string {
-  const parts = isoDate.split('-').map(Number)
-  if (parts.length !== 3 || parts.some((n) => !Number.isFinite(n))) {
-    return isoDate
-  }
-  try {
-    const dt = new Date(parts[0], parts[1] - 1, parts[2])
-    const formatted = new Intl.DateTimeFormat(locale.value, {
-      month: 'short',
-      day: 'numeric',
-      weekday: 'short',
-    }).format(dt)
-    const nowYear = new Date().getFullYear()
-    return parts[0] !== nowYear ? `${parts[0]} ${formatted}` : formatted
-  } catch {
-    return isoDate
-  }
-}
-
-const groupedTransactions = computed<DateGroup[]>(() => {
-  const map = new Map<string, Transaction[]>()
-  for (const tx of displayedTransactions.value) {
-    const list = map.get(tx.date)
-    if (list) list.push(tx)
-    else map.set(tx.date, [tx])
-  }
-
-  const groups: DateGroup[] = []
-  for (const [date, items] of map.entries()) {
-    let projectNetSubtotal: number | null = null
-    if (props.context === 'project' && props.projectBaseCurrency) {
-      let units = 0
-      for (const tx of items) {
-        if (tx.type !== 'expense' && tx.type !== 'refund') continue
-        const rate = tx.exchangeRateToBase > 0 ? tx.exchangeRateToBase : 1
-        const sign = tx.type === 'refund' ? -1 : 1
-        if (tx.splitConfig && tx.splitConfig.shares.length > 0) {
-          for (const share of tx.splitConfig.shares) {
-            units += sign * toMinorUnits(share.finalAmount * rate, props.projectBaseCurrency)
-          }
-        } else {
-          units += sign * toMinorUnits(tx.amount * rate, props.projectBaseCurrency)
-        }
-      }
-      projectNetSubtotal = fromMinorUnits(units, props.projectBaseCurrency)
-    }
-
-    groups.push({
-      date,
-      dateLabel: formatGroupDateHeading(date),
-      items,
-      projectNetSubtotal,
-    })
-  }
-  return groups
+const {
+  searchQuery,
+  selectedCategoryFilters,
+  selectedMemberFilter,
+  selectedProjectFilter,
+  onlyRefunds,
+  onlyWithPhotos,
+  filterDrawerOpen,
+  homeSearchOpen,
+  showAll,
+  activeFilterChipCount,
+  hasActiveFilter,
+  orderedFilterMembers,
+  filteredTransactions,
+  filteredMemberShareSubtotal,
+  filteredMemberPaidSubtotal,
+  groupedTransactions,
+  toggleCategoryFilter,
+  resetFilters,
+  setMemberFilter,
+} = useTxFilters({
+  context: () => props.context,
+  transactions: () => props.transactions,
+  projectBaseCurrency: () => props.projectBaseCurrency,
+  projectMembers: () => props.projectMembers,
+  myMemberId: () => props.myMemberId,
+  collapsibleLimit: () => props.collapsibleLimit,
+  locale: () => locale.value,
+  getCategoryLabel,
+  getMemberName,
+  getProjectName: (projectId) => store.getProjectById(projectId)?.name ?? '',
+  onReset: () => {
+    expandedTxId.value = null
+  },
 })
 
 function fmt(amount: number, currency: string): string {
   return formatCurrencyAmount(amount, currency, locale.value)
-}
-
-function resetFilters() {
-  searchQuery.value = ''
-  selectedCategoryFilters.value = []
-  selectedMemberFilter.value = 'all'
-  selectedProjectFilter.value = 'all'
-  onlyRefunds.value = false
-  onlyWithPhotos.value = false
-  expandedTxId.value = null
-}
-
-function setMemberFilter(memberId: string) {
-  selectedMemberFilter.value = memberId || 'all'
-  if (memberId && memberId !== 'all') {
-    filterDrawerOpen.value = false
-  }
 }
 
 defineExpose({ resetFilters, setMemberFilter })
@@ -1097,7 +845,7 @@ defineExpose({ resetFilters, setMemberFilter })
                       class="h-14 w-14 overflow-hidden rounded-xl bg-white dark:bg-[#1C1C1E]"
                       @click="
                         emit('previewPhotos', {
-                          photos: tx.receiptImages!,
+                          photos: tx.receiptImages ?? [],
                           index: imgIdx,
                         })
                       "

@@ -6,11 +6,6 @@ import type { Project, ShareInviteParams, Transaction } from '@/schemas/ledgerSc
 import { useLedgerStore } from '@/stores/ledgerStore'
 import { useModalLayer } from '@/composables/useModalLayer'
 import MemberAvatar from '@/components/MemberAvatar.vue'
-import {
-  FirestoreSyncError,
-  isFirebaseConfigured,
-  parseAndSaveCustomFirebaseConfig,
-} from '@/services/firestoreSyncService'
 
 interface Props {
   invite: ShareInviteParams | null
@@ -58,8 +53,9 @@ const remoteHumanMembers = computed(() => {
 })
 
 function resolveSyncError(err: unknown): string {
-  if (err instanceof FirestoreSyncError) {
-    const key = `realtime.errors.${err.code}`
+  const code = store.getRealtimeSyncErrorCode(err)
+  if (code) {
+    const key = `realtime.errors.${code}`
     const translated = t(key)
     return translated === key ? t('realtime.errors.ERR_SYNC_FAILED') : translated
   }
@@ -75,7 +71,7 @@ async function loadInvitePreview() {
   customNewMemberName.value = ''
   applyMyProfileOnJoin.value = false
 
-  if (!isFirebaseConfigured()) {
+  if (!store.isFirebaseConfigured()) {
     needsConfig.value = true
     return
   }
@@ -117,7 +113,7 @@ watch(
 
 async function handleSaveConfigAndRetry() {
   try {
-    parseAndSaveCustomFirebaseConfig(firebaseConfigInput.value)
+    store.saveCustomFirebaseConfig(firebaseConfigInput.value)
     needsConfig.value = false
     await loadInvitePreview()
   } catch (err) {

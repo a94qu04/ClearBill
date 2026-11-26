@@ -54,6 +54,9 @@ const toId = ref('')
 const amount = ref<number | null>(null)
 const payCurrency = ref('TWD')
 const exchangeRate = ref<number | null>(1)
+const exchangeRateSource = ref<
+  'same' | 'live' | 'remembered' | 'estimated' | 'saved' | 'missing'
+>('same')
 const isFetchingRate = ref(false)
 const date = ref(getTodayIso())
 const note = ref('')
@@ -128,6 +131,37 @@ const convertedBasePreview = computed(() => {
   return amt * rate
 })
 
+const resolvedSettlement = computed(() =>
+  props.project ? store.getProjectSettlementOptions(props.project) : null,
+)
+
+function resolvePayCurrencyRateToBase(
+  fromCurrency: string,
+): {
+  rate: number | null
+  source: 'same' | 'live' | 'remembered' | 'estimated' | 'saved' | 'missing'
+} {
+  if (!props.project) return { rate: null, source: 'missing' }
+  const cur = fromCurrency.trim().toUpperCase()
+  const base = props.project.baseCurrency.trim().toUpperCase()
+  if (cur === base) return { rate: 1, source: 'same' }
+  const resolved = resolvedSettlement.value
+  if (
+    resolved &&
+    cur === resolved.settlementCurrency &&
+    resolved.settlementToBase.rate !== null
+  ) {
+    return {
+      rate: resolved.settlementToBase.rate,
+      source:
+        resolved.settlementToBase.source === 'custom'
+          ? 'saved'
+          : resolved.settlementToBase.source,
+    }
+  }
+  return store.getEffectiveExchangeRateWithSource(cur, base)
+}
+
 function computeConvertedSuggestedForCurrency(targetCurrency: string): number | null {
   if (props.editingTx || props.suggestedAmount === null || props.suggestedAmount <= 0) {
     return null
@@ -137,8 +171,26 @@ function computeConvertedSuggestedForCurrency(targetCurrency: string): number | 
   if (origCur === targetCur) {
     return props.suggestedAmount
   }
-  const rate = store.getEffectiveExchangeRate(origCur, targetCur)
-  if (!Number.isFinite(rate) || rate <= 0) return null
+  const resolved = resolvedSettlement.value
+  let rate: number | null = null
+  if (
+    resolved &&
+    origCur === resolved.settlementCurrency &&
+    targetCur === resolved.projectBaseCurrency &&
+    resolved.settlementToBase.rate !== null
+  ) {
+    rate = resolved.settlementToBase.rate
+  } else if (
+    resolved &&
+    origCur === resolved.projectBaseCurrency &&
+    targetCur === resolved.settlementCurrency &&
+    resolved.baseToSettlement.rate !== null
+  ) {
+    rate = resolved.baseToSettlement.rate
+  } else {
+    rate = store.getEffectiveExchangeRate(origCur, targetCur)
+  }
+  if (rate === null || !Number.isFinite(rate) || rate <= 0) return null
   const units = toMinorUnits(props.suggestedAmount * rate, targetCur)
   return fromMinorUnits(units, targetCur)
 }
@@ -180,15 +232,20 @@ watch(
       toId.value = props.editingTx.splitConfig.shares[0]?.memberId ?? ''
       amount.value = props.editingTx.amount
       payCurrency.value = props.editingTx.currency.trim().toUpperCase()
-      exchangeRate.value =
-        payCurrency.value === props.project.baseCurrency.trim().toUpperCase()
-          ? 1
-          : props.editingTx.exchangeRateToBase > 0
-            ? props.editingTx.exchangeRateToBase
-            : store.getEffectiveExchangeRate(
-                payCurrency.value,
-                props.project.baseCurrency,
-              )
+      if (payCurrency.value === props.project.baseCurrency.trim().toUpperCase()) {
+        exchangeRate.value = 1
+        exchangeRateSource.value = 'same'
+      } else if (props.editingTx.exchangeRateToBase > 0) {
+        exchangeRate.value = props.editingTx.exchangeRateToBase
+        exchangeRateSource.value = 'saved'
+      } else {
+        const resolved = store.getEffectiveExchangeRateWithSource(
+          payCurrency.value,
+          props.project.baseCurrency,
+        )
+        exchangeRate.value = resolved.rate
+        exchangeRateSource.value = resolved.source
+      }
       date.value = props.editingTx.date
       note.value = props.editingTx.note ?? ''
       lastAutoFilledAmount = null
@@ -199,13 +256,9 @@ watch(
     fromId.value = props.initialFromId || props.project.members[0]?.id || ''
     toId.value = props.initialToId || props.project.members[1]?.id || ''
     payCurrency.value = suggestedCurrency.value
-    exchangeRate.value =
-      payCurrency.value === props.project.baseCurrency.trim().toUpperCase()
-        ? 1
-        : store.getEffectiveExchangeRate(
-            payCurrency.value,
-            props.project.baseCurrency,
-          )
+    const initialResolved = resolvePayCurrencyRateToBase(payCurrency.value)
+    exchangeRate.value = initialResolved.rate
+    exchangeRateSource.value = initialResolved.source
     amount.value = props.suggestedAmount ?? null
     lastAutoFilledAmount = props.suggestedAmount ?? null
     date.value = getTodayIso()
@@ -217,10 +270,10 @@ watch(
 
 watch(payCurrency, (nextCur) => {
   if (isHydrating || !props.project) return
-  const base = props.project.baseCurrency.trim().toUpperCase()
   const cur = nextCur.trim().toUpperCase()
-  exchangeRate.value =
-    cur === base ? 1 : store.getEffectiveExchangeRate(cur, base)
+  const resolved = resolvePayCurrencyRateToBase(cur)
+  exchangeRate.value = resolved.rate
+  exchangeRateSource.value = resolved.source
 
   // 新增還款切換幣別時，若使用者尚未手動修改金額則自動依匯率折算金額，避免誤把台幣數字當日幣送出
   if (!props.editingTx) {
@@ -249,6 +302,7 @@ async function handleRefreshRate() {
     )
     if (live !== null && live > 0) {
       exchangeRate.value = live
+      exchangeRateSource.value = 'live'
     }
   } finally {
     isFetchingRate.value = false
@@ -513,11 +567,17 @@ async function handleSubmit() {
                   v-model="exchangeRate"
                   :allow-decimals="true"
                   size="sm"
-                  placeholder="1"
+                  :placeholder="t('rates.needInputShort')"
                   class="w-24"
                 />
                 <span class="font-semibold text-amber-900 dark:text-amber-200">
                   {{ project.baseCurrency }}
+                </span>
+                <span
+                  v-if="exchangeRateSource === 'estimated' && exchangeRate !== null && exchangeRate > 0"
+                  class="rounded-md bg-amber-200/70 px-1.5 py-0.5 text-[10px] font-bold text-amber-900 dark:bg-amber-900/60 dark:text-amber-200"
+                >
+                  {{ t('rates.sourceEstimatedTag') }}
                 </span>
                 <button
                   type="button"
@@ -533,7 +593,13 @@ async function handleSubmit() {
                 </button>
               </div>
               <div
-                v-if="convertedBasePreview > 0"
+                v-if="exchangeRate === null || exchangeRate <= 0"
+                class="text-[11px] font-semibold text-amber-800 dark:text-amber-300"
+              >
+                {{ t('project.exchangeRateMissingHint') }}
+              </div>
+              <div
+                v-else-if="convertedBasePreview > 0"
                 class="text-[11px] font-semibold text-amber-800 dark:text-amber-300"
               >
                 {{
