@@ -101,9 +101,6 @@ async function handleSaveProfile() {
         <User class="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
         <span>{{ t('profile.sectionTitle') }}</span>
       </div>
-      <p class="text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
-        {{ t('profile.sectionDesc') }}
-      </p>
 
       <div class="flex items-center gap-3.5">
         <div class="relative shrink-0">

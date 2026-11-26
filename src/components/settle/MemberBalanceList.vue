@@ -4,8 +4,8 @@ import { ArrowUpDown, ChevronRight } from 'lucide-vue-next'
 import type { Project } from '@/schemas/ledgerSchema'
 import type { MemberNetBalance } from '@/core/settleUpEngine'
 import { isPoolMemberId } from '@/core/poolFund'
-import { formatCurrencyAmount } from '@/core/currency'
 import MemberAvatar from '@/components/MemberAvatar.vue'
+import MoneyText from '@/components/MoneyText.vue'
 
 export interface MemberBalanceRow {
   balance: MemberNetBalance
@@ -31,11 +31,7 @@ const emit = defineEmits<{
   (e: 'toggleMemberDetail', memberId: string): void
 }>()
 
-const { t, locale } = useI18n()
-
-function fmt(amount: number, currency: string): string {
-  return formatCurrencyAmount(amount, currency, locale.value)
-}
+const { t } = useI18n()
 
 function getMemberName(memberId: string): string {
   const found = props.project.members.find((m) => m.id === memberId)
@@ -121,13 +117,21 @@ function getMemberColor(memberId: string): string {
                     : 'text-slate-400'
               "
             >
-              {{ bal.netAmount > 0 ? '+' : '' }}{{ fmt(bal.netAmount, settlementCurrency) }}
+              <MoneyText
+                :amount="bal.netAmount"
+                :currency="settlementCurrency"
+                :prefix="bal.netAmount > 0 ? '+' : ''"
+              />
             </div>
             <div
               v-if="isCrossCurrencySettlement && baseBalance"
               class="text-[10px] font-medium tabular-nums text-slate-400 dark:text-slate-500"
             >
-              {{ baseBalance.netAmount > 0 ? '+' : '' }}{{ fmt(baseBalance.netAmount, project.baseCurrency) }}
+              <MoneyText
+                :amount="baseBalance.netAmount"
+                :currency="project.baseCurrency"
+                :prefix="baseBalance.netAmount > 0 ? '+' : ''"
+              />
             </div>
             <div class="text-[10px] font-medium text-slate-400 dark:text-slate-500">
               {{
@@ -145,25 +149,25 @@ function getMemberColor(memberId: string): string {
           <div>
             <span class="text-slate-400 dark:text-slate-500">{{ t('settle.memberTotalExpense') }}</span>
             <div class="font-semibold tabular-nums text-slate-900 dark:text-slate-100">
-              {{ fmt(bal.totalExpense, settlementCurrency) }}
+              <MoneyText :amount="bal.totalExpense" :currency="settlementCurrency" />
             </div>
             <div
               v-if="isCrossCurrencySettlement && baseBalance"
               class="text-[10px] tabular-nums text-slate-400"
             >
-              {{ fmt(baseBalance.totalExpense, project.baseCurrency) }}
+              <MoneyText :amount="baseBalance.totalExpense" :currency="project.baseCurrency" />
             </div>
           </div>
           <div class="text-right">
             <span class="text-slate-400 dark:text-slate-500">{{ t('settle.memberTotalPaid') }}</span>
             <div class="font-semibold tabular-nums text-slate-700 dark:text-slate-200">
-              {{ fmt(bal.totalPaid, settlementCurrency) }}
+              <MoneyText :amount="bal.totalPaid" :currency="settlementCurrency" />
             </div>
             <div
               v-if="isCrossCurrencySettlement && baseBalance"
               class="text-[10px] tabular-nums text-slate-400"
             >
-              {{ fmt(baseBalance.totalPaid, project.baseCurrency) }}
+              <MoneyText :amount="baseBalance.totalPaid" :currency="project.baseCurrency" />
             </div>
           </div>
         </div>

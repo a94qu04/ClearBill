@@ -3,8 +3,8 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Archive, ArchiveRestore, Trash2, Undo2 } from 'lucide-vue-next'
 import MemberAvatar from '@/components/MemberAvatar.vue'
+import MoneyText from '@/components/MoneyText.vue'
 import { askConfirm } from '@/composables/useConfirm'
-import { formatCurrencyAmount } from '@/core/currency'
 import { useLedgerStore, type ManagedCategory } from '@/stores/ledgerStore'
 
 const emit = defineEmits<{
@@ -14,7 +14,7 @@ const emit = defineEmits<{
   (e: 'close'): void
 }>()
 
-const { t, locale } = useI18n()
+const { t } = useI18n()
 const store = useLedgerStore()
 
 const totalTrashCount = computed(
@@ -45,10 +45,6 @@ function getHumanMembers(proj: {
 }) {
   const humans = proj.members.filter((m) => !m.isPool)
   return humans.length > 0 ? humans : proj.members
-}
-
-function fmt(amount: number, currency: string): string {
-  return formatCurrencyAmount(amount, currency, locale.value)
 }
 
 // 已封存專案管理
@@ -192,7 +188,10 @@ async function handleEmptyTrash() {
               <span
                 class="font-bold tabular-nums text-slate-600 dark:text-slate-300"
               >
-                {{ fmt(store.getProjectTotalExpense(proj.id), proj.baseCurrency) }}
+                <MoneyText
+                  :amount="store.getProjectTotalExpense(proj.id)"
+                  :currency="proj.baseCurrency"
+                />
               </span>
             </div>
           </button>
@@ -321,7 +320,7 @@ async function handleEmptyTrash() {
                 </span>
               </div>
               <div class="text-[11px] text-slate-400">
-                {{ fmt(tx.amount, tx.currency) }} · {{ tx.date }}
+                <MoneyText :amount="tx.amount" :currency="tx.currency" /> · {{ tx.date }}
               </div>
             </div>
             <div class="flex shrink-0 items-center gap-1">

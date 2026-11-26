@@ -5,11 +5,12 @@ import { Check, Wallet, X } from 'lucide-vue-next'
 import type { Project, Transaction } from '@/schemas/ledgerSchema'
 import { useLedgerStore } from '@/stores/ledgerStore'
 import { useModalLayer } from '@/composables/useModalLayer'
-import { formatCurrencyAmount } from '@/core/currency'
 import { getTodayIso } from '@/core/ledgerHelpers'
 import { isPoolMemberIdInProject } from '@/core/poolFund'
 import CurrencyAmountInput from '@/components/CurrencyAmountInput.vue'
+import EntryModeSelector, { type EntryMode } from '@/components/EntryModeSelector.vue'
 import MemberAvatar from '@/components/MemberAvatar.vue'
+import MoneyText from '@/components/MoneyText.vue'
 
 interface Props {
   open: boolean
@@ -24,9 +25,10 @@ const props = withDefaults(defineProps<Props>(), {
 const emit = defineEmits<{
   (e: 'close'): void
   (e: 'saved', message: string): void
+  (e: 'switchEntryMode', mode: EntryMode): void
 }>()
 
-const { t, locale } = useI18n()
+const { t } = useI18n()
 const store = useLedgerStore()
 
 const dialogRef = ref<HTMLElement | null>(null)
@@ -85,8 +87,9 @@ const totalCollectedPreview = computed(() => {
   return amt * selectedContributorIds.value.length
 })
 
-function fmt(val: number, cur: string): string {
-  return formatCurrencyAmount(val, cur, locale.value)
+function handleEntryModeSelect(mode: EntryMode) {
+  if (mode === 'pool') return
+  emit('switchEntryMode', mode)
 }
 
 function syncDefaultContributors() {
@@ -301,9 +304,9 @@ async function handleSubmit() {
       >
         <!-- Sticky 頂部標題列 -->
         <div
-          class="flex shrink-0 items-center justify-between border-b border-slate-100 px-5 py-3.5 dark:border-slate-800"
+          class="relative z-20 flex shrink-0 items-center justify-between border-b border-slate-100 px-5 py-3.5 dark:border-slate-800"
         >
-          <div class="flex items-center gap-2">
+          <div v-if="editingTx" class="flex items-center gap-2">
             <span
               class="inline-flex h-8 w-8 items-center justify-center rounded-xl bg-teal-50 text-teal-700 dark:bg-teal-950/70 dark:text-teal-300"
             >
@@ -318,6 +321,11 @@ async function handleSubmit() {
               </p>
             </div>
           </div>
+          <EntryModeSelector
+            v-else
+            model-value="pool"
+            @select="handleEntryModeSelect"
+          />
           <button
             type="button"
             :aria-label="t('settings.close')"
@@ -533,7 +541,7 @@ async function handleSubmit() {
           >
             <span>{{ t('pool.totalPreviewLabel', { count: selectedContributorIds.length }) }}</span>
             <strong class="tabular-nums text-teal-700 dark:text-teal-300">
-              {{ fmt(totalCollectedPreview, currency) }}
+              <MoneyText :amount="totalCollectedPreview" :currency="currency" />
             </strong>
           </div>
           <button

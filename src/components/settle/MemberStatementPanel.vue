@@ -4,9 +4,9 @@ import { useI18n } from 'vue-i18n'
 import { Copy, X } from 'lucide-vue-next'
 import type { Project, Transaction } from '@/schemas/ledgerSchema'
 import { isPoolMemberId } from '@/core/poolFund'
-import { formatCurrencyAmount } from '@/core/currency'
 import type { SettleMemberStatementEntry } from '@/composables/useSettleExports'
 import MemberAvatar from '@/components/MemberAvatar.vue'
+import MoneyText from '@/components/MoneyText.vue'
 
 interface Props {
   project: Project
@@ -25,7 +25,7 @@ const emit = defineEmits<{
   (e: 'close'): void
 }>()
 
-const { t, locale } = useI18n()
+const { t } = useI18n()
 const sectionRef = ref<HTMLElement | null>(null)
 
 watch(
@@ -41,10 +41,6 @@ watch(
   },
   { immediate: true },
 )
-
-function fmt(amount: number, currency: string): string {
-  return formatCurrencyAmount(amount, currency, locale.value)
-}
 
 function getMemberName(memberId: string): string {
   const found = props.project.members.find((m) => m.id === memberId)
@@ -143,7 +139,7 @@ function getMemberColor(memberId: string): string {
             </span>
           </div>
           <div class="mt-0.5 text-[10px] text-slate-400 dark:text-slate-500">
-            {{ item.tx.date }} · {{ fmt(item.tx.amount, item.tx.currency) }}
+            {{ item.tx.date }} · <MoneyText :amount="item.tx.amount" :currency="item.tx.currency" />
           </div>
         </button>
         <div class="shrink-0 text-right tabular-nums">
@@ -152,12 +148,12 @@ function getMemberColor(memberId: string): string {
             class="text-[11px] font-semibold text-slate-900 dark:text-white"
           >
             {{ t('settle.memberTotalExpense') }}
-            {{ fmt(item.shareInSettle, settlementCurrency) }}
+            <MoneyText :amount="item.shareInSettle" :currency="settlementCurrency" />
             <span
               v-if="isCrossCurrencySettlement"
               class="block text-[9px] font-normal text-slate-400"
             >
-              {{ fmt(item.shareInBase, project.baseCurrency) }}
+              <MoneyText :amount="item.shareInBase" :currency="project.baseCurrency" />
             </span>
           </div>
           <div
@@ -165,12 +161,12 @@ function getMemberColor(memberId: string): string {
             class="text-[10px] font-semibold text-emerald-600 dark:text-emerald-400"
           >
             {{ t('settle.memberTotalPaid') }}
-            {{ fmt(item.paidInSettle, settlementCurrency) }}
+            <MoneyText :amount="item.paidInSettle" :currency="settlementCurrency" />
             <span
               v-if="isCrossCurrencySettlement"
               class="ml-1 text-[9px] font-normal text-slate-400"
             >
-              ({{ fmt(item.paidInBase, project.baseCurrency) }})
+              (<MoneyText :amount="item.paidInBase" :currency="project.baseCurrency" />)
             </span>
           </div>
         </div>

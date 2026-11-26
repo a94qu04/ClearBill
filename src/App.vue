@@ -34,6 +34,7 @@ import type {
 } from '@/schemas/ledgerSchema'
 import type { SettingsTab } from '@/components/SettingsModal.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
+import type { EntryMode } from '@/components/EntryModeSelector.vue'
 import ProjectExpenseModal from '@/components/ProjectExpenseModal.vue'
 import SettlementPaymentModal from '@/components/SettlementPaymentModal.vue'
 import HomeView from '@/views/HomeView.vue'
@@ -95,6 +96,7 @@ let undoClearTimer: ReturnType<typeof setTimeout> | null = null
 
 // 支出與還款彈窗狀態
 const expenseModalFromHome = ref(false)
+const expenseInitialTxType = ref<'expense' | 'refund'>('expense')
 const projExpenseSheetOpen = ref(false)
 const editingExpenseTx = ref<Transaction | null>(null)
 const duplicateExpenseTx = ref<Transaction | null>(null)
@@ -288,6 +290,7 @@ function openHomeQuickAddExpense() {
   }
   store.selectProject(targetProject.id)
   expenseModalFromHome.value = true
+  expenseInitialTxType.value = 'expense'
   editingExpenseTx.value = null
   duplicateExpenseTx.value = null
   quickIntakePrefill.value = null
@@ -296,10 +299,43 @@ function openHomeQuickAddExpense() {
 
 function openAddProjectExpenseSheet() {
   expenseModalFromHome.value = false
+  expenseInitialTxType.value = 'expense'
   editingExpenseTx.value = null
   duplicateExpenseTx.value = null
   quickIntakePrefill.value = null
   projExpenseSheetOpen.value = true
+}
+
+function handleSwitchEntryMode(mode: EntryMode) {
+  if (mode === 'expense' || mode === 'refund') {
+    settleSheetOpen.value = false
+    poolCollectModalOpen.value = false
+    editingPoolTx.value = null
+    editingExpenseTx.value = null
+    duplicateExpenseTx.value = null
+    quickIntakePrefill.value = null
+    expenseInitialTxType.value = mode
+    projExpenseSheetOpen.value = true
+    return
+  }
+  if (mode === 'transfer') {
+    projExpenseSheetOpen.value = false
+    poolCollectModalOpen.value = false
+    editingPoolTx.value = null
+    editingSettleTx.value = null
+    settleInitialFromId.value = ''
+    settleInitialToId.value = ''
+    settleSuggestedAmount.value = null
+    settleCurrency.value = null
+    settleSheetOpen.value = true
+    return
+  }
+  if (mode === 'pool') {
+    projExpenseSheetOpen.value = false
+    settleSheetOpen.value = false
+    editingPoolTx.value = null
+    poolCollectModalOpen.value = true
+  }
 }
 
 function closeProjectExpenseSheet() {
@@ -780,11 +816,13 @@ onBeforeUnmount(() => {
       :duplicate-tx="duplicateExpenseTx"
       :prefill="quickIntakePrefill"
       :allow-project-switch="expenseModalFromHome"
+      :initial-tx-type="expenseInitialTxType"
       @close="closeProjectExpenseSheet"
       @saved="showToast($event)"
       @preview-photos="openPhotoLightbox"
       @toast="showToast($event)"
       @switch-project="store.selectProject($event)"
+      @switch-entry-mode="handleSwitchEntryMode"
     />
 
     <!-- 還款記錄／修改彈窗 -->
@@ -798,6 +836,7 @@ onBeforeUnmount(() => {
       :currency="settleCurrency"
       @close="settleSheetOpen = false"
       @saved="showToast($event)"
+      @switch-entry-mode="handleSwitchEntryMode"
     />
 
     <!-- 大團公費袋／批次收公費彈窗（支援新增與編輯單筆合併公費帳目） -->
@@ -807,6 +846,7 @@ onBeforeUnmount(() => {
       :editing-tx="editingPoolTx"
       @close="poolCollectModalOpen = false; editingPoolTx = null"
       @saved="showToast($event)"
+      @switch-entry-mode="handleSwitchEntryMode"
     />
 
     <!-- 收據圖片全螢幕多圖預覽燈箱 -->

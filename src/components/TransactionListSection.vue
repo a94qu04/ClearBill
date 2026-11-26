@@ -20,6 +20,7 @@ import { formatCurrencyAmount } from '@/core/currency'
 import type { ProjectMember, Transaction } from '@/schemas/ledgerSchema'
 import CategoryIconBadge from '@/components/CategoryIconBadge.vue'
 import MemberAvatar from '@/components/MemberAvatar.vue'
+import MoneyText from '@/components/MoneyText.vue'
 import SwipeableTxRow from '@/components/SwipeableTxRow.vue'
 
 interface Props {
@@ -578,7 +579,7 @@ defineExpose({ resetFilters, setMemberFilter })
             v-if="group.projectNetSubtotal !== null && projectBaseCurrency"
             class="text-[11px] font-medium tabular-nums text-slate-400 dark:text-slate-500"
           >
-            {{ fmt(group.projectNetSubtotal, projectBaseCurrency) }}
+            <MoneyText :amount="group.projectNetSubtotal" :currency="projectBaseCurrency" />
           </span>
           <span v-else class="text-[11px] text-slate-400 dark:text-slate-500">
             {{ t('stats.entryCount', { count: group.items.length }) }}
@@ -723,13 +724,11 @@ defineExpose({ resetFilters, setMemberFilter })
                               : 'text-slate-900 dark:text-white'
                         "
                       >
-                        {{
-                          tx.type === 'income'
-                            ? '+'
-                            : tx.type === 'refund'
-                              ? '-'
-                              : ''
-                        }}{{ fmt(tx.amount, tx.currency) }}
+                        <MoneyText
+                          :amount="tx.amount"
+                          :currency="tx.currency"
+                          :prefix="tx.type === 'income' ? '+' : tx.type === 'refund' ? '-' : ''"
+                        />
                       </span>
                       <!-- 金額下方精巧分攤成員小圈圈（首頁與專案明細皆顯示） -->
                       <div
@@ -788,7 +787,7 @@ defineExpose({ resetFilters, setMemberFilter })
                         />
                         <span>{{ getMemberName(payer.memberId, tx.projectId) }}</span>
                         <span class="tabular-nums font-bold text-emerald-600 dark:text-emerald-400">
-                          {{ fmt(payer.amount, tx.currency) }}
+                          <MoneyText :amount="payer.amount" :currency="tx.currency" />
                         </span>
                       </span>
                     </div>
@@ -817,7 +816,7 @@ defineExpose({ resetFilters, setMemberFilter })
                           </span>
                         </span>
                         <span class="shrink-0 tabular-nums font-bold text-slate-900 dark:text-white">
-                          {{ fmt(share.finalAmount, tx.currency) }}
+                          <MoneyText :amount="share.finalAmount" :currency="tx.currency" />
                         </span>
                       </div>
                     </div>

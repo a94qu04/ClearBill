@@ -37,7 +37,9 @@ import type {
 import CategoryIconBadge from '@/components/CategoryIconBadge.vue'
 import CurrencyAmountInput from '@/components/CurrencyAmountInput.vue'
 import CurrencyQuickAddPicker from '@/components/CurrencyQuickAddPicker.vue'
+import EntryModeSelector, { type EntryMode } from '@/components/EntryModeSelector.vue'
 import MemberAvatar from '@/components/MemberAvatar.vue'
+import MoneyText from '@/components/MoneyText.vue'
 import QuickSplitPanel from '@/components/QuickSplitPanel.vue'
 
 interface Props {
@@ -47,12 +49,14 @@ interface Props {
   duplicateTx?: Transaction | null
   prefill?: ParsedQuickIntakeResult | null
   allowProjectSwitch?: boolean
+  initialTxType?: 'expense' | 'refund'
 }
 
 const props = withDefaults(defineProps<Props>(), {
   duplicateTx: null,
   prefill: null,
   allowProjectSwitch: false,
+  initialTxType: 'expense',
 })
 
 const emit = defineEmits<{
@@ -61,6 +65,7 @@ const emit = defineEmits<{
   (e: 'previewPhotos', payload: { photos: string[]; index: number }): void
   (e: 'toast', message: string): void
   (e: 'switchProject', projectId: string): void
+  (e: 'switchEntryMode', mode: EntryMode): void
 }>()
 
 const { t, locale } = useI18n()
@@ -554,7 +559,7 @@ function hydrateForm() {
     receiptImages.value = []
     splitPreset.value = cloneSplitConfig(pf.defaultSplitConfig)
   } else {
-    txType.value = 'expense'
+    txType.value = props.initialTxType === 'refund' ? 'refund' : 'expense'
     amount.value = null
     // 按專案自動記憶上次記帳使用之幣別（出國連續記當地幣別不必每筆重選）
     const lastCur = store.getProjectLastCurrency(
@@ -665,6 +670,14 @@ useModalLayer(
   },
   dialogRef,
 )
+
+function handleEntryModeSelect(mode: EntryMode) {
+  if (mode === 'expense' || mode === 'refund') {
+    txType.value = mode
+    return
+  }
+  emit('switchEntryMode', mode)
+}
 
 function fmt(val: number, cur: string): string {
   return formatCurrencyAmount(val, cur, locale.value)
@@ -854,9 +867,9 @@ async function handleSubmit(continueAdding = false) {
         <div
           class="flex max-h-[92vh] w-full max-w-lg flex-col overflow-hidden rounded-t-3xl bg-[#F2F2F7] shadow-2xl dark:bg-[#0D0D0F] sm:rounded-3xl"
         >
-          <!-- Apple 風格頂部 Sheet 標題列（左取消、中標題、右關閉） -->
+          <!-- Apple 風格頂部 Sheet 標題列（左取消、中可切換帳務類型按鈕、右關閉） -->
           <div
-            class="flex shrink-0 items-center justify-between border-b border-black/5 bg-white/90 px-4 py-3 backdrop-blur-md dark:border-white/10 dark:bg-[#1C1C1E]/95"
+            class="relative z-20 flex shrink-0 items-center justify-between border-b border-black/5 bg-white/90 px-4 py-3 backdrop-blur-md dark:border-white/10 dark:bg-[#1C1C1E]/95"
           >
             <button
               type="button"
@@ -866,15 +879,17 @@ async function handleSubmit(continueAdding = false) {
             >
               {{ t('confirm.cancelButton') }}
             </button>
-            <h2 class="text-[15px] font-bold text-slate-900 dark:text-white">
-              {{
-                editingTx
-                  ? t('project.editExpenseTitle')
-                  : txType === 'refund'
-                    ? t('project.typeRefund')
-                    : t('project.addExpenseTitle')
-              }}
+            <h2
+              v-if="editingTx"
+              class="text-[15px] font-bold text-slate-900 dark:text-white"
+            >
+              {{ t('project.editExpenseTitle') }}
             </h2>
+            <EntryModeSelector
+              v-else
+              :model-value="txType"
+              @select="handleEntryModeSelect"
+            />
             <button
               type="button"
               :aria-label="t('settings.close')"
@@ -1516,7 +1531,7 @@ async function handleSubmit(continueAdding = false) {
                   v-if="(amount ?? 0) > 0"
                   class="tabular-nums opacity-90"
                 >
-                  · {{ fmt(amount ?? 0, currency) }}
+                  · <MoneyText :amount="amount ?? 0" :currency="currency" />
                 </span>
               </button>
             </div>

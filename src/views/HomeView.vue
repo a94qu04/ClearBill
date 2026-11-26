@@ -9,9 +9,9 @@ import {
   Sparkles,
 } from 'lucide-vue-next'
 import { useLedgerStore } from '@/stores/ledgerStore'
-import { formatCurrencyAmount } from '@/core/currency'
 import type { Transaction } from '@/schemas/ledgerSchema'
 import MemberAvatar from '@/components/MemberAvatar.vue'
+import MoneyText from '@/components/MoneyText.vue'
 import TransactionListSection from '@/components/TransactionListSection.vue'
 import {
   getHumanMembers,
@@ -36,7 +36,7 @@ const emit = defineEmits<{
   toast: [message: string]
 }>()
 
-const { t, locale } = useI18n()
+const { t } = useI18n()
 const store = useLedgerStore()
 
 // 專案網格拖曳排序狀態（桌機）
@@ -44,10 +44,6 @@ const draggingProjectId = ref<string | null>(null)
 const dragOverProjectId = ref<string | null>(null)
 
 const homeTxListRef = ref<InstanceType<typeof TransactionListSection> | null>(null)
-
-function fmt(amount: number, currency: string): string {
-  return formatCurrencyAmount(amount, currency, locale.value)
-}
 
 const homeProjectTransactions = computed(() =>
   store.visibleTransactions.filter((tx) => {
@@ -266,7 +262,10 @@ defineExpose({
                   : 'text-emerald-700 dark:text-emerald-400'
               "
             >
-              {{ fmt(store.getProjectTotalExpense(proj.id), proj.baseCurrency) }}
+              <MoneyText
+                :amount="store.getProjectTotalExpense(proj.id)"
+                :currency="proj.baseCurrency"
+              />
             </div>
             <div
               class="flex w-full items-center justify-between gap-1.5"
@@ -348,7 +347,7 @@ defineExpose({
       @toast="emit('toast', $event)"
     />
 
-    <!-- 首頁浮動「+ 記一筆」按鈕（自動帶入最後一筆之專案、幣別與分攤明細） -->
+    <!-- 首頁浮動「+」按鈕（自動帶入最後一筆之專案、幣別與分攤明細） -->
     <div
       v-if="store.activeProjects.length > 0"
       class="safe-fab-bottom pointer-events-none fixed inset-x-0 z-40"
@@ -356,11 +355,12 @@ defineExpose({
       <div class="mx-auto flex max-w-xl justify-end px-4 md:max-w-3xl lg:max-w-5xl">
         <button
           type="button"
-          class="pointer-events-auto inline-flex items-center gap-2 rounded-full bg-emerald-600 px-5 py-3.5 text-sm font-bold text-white shadow-xl transition hover:scale-105 active:scale-95 dark:bg-emerald-500 dark:text-slate-950"
+          :aria-label="t('project.fabAdd')"
+          :title="t('project.fabAdd')"
+          class="pointer-events-auto inline-flex h-14 w-14 items-center justify-center rounded-full bg-emerald-600 text-white shadow-xl transition hover:scale-105 active:scale-95 dark:bg-emerald-500 dark:text-slate-950"
           @click="emit('openQuickAdd')"
         >
-          <Plus class="h-5 w-5" />
-          <span>{{ t('project.fabAdd') }}</span>
+          <Plus class="h-6 w-6" />
         </button>
       </div>
     </div>

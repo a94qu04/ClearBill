@@ -319,7 +319,18 @@
     "duplicateWarnMessage": "今天已有金額相同的紀錄「{note}」（{amount}），確定要再新增一筆嗎？",
     "duplicateWarnConfirm": "仍要儲存",
     "adjustShort": "調整",
-    "todayShort": "今天"
+    "todayShort": "今天",
+    "entryTypeExpense": "支出",
+    "entryTypeTransfer": "轉帳",
+    "entryTypeRefund": "退款／退稅",
+    "entryTypePool": "收公費",
+    "switchEntryTypeAria": "切換帳務類型",
+    "deleteAllTxTitle": "刪除全部明細",
+    "deleteAllTxDesc": "清除此專案中所有 {count} 筆消費、退款與轉帳明細（保留成員與設定，刪除後可於回收桶復原）。",
+    "deleteAllTxEmptyDesc": "此專案目前沒有任何明細紀錄。",
+    "deleteAllTxButton": "刪除全部明細",
+    "deleteAllTxConfirm": "確定要刪除「{name}」中的全部 {count} 筆明細嗎？專案與成員設定會保留，刪除的明細可於回收桶復原。",
+    "deleteAllTxSuccessToast": "已刪除全部 {count} 筆明細（可於回收桶復原）"
   },
   "profile": {
     "sectionTitle": "我的成員名稱與大頭貼",
@@ -345,7 +356,7 @@
     "settled": "已結清",
     "suggestionsTitle": "待還款結算",
     "allSettled": "目前所有人皆已結清，無須轉帳！",
-    "recordButton": "記錄已付",
+    "recordButton": "紀錄轉帳",
     "recordModalTitle": "記錄還款（可填部分已付金額）",
     "editModalTitle": "修改還款紀錄",
     "fromLabel": "付款人",

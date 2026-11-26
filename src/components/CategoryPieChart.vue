@@ -5,8 +5,8 @@ import { PieChart } from 'lucide-vue-next'
 import type { Transaction } from '@/schemas/ledgerSchema'
 import { useLedgerStore, type ManagedCategory } from '@/stores/ledgerStore'
 import { calculateCategoryStats } from '@/core/categoryStats'
-import { formatCurrencyAmount } from '@/core/currency'
 import CategoryIconBadge from '@/components/CategoryIconBadge.vue'
+import MoneyText from '@/components/MoneyText.vue'
 
 interface Props {
   transactions: Transaction[]
@@ -20,7 +20,7 @@ const props = withDefaults(defineProps<Props>(), {
   projectBaseCurrency: undefined,
 })
 
-const { t, locale } = useI18n()
+const { t } = useI18n()
 const store = useLedgerStore()
 
 const activeKey = ref<string | null>(null)
@@ -130,10 +130,6 @@ const focusedSlice = computed(() =>
 function toggleFocus(key: string) {
   activeKey.value = activeKey.value === key ? null : key
 }
-
-function fmt(amount: number, currency = props.baseCurrency): string {
-  return formatCurrencyAmount(amount, currency, locale.value)
-}
 </script>
 
 <template>
@@ -219,7 +215,7 @@ function fmt(amount: number, currency = props.baseCurrency): string {
               {{ focusedSlice.percentage }}%
             </span>
             <span class="max-w-full truncate text-[10px] font-bold tabular-nums text-emerald-600 dark:text-emerald-400">
-              {{ fmt(focusedSlice.amount) }}
+              <MoneyText :amount="focusedSlice.amount" :currency="baseCurrency" />
             </span>
           </template>
           <template v-else>
@@ -227,13 +223,13 @@ function fmt(amount: number, currency = props.baseCurrency): string {
               {{ t('stats.totalLabel') }}
             </span>
             <span class="mt-0.5 max-w-full truncate text-sm font-extrabold tabular-nums text-slate-900 dark:text-white">
-              {{ fmt(stats.totalNetExpense) }}
+              <MoneyText :amount="stats.totalNetExpense" :currency="baseCurrency" />
             </span>
             <span
               v-if="showProjectBaseHint && projectBaseStats && projectBaseCurrency"
               class="max-w-full truncate text-[9px] font-bold tabular-nums text-amber-700 dark:text-amber-300"
             >
-              {{ fmt(projectBaseStats.totalNetExpense, projectBaseCurrency) }}
+              <MoneyText :amount="projectBaseStats.totalNetExpense" :currency="projectBaseCurrency" />
             </span>
           </template>
         </div>
@@ -278,14 +274,14 @@ function fmt(amount: number, currency = props.baseCurrency): string {
                     {{ slice.percentage }}%
                   </span>
                   <span class="font-bold text-slate-900 dark:text-white">
-                    {{ fmt(slice.amount) }}
+                    <MoneyText :amount="slice.amount" :currency="baseCurrency" />
                   </span>
                 </div>
                 <span
                   v-if="showProjectBaseHint && projectBaseCurrency && slice.projectBaseAmount !== undefined"
                   class="text-[9px] font-semibold text-amber-700/90 dark:text-amber-300/90"
                 >
-                  {{ fmt(slice.projectBaseAmount, projectBaseCurrency) }}
+                  <MoneyText :amount="slice.projectBaseAmount" :currency="projectBaseCurrency" />
                 </span>
               </div>
             </div>

@@ -29,6 +29,7 @@ import {
 } from '@/core/currency'
 import CurrencyAmountInput from '@/components/CurrencyAmountInput.vue'
 import MemberAvatar from '@/components/MemberAvatar.vue'
+import MoneyText from '@/components/MoneyText.vue'
 import MultiPayerEditor from '@/components/split/MultiPayerEditor.vue'
 
 interface Props {
@@ -1110,7 +1111,10 @@ watch(
           </label>
 
           <div class="min-w-[74px] text-right text-sm font-semibold tabular-nums text-slate-900 dark:text-slate-100">
-            {{ fmt(shareByMemberId[member.id] ?? 0) }}
+            <MoneyText
+              :amount="shareByMemberId[member.id] ?? 0"
+              :currency="currency"
+            />
           </div>
         </div>
       </li>

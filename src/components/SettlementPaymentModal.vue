@@ -13,6 +13,7 @@ import {
 import { getTodayIso } from '@/core/ledgerHelpers'
 import type { Project, Transaction } from '@/schemas/ledgerSchema'
 import CurrencyAmountInput from '@/components/CurrencyAmountInput.vue'
+import EntryModeSelector, { type EntryMode } from '@/components/EntryModeSelector.vue'
 
 interface Props {
   open: boolean
@@ -34,6 +35,7 @@ const props = withDefaults(defineProps<Props>(), {
 const emit = defineEmits<{
   (e: 'close'): void
   (e: 'saved', message: string): void
+  (e: 'switchEntryMode', mode: EntryMode): void
 }>()
 
 const { t, locale } = useI18n()
@@ -309,6 +311,11 @@ async function handleRefreshRate() {
   }
 }
 
+function handleEntryModeSelect(mode: EntryMode) {
+  if (mode === 'transfer') return
+  emit('switchEntryMode', mode)
+}
+
 function fmt(val: number, cur: string): string {
   return formatCurrencyAmount(val, cur, locale.value)
 }
@@ -412,14 +419,18 @@ async function handleSubmit() {
       <div
         class="safe-sheet-pb w-full max-w-md rounded-t-3xl border border-slate-200 bg-white px-5 pt-5 shadow-2xl dark:border-slate-800 dark:bg-slate-900 sm:rounded-3xl sm:pb-5"
       >
-        <div class="mb-4 flex items-center justify-between">
-          <h2 class="text-base font-bold text-slate-900 dark:text-white">
-            {{
-              editingTx
-                ? t('settle.editModalTitle')
-                : t('settle.recordModalTitle')
-            }}
+        <div class="relative z-20 mb-4 flex items-center justify-between">
+          <h2
+            v-if="editingTx"
+            class="text-base font-bold text-slate-900 dark:text-white"
+          >
+            {{ t('settle.editModalTitle') }}
           </h2>
+          <EntryModeSelector
+            v-else
+            model-value="transfer"
+            @select="handleEntryModeSelect"
+          />
           <button
             type="button"
             :aria-label="t('settings.close')"

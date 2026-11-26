@@ -24,6 +24,7 @@ import {
   type SettleMemberStatementEntry,
 } from '@/composables/useSettleExports'
 import CategoryPieChart from '@/components/CategoryPieChart.vue'
+import MoneyText from '@/components/MoneyText.vue'
 import SettleRatePanel from '@/components/settle/SettleRatePanel.vue'
 import PoolSummaryCard from '@/components/settle/PoolSummaryCard.vue'
 import TransferPlanCard from '@/components/settle/TransferPlanCard.vue'
@@ -426,7 +427,7 @@ async function handleRequestDeleteSettlement(tx: Transaction) {
               <div class="flex shrink-0 items-center gap-1">
                 <div class="mr-1 text-right tabular-nums">
                   <div class="text-sm font-bold text-emerald-600 dark:text-emerald-400">
-                    {{ fmt(tx.amount, tx.currency) }}
+                    <MoneyText :amount="tx.amount" :currency="tx.currency" />
                   </div>
                   <div
                     v-if="
@@ -435,7 +436,11 @@ async function handleRequestDeleteSettlement(tx: Transaction) {
                     "
                     class="text-[10px] font-medium text-slate-400 dark:text-slate-500"
                   >
-                    ≈ {{ fmt(tx.amount * (tx.exchangeRateToBase > 0 ? tx.exchangeRateToBase : 1), project.baseCurrency) }}
+                    ≈
+                    <MoneyText
+                      :amount="tx.amount * (tx.exchangeRateToBase > 0 ? tx.exchangeRateToBase : 1)"
+                      :currency="project.baseCurrency"
+                    />
                     · {{ tx.exchangeRateToBase }}
                   </div>
                 </div>

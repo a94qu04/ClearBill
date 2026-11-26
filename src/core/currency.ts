@@ -180,3 +180,48 @@ export function formatCurrencyNumber(
     maximumFractionDigits: decimals,
   }).format(amount)
 }
+
+export interface CurrencyDisplayPart {
+  type: 'currency' | 'text'
+  value: string
+}
+
+/**
+ * 嚴格使用 Intl.NumberFormat.formatToParts 拆解幣別符號與數字，
+ * 讓 UI 可將幣別文字獨立縮小為金額數字的一半（0.5em）
+ */
+export function formatCurrencyParts(
+  amount: number,
+  currency: string,
+  locale = 'zh-TW',
+): CurrencyDisplayPart[] {
+  const normalizedCurrency = currency.trim().toUpperCase()
+  const decimals = getCurrencyDecimals(normalizedCurrency)
+  const isCleanInt =
+    decimals > 0 &&
+    SMART_INTEGER_CURRENCIES.has(normalizedCurrency) &&
+    Number.isInteger(Number(amount.toFixed(decimals)))
+  const minFractionDigits = isCleanInt ? 0 : decimals
+
+  try {
+    const formatter = new Intl.NumberFormat(locale, {
+      style: 'currency',
+      currency: normalizedCurrency,
+      minimumFractionDigits: minFractionDigits,
+      maximumFractionDigits: decimals,
+    })
+    return formatter.formatToParts(amount).map((part) => ({
+      type: part.type === 'currency' ? 'currency' : 'text',
+      value: part.value,
+    }))
+  } catch {
+    const numberText = new Intl.NumberFormat(locale, {
+      minimumFractionDigits: minFractionDigits,
+      maximumFractionDigits: decimals,
+    }).format(amount)
+    return [
+      { type: 'currency', value: normalizedCurrency },
+      { type: 'text', value: ` ${numberText}` },
+    ]
+  }
+}

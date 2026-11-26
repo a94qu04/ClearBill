@@ -13,8 +13,8 @@ import {
 } from 'lucide-vue-next'
 import { useLedgerStore } from '@/stores/ledgerStore'
 import { useModalLayer } from '@/composables/useModalLayer'
-import { formatCurrencyAmount } from '@/core/currency'
 import MemberAvatar from '@/components/MemberAvatar.vue'
+import MoneyText from '@/components/MoneyText.vue'
 
 interface Props {
   open: boolean
@@ -30,7 +30,7 @@ const emit = defineEmits<{
   (e: 'toast', message: string): void
 }>()
 
-const { t, locale } = useI18n()
+const { t } = useI18n()
 const store = useLedgerStore()
 
 const dialogRef = ref<HTMLElement | null>(null)
@@ -53,14 +53,6 @@ async function handleUnarchive(projectId: string) {
   if (updated) {
     emit('toast', t('project.unarchivedToast', { name: updated.name }))
   }
-}
-
-function fmtProjectTotal(projectId: string, currency: string): string {
-  return formatCurrencyAmount(
-    store.getProjectTotalExpense(projectId),
-    currency,
-    locale.value,
-  )
 }
 
 const draggingProjectId = ref<string | null>(null)
@@ -200,7 +192,10 @@ function onDragEnd() {
                   <span>{{ t('project.memberCount', { count: getHumanMembers(proj).length }) }}</span>
                   <span>·</span>
                   <span class="font-bold tabular-nums text-emerald-700 dark:text-emerald-400">
-                    {{ fmtProjectTotal(proj.id, proj.baseCurrency) }}
+                    <MoneyText
+                      :amount="store.getProjectTotalExpense(proj.id)"
+                      :currency="proj.baseCurrency"
+                    />
                   </span>
                 </div>
               </div>
@@ -299,7 +294,10 @@ function onDragEnd() {
                   <span>{{ t('project.memberCount', { count: getHumanMembers(proj).length }) }}</span>
                   <span>·</span>
                   <span class="font-bold tabular-nums text-slate-600 dark:text-slate-300">
-                    {{ fmtProjectTotal(proj.id, proj.baseCurrency) }}
+                    <MoneyText
+                      :amount="store.getProjectTotalExpense(proj.id)"
+                      :currency="proj.baseCurrency"
+                    />
                   </span>
                 </div>
               </button>

@@ -6,6 +6,7 @@ import type { MemberNetBalance } from '@/core/settleUpEngine'
 import { isPoolMemberId, type PoolCollectBatchSummary } from '@/core/poolFund'
 import { formatCurrencyAmount } from '@/core/currency'
 import { askConfirm } from '@/composables/useConfirm'
+import MoneyText from '@/components/MoneyText.vue'
 
 export interface PoolBalanceRow {
   balance: MemberNetBalance
@@ -103,12 +104,13 @@ async function handleUndoLatestPoolBatch() {
             {{ getMemberName(pb.memberId) }}
           </div>
           <div class="mt-0.5 text-[11px] text-slate-400 dark:text-slate-500">
-            {{ t('pool.paidOutLabel') }} {{ fmt(pb.totalPaid, settlementCurrency) }}
+            {{ t('pool.paidOutLabel') }}
+            <MoneyText :amount="pb.totalPaid" :currency="settlementCurrency" />
             <span
               v-if="isCrossCurrencySettlement && baseBalance"
               class="ml-1"
             >
-              ({{ fmt(baseBalance.totalPaid, project.baseCurrency) }})
+              (<MoneyText :amount="baseBalance.totalPaid" :currency="project.baseCurrency" />)
             </span>
           </div>
         </div>
@@ -121,13 +123,13 @@ async function handleUndoLatestPoolBatch() {
                 : 'text-rose-600 dark:text-rose-400'
             "
           >
-            {{ fmt(Math.abs(pb.netAmount), settlementCurrency) }}
+            <MoneyText :amount="Math.abs(pb.netAmount)" :currency="settlementCurrency" />
           </div>
           <div
             v-if="isCrossCurrencySettlement && baseBalance"
             class="text-[10px] font-medium tabular-nums text-slate-400 dark:text-slate-500"
           >
-            {{ fmt(Math.abs(baseBalance.netAmount), project.baseCurrency) }}
+            <MoneyText :amount="Math.abs(baseBalance.netAmount)" :currency="project.baseCurrency" />
           </div>
           <div class="text-[10px] font-medium text-slate-400">
             {{

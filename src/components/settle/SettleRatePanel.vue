@@ -254,11 +254,11 @@ async function handleRefreshRatesInSettle() {
           {{ t('settle.projectTotalSpend') }}
         </div>
         <div class="mt-0.5 flex flex-wrap items-baseline gap-1.5">
-          <span class="inline-flex items-baseline gap-1.5 tabular-nums">
-            <span class="rounded-md bg-emerald-500/15 px-1.5 py-0.5 text-xs font-extrabold tracking-wide text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">
+          <span class="inline-flex items-baseline gap-1.5 text-xl font-bold tracking-tight text-slate-900 tabular-nums dark:text-white sm:text-2xl">
+            <span class="rounded-md bg-emerald-500/15 px-1.5 py-0.5 text-[0.5em] font-extrabold leading-none tracking-wide text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">
               {{ settlementCurrency }}
             </span>
-            <span class="text-xl font-bold tracking-tight text-slate-900 dark:text-white sm:text-2xl">
+            <span>
               {{ fmtNum(settleUp.totalProjectExpense, settlementCurrency) }}
             </span>
           </span>

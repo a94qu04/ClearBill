@@ -10,9 +10,9 @@ import {
   Wallet,
 } from 'lucide-vue-next'
 import { useLedgerStore } from '@/stores/ledgerStore'
-import { formatCurrencyAmount } from '@/core/currency'
 import type { Project, Transaction } from '@/schemas/ledgerSchema'
 import MemberAvatar from '@/components/MemberAvatar.vue'
+import MoneyText from '@/components/MoneyText.vue'
 import ProjectSettleTab from '@/components/ProjectSettleTab.vue'
 import ProjectSettingsTab from '@/components/ProjectSettingsTab.vue'
 import TransactionListSection from '@/components/TransactionListSection.vue'
@@ -50,14 +50,10 @@ const emit = defineEmits<{
   toast: [message: string]
 }>()
 
-const { t, locale } = useI18n()
+const { t } = useI18n()
 const store = useLedgerStore()
 
 const projectTxListRef = ref<InstanceType<typeof TransactionListSection> | null>(null)
-
-function fmt(amount: number, currency: string): string {
-  return formatCurrencyAmount(amount, currency, locale.value)
-}
 
 const activeProjectTotalSpent = computed(() =>
   store.getProjectTotalExpense(props.project.id),
@@ -182,7 +178,10 @@ defineExpose({
         <div class="shrink-0 text-right">
           <div class="text-[11px] text-slate-300">{{ t('project.totalSpent') }}</div>
           <div class="text-xl font-extrabold tabular-nums text-emerald-400">
-            {{ fmt(activeProjectTotalSpent, project.baseCurrency) }}
+            <MoneyText
+              :amount="activeProjectTotalSpent"
+              :currency="project.baseCurrency"
+            />
           </div>
         </div>
       </div>
@@ -265,17 +264,11 @@ defineExpose({
             <Wallet class="h-3.5 w-3.5 shrink-0" />
             <span>{{ t('pool.balanceShort') }}</span>
             <span class="tabular-nums">
-              {{
-                activeProjectPoolSummary.netAmount > 0
-                  ? `-${fmt(
-                      activeProjectPoolSummary.netAmount,
-                      activeProjectPoolSummary.currency,
-                    )}`
-                  : fmt(
-                      Math.abs(activeProjectPoolSummary.netAmount),
-                      activeProjectPoolSummary.currency,
-                    )
-              }}
+              <MoneyText
+                :amount="Math.abs(activeProjectPoolSummary.netAmount)"
+                :currency="activeProjectPoolSummary.currency"
+                :prefix="activeProjectPoolSummary.netAmount > 0 ? '-' : ''"
+              />
             </span>
           </button>
 
@@ -376,19 +369,20 @@ defineExpose({
       @toast="emit('toast', $event)"
     />
 
-    <!-- 浮動「+ 記一筆」按鈕（僅於明細頁顯示，避免在結算頁遮擋右下角「記錄已付」與刪除按鈕） -->
+    <!-- 浮動「+」按鈕（明細與結算分頁皆顯示） -->
     <div
-      v-if="activeTab === 'expenses'"
+      v-if="activeTab === 'expenses' || activeTab === 'settle'"
       class="safe-fab-bottom pointer-events-none fixed inset-x-0 z-40"
     >
       <div class="mx-auto flex max-w-xl justify-end px-4 md:max-w-3xl lg:max-w-5xl">
         <button
           type="button"
-          class="pointer-events-auto inline-flex items-center gap-2 rounded-full bg-emerald-600 px-5 py-3.5 text-sm font-bold text-white shadow-xl transition hover:scale-105 active:scale-95 dark:bg-emerald-500 dark:text-slate-950"
+          :aria-label="t('project.fabAdd')"
+          :title="t('project.fabAdd')"
+          class="pointer-events-auto inline-flex h-14 w-14 items-center justify-center rounded-full bg-emerald-600 text-white shadow-xl transition hover:scale-105 active:scale-95 dark:bg-emerald-500 dark:text-slate-950"
           @click="emit('openAddExpense')"
         >
-          <Plus class="h-5 w-5" />
-          <span>{{ t('project.fabAdd') }}</span>
+          <Plus class="h-6 w-6" />
         </button>
       </div>
     </div>

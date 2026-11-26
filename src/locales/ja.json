@@ -319,7 +319,18 @@
     "duplicateWarnMessage": "同じ日付・同額の記録「{note}」（{amount}）が既にあります。このまま保存しますか？",
     "duplicateWarnConfirm": "そのまま保存",
     "adjustShort": "調整",
-    "todayShort": "今日"
+    "todayShort": "今日",
+    "entryTypeExpense": "支出",
+    "entryTypeTransfer": "振込",
+    "entryTypeRefund": "返金・免税",
+    "entryTypePool": "集金",
+    "switchEntryTypeAria": "記録タイプを切り替え",
+    "deleteAllTxTitle": "すべての明細を削除",
+    "deleteAllTxDesc": "このプロジェクトの全 {count} 件の支出・返金・振込明細を削除します（メンバーと設定は保持され、ゴミ箱から復元可能）。",
+    "deleteAllTxEmptyDesc": "このプロジェクトにはまだ明細がありません。",
+    "deleteAllTxButton": "すべての明細を削除",
+    "deleteAllTxConfirm": "「{name}」の明細 {count} 件をすべて削除しますか？プロジェクトとメンバー設定は残り、削除した明細はゴミ箱から復元できます。",
+    "deleteAllTxSuccessToast": "全 {count} 件の明細を削除しました（ゴミ箱から復元可能）"
   },
   "profile": {
     "sectionTitle": "マイプロフィール・アイコン",
@@ -345,7 +356,7 @@
     "settled": "精算済",
     "suggestionsTitle": "未精算の送金プラン",
     "allSettled": "全員の精算が完了しています！",
-    "recordButton": "支払記録",
+    "recordButton": "振込を記録",
     "recordModalTitle": "返済を記録（一部返済も可）",
     "editModalTitle": "返済記録を編集",
     "fromLabel": "支払人",

@@ -360,6 +360,41 @@ async function handleDeleteProject() {
   emit('projectDeleted')
 }
 
+const projectVisibleTransactions = computed(() =>
+  store.visibleTransactions.filter((tx) => tx.projectId === props.project.id),
+)
+
+const isDeletingAllTx = ref(false)
+
+async function handleDeleteAllTransactions() {
+  const txs = projectVisibleTransactions.value
+  if (txs.length === 0 || isDeletingAllTx.value) return
+  const confirmed = await askConfirm({
+    title: t('project.deleteAllTxTitle'),
+    message: t('project.deleteAllTxConfirm', {
+      name: props.project.name,
+      count: txs.length,
+    }),
+    confirmText: t('project.deleteAllTxButton'),
+    tone: 'danger',
+  })
+  if (!confirmed) return
+  isDeletingAllTx.value = true
+  try {
+    const deletedIds = await store.softDeleteTransactionsBatch(
+      txs.map((tx) => tx.id),
+    )
+    if (deletedIds.length > 0) {
+      emit(
+        'toast',
+        t('project.deleteAllTxSuccessToast', { count: deletedIds.length }),
+      )
+    }
+  } finally {
+    isDeletingAllTx.value = false
+  }
+}
+
 function handleExportProjectJson() {
   const backup = store.exportProjectBackup(props.project.id)
   if (!backup) return
@@ -775,6 +810,35 @@ function handleExportProjectJson() {
       >
         <FileJson class="h-4 w-4 text-sky-600 dark:text-sky-400" />
         <span>{{ t('export.projectJsonButton') }}</span>
+      </button>
+    </section>
+
+    <!-- 刪除全部明細（保留專案與成員設定，明細移至回收桶可復原） -->
+    <section
+      class="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-rose-200/70 bg-white p-4 shadow-sm dark:border-rose-900/40 dark:bg-[#1C1C1E]"
+    >
+      <div class="min-w-0 flex-1">
+        <h3 class="text-xs font-bold text-rose-600 dark:text-rose-400">
+          {{ t('project.deleteAllTxTitle') }}
+        </h3>
+        <p class="mt-0.5 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
+          {{
+            projectVisibleTransactions.length > 0
+              ? t('project.deleteAllTxDesc', {
+                  count: projectVisibleTransactions.length,
+                })
+              : t('project.deleteAllTxEmptyDesc')
+          }}
+        </p>
+      </div>
+      <button
+        type="button"
+        :disabled="projectVisibleTransactions.length === 0 || isDeletingAllTx"
+        class="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-600 transition hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-rose-800/70 dark:bg-rose-950/40 dark:text-rose-300 dark:hover:bg-rose-950/70"
+        @click="handleDeleteAllTransactions"
+      >
+        <Trash2 class="h-4 w-4" />
+        <span>{{ t('project.deleteAllTxButton') }}</span>
       </button>
     </section>
     </div>

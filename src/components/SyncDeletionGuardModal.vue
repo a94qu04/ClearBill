@@ -4,13 +4,13 @@ import { useI18n } from 'vue-i18n'
 import { AlertTriangle, Loader2, ShieldAlert } from 'lucide-vue-next'
 import { useLedgerStore } from '@/stores/ledgerStore'
 import { useModalLayer } from '@/composables/useModalLayer'
-import { formatCurrencyAmount } from '@/core/currency'
+import MoneyText from '@/components/MoneyText.vue'
 
 const emit = defineEmits<{
   (e: 'toast', message: string): void
 }>()
 
-const { t, locale } = useI18n()
+const { t } = useI18n()
 const store = useLedgerStore()
 
 const isHandling = ref(false)
@@ -23,10 +23,6 @@ const ratioPercent = computed(() => {
   if (!guard.value) return 0
   return Math.round(guard.value.deletionRatio * 100)
 })
-
-function fmt(amount: number, currency: string): string {
-  return formatCurrencyAmount(amount, currency, locale.value)
-}
 
 function resolveCategoryLabel(categoryKey: string): string {
   const found = store.categories.find((c) => c.key === categoryKey)
@@ -120,7 +116,7 @@ async function handleApproveDeletes() {
               {{ tx.date }} · {{ tx.note || resolveCategoryLabel(tx.categoryKey) }}
             </span>
             <span class="shrink-0 font-bold tabular-nums text-rose-600 dark:text-rose-400">
-              {{ fmt(tx.amount, tx.currency) }}
+              <MoneyText :amount="tx.amount" :currency="tx.currency" />
             </span>
           </li>
           <li

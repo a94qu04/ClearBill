@@ -319,7 +319,18 @@
     "duplicateWarnMessage": "An entry with the same amount already exists today: \"{note}\" ({amount}). Save anyway?",
     "duplicateWarnConfirm": "Save Anyway",
     "adjustShort": "Adjust",
-    "todayShort": "Today"
+    "todayShort": "Today",
+    "entryTypeExpense": "Expense",
+    "entryTypeTransfer": "Transfer",
+    "entryTypeRefund": "Refund / Tax-Free",
+    "entryTypePool": "Collect Pool",
+    "switchEntryTypeAria": "Switch entry type",
+    "deleteAllTxTitle": "Delete All Entries",
+    "deleteAllTxDesc": "Remove all {count} expenses, refunds, and transfers in this project (members and settings stay intact; recoverable from Trash).",
+    "deleteAllTxEmptyDesc": "There are no entries in this project yet.",
+    "deleteAllTxButton": "Delete All Entries",
+    "deleteAllTxConfirm": "Delete all {count} entries in \"{name}\"? The project and members will remain, and deleted entries can be restored from Trash.",
+    "deleteAllTxSuccessToast": "Deleted all {count} entries (recoverable from Trash)"
   },
   "profile": {
     "sectionTitle": "My Member Profile & Avatar",
@@ -345,7 +356,7 @@
     "settled": "Settled",
     "suggestionsTitle": "Pending Settlements",
     "allSettled": "Everyone is settled up!",
-    "recordButton": "Record Paid",
+    "recordButton": "Record Transfer",
     "recordModalTitle": "Record Payment (Partial or Full)",
     "editModalTitle": "Edit Payment Record",
     "fromLabel": "From",

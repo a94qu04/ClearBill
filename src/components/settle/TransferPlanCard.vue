@@ -214,19 +214,21 @@ async function copyPaymentInfo(memberId: string) {
             </span>
           </div>
           <div class="mt-1 flex flex-wrap items-baseline gap-1.5 tabular-nums">
-            <span class="inline-flex items-baseline gap-1">
-              <span class="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[11px] font-extrabold tracking-wide text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">
+            <span class="inline-flex items-baseline gap-1 text-base font-bold text-emerald-700 dark:text-emerald-400">
+              <span class="rounded bg-emerald-500/15 px-1 py-0.5 text-[0.5em] font-extrabold leading-none tracking-wide text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">
                 {{ transfer.currency }}
               </span>
-              <span class="text-base font-bold text-emerald-700 dark:text-emerald-400">
+              <span>
                 {{ fmtNum(transfer.amount, transfer.currency) }}
               </span>
             </span>
             <span
               v-if="isCrossCurrencySettlement && convertSettleAmountToBase(transfer.amount) !== null"
-              class="text-[11px] font-medium text-slate-400 dark:text-slate-500"
+              class="inline-flex items-baseline gap-0.5 text-[11px] font-medium text-slate-400 dark:text-slate-500"
             >
-              ≈ {{ project.baseCurrency }} {{ fmtNum(convertSettleAmountToBase(transfer.amount) ?? 0, project.baseCurrency) }}
+              <span>≈</span>
+              <span class="text-[0.5em] font-semibold leading-none">{{ project.baseCurrency }}</span>
+              <span>{{ fmtNum(convertSettleAmountToBase(transfer.amount) ?? 0, project.baseCurrency) }}</span>
             </span>
           </div>
           <button
