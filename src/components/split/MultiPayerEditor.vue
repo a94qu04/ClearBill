@@ -37,8 +37,8 @@ function fmt(amount: number): string {
   return formatCurrencyAmount(amount, props.currency, locale.value)
 }
 
-function toggleMultiPayerMode() {
-  const nextIsMulti = !props.isMultiPayer
+function setMultiPayerMode(nextIsMulti: boolean) {
+  if (nextIsMulti === props.isMultiPayer) return
   if (nextIsMulti) {
     const hasAnyAmount = props.members.some(
       (m) => (props.multiPayerAmounts[m.id] ?? 0) > 0,
@@ -92,20 +92,37 @@ function fillRemainingToPayer(memberId: string) {
         <span>{{ t('split.payerLabel') }}</span>
       </div>
 
-      <button
-        type="button"
-        class="rounded-lg px-2.5 py-1 text-xs font-semibold transition"
-        :class="
-          isMultiPayer
-            ? 'bg-emerald-600 text-white dark:bg-emerald-500 dark:text-slate-950'
-            : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700'
-        "
-        @click="toggleMultiPayerMode"
+      <div
+        role="group"
+        class="inline-flex items-center gap-1 rounded-xl bg-slate-100 p-0.5 dark:bg-slate-800"
       >
-        {{
-          isMultiPayer ? t('split.singlePayerMode') : t('split.multiPayerMode')
-        }}
-      </button>
+        <button
+          type="button"
+          :aria-pressed="!isMultiPayer"
+          class="rounded-lg px-2.5 py-1 text-xs font-semibold transition"
+          :class="
+            !isMultiPayer
+              ? 'bg-emerald-600 text-white shadow-sm dark:bg-emerald-500 dark:text-slate-950'
+              : 'text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white'
+          "
+          @click="setMultiPayerMode(false)"
+        >
+          {{ t('split.singlePayerMode') }}
+        </button>
+        <button
+          type="button"
+          :aria-pressed="isMultiPayer"
+          class="rounded-lg px-2.5 py-1 text-xs font-semibold transition"
+          :class="
+            isMultiPayer
+              ? 'bg-emerald-600 text-white shadow-sm dark:bg-emerald-500 dark:text-slate-950'
+              : 'text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white'
+          "
+          @click="setMultiPayerMode(true)"
+        >
+          {{ t('split.multiPayerMode') }}
+        </button>
+      </div>
     </div>
 
     <!-- 單人墊付膠囊（6 人以上於手機採單行橫向滑動省高度，平板以上展開） -->

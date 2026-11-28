@@ -581,12 +581,9 @@ function fmt(amount: number): string {
 const dynamicHint = computed<{
   tone: 'info' | 'success' | 'error'
   text: string
-}>(() => {
+} | null>(() => {
   if (normalizedTotal.value <= 0) {
-    return {
-      tone: 'info',
-      text: t('split.hintZeroTotal'),
-    }
+    return null
   }
 
   if (isMultiPayer.value && !multiPayerCheck.value.isValid) {
@@ -645,7 +642,7 @@ const dynamicHint = computed<{
 
   const res = evaluation.value.result
   if (!res) {
-    return { tone: 'info', text: t('split.hintZeroTotal') }
+    return null
   }
 
   if (res.mode === 'equal') {
@@ -709,7 +706,7 @@ watch(
 
     emit(
       'errorChange',
-      dynamicHint.value.tone === 'error' ? dynamicHint.value.text : null,
+      dynamicHint.value?.tone === 'error' ? dynamicHint.value.text : null,
     )
 
     if (!res || !payerReady || normalizedTotal.value <= 0) {
@@ -866,8 +863,9 @@ watch(
       </button>
     </div>
 
-    <!-- 動態白話提示橫幅 -->
+    <!-- 動態白話提示橫幅（未輸入金額時隱藏不佔位） -->
     <div
+      v-if="dynamicHint"
       class="mb-3 flex items-start gap-2 rounded-xl px-3 py-2 text-xs leading-relaxed"
       :class="{
         'border border-slate-200 bg-slate-50 text-slate-600 dark:border-slate-700 dark:bg-slate-800/70 dark:text-slate-300':

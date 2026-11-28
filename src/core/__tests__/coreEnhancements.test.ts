@@ -14,11 +14,17 @@ import { buildProjectSettlementShareText } from '@/core/shareFormatter'
 import { calculateSettleUp } from '@/core/settleUpEngine'
 import { formatGroupedNumberInput } from '@/core/currency'
 import {
+  buildOrderedCurrencyOptions,
+  formatCompactHeaderDate,
   getFirstGrapheme,
   getSuggestedExchangeRate,
   splitGraphemes,
 } from '@/core/ledgerHelpers'
-import type { Project, Transaction } from '@/schemas/ledgerSchema'
+import {
+  TransactionSchema,
+  type Project,
+  type Transaction,
+} from '@/schemas/ledgerSchema'
 
 const sampleProject: Project = {
   id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
@@ -502,5 +508,52 @@ describe('excelExporter & exchangeRateService - 標準 .xlsx 匯出與即時匯�
     const decoded = new TextDecoder().decode(excelBytes)
     expect(decoded).toContain('公費袋餘額')
     expect(decoded).toContain('旅遊公費袋')
+  })
+})
+
+describe('buildOrderedCurrencyOptions & formatCompactHeaderDate & FeeBreakdownSchema', () => {
+  it('幣別下拉選單應將記帳幣別排第一、結帳幣別排第二並附帶標記', () => {
+    const res = buildOrderedCurrencyOptions({
+      baseCurrency: 'JPY',
+      settlementCurrency: 'TWD',
+      availableCurrencies: ['USD', 'TWD', 'EUR', 'JPY'],
+      tags: { base: '記帳', settlement: '結帳', both: '記帳/結帳' },
+    })
+    expect(res.currencies).toEqual(['JPY', 'TWD', 'USD', 'EUR'])
+    expect(res.labels.JPY).toBe('JPY · 記帳')
+    expect(res.labels.TWD).toBe('TWD · 結帳')
+    expect(res.labels.USD).toBe('USD')
+
+    const sameRes = buildOrderedCurrencyOptions({
+      baseCurrency: 'TWD',
+      settlementCurrency: 'TWD',
+      availableCurrencies: ['JPY', 'TWD'],
+      tags: { base: '記帳', settlement: '結帳', both: '記帳/結帳' },
+    })
+    expect(sameRes.currencies).toEqual(['TWD', 'JPY'])
+    expect(sameRes.labels.TWD).toBe('TWD · 記帳/結帳')
+  })
+
+  it('標題列日期膠囊於當日顯示今天、同年省略年份、跨年顯示完整日期', () => {
+    expect(formatCompactHeaderDate('2026-11-28', '2026-11-28', '今天')).toBe('今天')
+    expect(formatCompactHeaderDate('2026-11-28', '2026-11-28', '今天', '14:30')).toBe('今天 14:30')
+    expect(formatCompactHeaderDate('2026-11-25', '2026-11-28', '今天')).toBe('11/25')
+    expect(formatCompactHeaderDate('2025-12-31', '2026-11-28', '今天')).toBe('2025/12/31')
+  })
+
+  it('TransactionSchema 支援選填 feeBreakdown 供修改時還原服務費與刷卡費', () => {
+    const parsed = TransactionSchema.parse({
+      ...sampleTxs[0],
+      feeBreakdown: {
+        baseAmount: 9000,
+        serviceFeePercent: 10,
+        fxFeePercent: 1.5,
+      },
+    })
+    expect(parsed.feeBreakdown).toEqual({
+      baseAmount: 9000,
+      serviceFeePercent: 10,
+      fxFeePercent: 1.5,
+    })
   })
 })

@@ -99,6 +99,14 @@ export const ExternalLinksSchema = z
   .min(1)
   .max(3)
 
+/** 交易服務費／刷卡手續費明細（選填，保留原價與勾選百分比以便後續修改時重算或取消） */
+export const FeeBreakdownSchema = z.object({
+  baseAmount: z.number().finite().positive('原價金額必須大於 0').max(1e12),
+  serviceFeePercent: z.number().finite().min(0).max(100).optional(),
+  fxFeePercent: z.number().finite().min(0).max(100).optional(),
+})
+export type FeeBreakdown = z.infer<typeof FeeBreakdownSchema>
+
 /** 核心交易紀錄結構 */
 export const TransactionSchema = z.object({
   id: z.string().uuid('交易 ID 必須為標準 UUID'),
@@ -123,6 +131,8 @@ export const TransactionSchema = z.object({
   isReimbursable: z.boolean().optional(),
   /** 選填：最後新增或編輯此筆帳目之成員名稱（供多人協作稽核對帳） */
   lastEditedBy: z.string().trim().max(50).optional(),
+  /** 選填：套用服務費或刷卡手續費之原價與百分比明細 */
+  feeBreakdown: FeeBreakdownSchema.optional(),
   splitConfig: SplitConfigSchema.optional(),
 })
 export type Transaction = z.infer<typeof TransactionSchema>

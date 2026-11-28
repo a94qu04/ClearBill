@@ -172,3 +172,77 @@ export function getFirstGrapheme(text: string, fallback = '?'): string {
   const first = splitGraphemes(trimmed)[0]
   return first ? first.toUpperCase() : fallback
 }
+
+/**
+ * 產生排序後的幣別下拉選單清單與標記文字：
+ * 1. 記帳幣別固定列第一項並標記
+ * 2. 結帳幣別（若與記帳幣別不同）固定列第二項並標記
+ * 3. 其餘保留目前選中幣別與常用幣別清單
+ */
+export function buildOrderedCurrencyOptions(params: {
+  baseCurrency: string
+  settlementCurrency: string
+  availableCurrencies: string[]
+  extraCurrencies?: Array<string | null | undefined>
+  tags: {
+    base: string
+    settlement: string
+    both: string
+  }
+}): { currencies: string[]; labels: Record<string, string> } {
+  const baseCur = params.baseCurrency.trim().toUpperCase()
+  const settleCur = params.settlementCurrency.trim().toUpperCase() || baseCur
+  const currencies: string[] = []
+
+  const pushUnique = (code: string | null | undefined) => {
+    if (!code) return
+    const normalized = code.trim().toUpperCase()
+    if (normalized && !currencies.includes(normalized)) {
+      currencies.push(normalized)
+    }
+  }
+
+  pushUnique(baseCur)
+  pushUnique(settleCur)
+  for (const extra of params.extraCurrencies ?? []) {
+    pushUnique(extra)
+  }
+  for (const code of params.availableCurrencies) {
+    pushUnique(code)
+  }
+
+  const labels: Record<string, string> = {}
+  for (const code of currencies) {
+    if (code === baseCur && code === settleCur) {
+      labels[code] = `${code} · ${params.tags.both}`
+    } else if (code === baseCur) {
+      labels[code] = `${code} · ${params.tags.base}`
+    } else if (code === settleCur) {
+      labels[code] = `${code} · ${params.tags.settlement}`
+    } else {
+      labels[code] = code
+    }
+  }
+
+  return { currencies, labels }
+}
+
+/** 依目前日期產生緊湊標題列日期膠囊文字（今年省去年份避免標題列擁擠） */
+export function formatCompactHeaderDate(
+  isoDate: string,
+  todayIso: string,
+  todayLabel: string,
+  time?: string,
+): string {
+  const trimmedTime = time?.trim() && time.trim() !== '00:00' ? time.trim() : ''
+  if (!isoDate || isoDate === todayIso) {
+    return trimmedTime ? `${todayLabel} ${trimmedTime}` : todayLabel
+  }
+  const todayYear = todayIso.slice(0, 4)
+  const parts = isoDate.split('-')
+  const dateLabel =
+    parts.length === 3 && parts[0] === todayYear
+      ? `${parts[1]}/${parts[2]}`
+      : isoDate.replace(/-/g, '/')
+  return trimmedTime ? `${dateLabel} ${trimmedTime}` : dateLabel
+}

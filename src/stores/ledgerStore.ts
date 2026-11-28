@@ -2,6 +2,7 @@ import { computed, ref, toRaw } from 'vue'
 import { defineStore, storeToRefs } from 'pinia'
 import {
   CURRENT_SCHEMA_VERSION,
+  type FeeBreakdown,
   type LedgerBackup,
   type Project,
   type ProjectMember,
@@ -116,6 +117,7 @@ export interface CreateTransactionPayload {
   links?: string[]
   receiptImages?: string[]
   isReimbursable?: boolean
+  feeBreakdown?: FeeBreakdown
   splitConfig?: SplitConfig
 }
 
@@ -1325,6 +1327,7 @@ export const useLedgerStore = defineStore('ledger', () => {
       receiptImages: cleanImages,
       isReimbursable: payload.isReimbursable,
       ...(editorName ? { lastEditedBy: editorName } : {}),
+      ...(payload.feeBreakdown ? { feeBreakdown: payload.feeBreakdown } : {}),
       splitConfig: payload.splitConfig,
     }
 
@@ -1512,6 +1515,7 @@ export const useLedgerStore = defineStore('ledger', () => {
       receiptImages: cleanImages,
       isReimbursable: payload.isReimbursable,
       lastEditedBy: editorName ?? existing.lastEditedBy,
+      feeBreakdown: payload.feeBreakdown,
       splitConfig: payload.splitConfig,
     }
 

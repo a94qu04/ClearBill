@@ -346,6 +346,18 @@ function closeProjectExpenseSheet() {
   quickIntakePrefill.value = null
 }
 
+function closeSettlementPaymentSheet() {
+  settleSheetOpen.value = false
+  expenseModalFromHome.value = false
+  editingSettleTx.value = null
+}
+
+function closePoolCollectModal() {
+  poolCollectModalOpen.value = false
+  expenseModalFromHome.value = false
+  editingPoolTx.value = null
+}
+
 function startDuplicateTransaction(tx: Transaction) {
   const originalTx =
     store.visibleTransactions.find((item) => item.id === tx.id) ?? tx
@@ -366,6 +378,7 @@ function startEditTransaction(tx: Transaction) {
   if (!targetProject) return
 
   store.selectProject(targetProject.id)
+  expenseModalFromHome.value = false
   duplicateExpenseTx.value = null
   quickIntakePrefill.value = null
 
@@ -394,6 +407,7 @@ function openRecordSettlementModal(payload: {
   amount: number
   currency?: string
 }) {
+  expenseModalFromHome.value = false
   editingSettleTx.value = null
   settleInitialFromId.value = payload.fromMemberId
   settleInitialToId.value = payload.toMemberId
@@ -403,6 +417,7 @@ function openRecordSettlementModal(payload: {
 }
 
 function openPoolCollectModal() {
+  expenseModalFromHome.value = false
   editingPoolTx.value = null
   poolCollectModalOpen.value = true
 }
@@ -838,12 +853,14 @@ onBeforeUnmount(() => {
       :open="settleSheetOpen"
       :project="store.activeProject"
       :editing-tx="editingSettleTx"
+      :allow-project-switch="expenseModalFromHome"
       :initial-from-id="settleInitialFromId"
       :initial-to-id="settleInitialToId"
       :suggested-amount="settleSuggestedAmount"
       :currency="settleCurrency"
-      @close="settleSheetOpen = false"
+      @close="closeSettlementPaymentSheet"
       @saved="showToast($event)"
+      @switch-project="store.selectProject($event)"
       @switch-entry-mode="handleSwitchEntryMode"
     />
 
@@ -852,8 +869,10 @@ onBeforeUnmount(() => {
       :open="poolCollectModalOpen"
       :project="store.activeProject"
       :editing-tx="editingPoolTx"
-      @close="poolCollectModalOpen = false; editingPoolTx = null"
+      :allow-project-switch="expenseModalFromHome"
+      @close="closePoolCollectModal"
       @saved="showToast($event)"
+      @switch-project="store.selectProject($event)"
       @switch-entry-mode="handleSwitchEntryMode"
     />
 

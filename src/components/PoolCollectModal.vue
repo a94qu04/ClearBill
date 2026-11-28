@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Check, Wallet, X } from 'lucide-vue-next'
+import { Calendar, Check, X } from 'lucide-vue-next'
 import type { Project, Transaction } from '@/schemas/ledgerSchema'
 import { useLedgerStore } from '@/stores/ledgerStore'
 import { useModalLayer } from '@/composables/useModalLayer'
-import { getTodayIso } from '@/core/ledgerHelpers'
-import { isPoolMemberIdInProject } from '@/core/poolFund'
+import {
+  buildOrderedCurrencyOptions,
+  formatCompactHeaderDate,
+  getTodayIso,
+} from '@/core/ledgerHelpers'
 import CurrencyAmountInput from '@/components/CurrencyAmountInput.vue'
 import EntryModeSelector, { type EntryMode } from '@/components/EntryModeSelector.vue'
 import MemberAvatar from '@/components/MemberAvatar.vue'
@@ -16,15 +19,18 @@ interface Props {
   open: boolean
   project: Project | null
   editingTx?: Transaction | null
+  allowProjectSwitch?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
   editingTx: null,
+  allowProjectSwitch: false,
 })
 
 const emit = defineEmits<{
   (e: 'close'): void
   (e: 'saved', message: string): void
+  (e: 'switchProject', projectId: string): void
   (e: 'switchEntryMode', mode: EntryMode): void
 }>()
 
@@ -39,9 +45,7 @@ useModalLayer(
   dialogRef,
 )
 
-const collectorMode = ref<'pool' | 'member'>('pool')
 const customPoolName = ref('')
-const selectedCollectorMemberId = ref('')
 const selectedContributorIds = ref<string[]>([])
 const amountPerMember = ref<number | null>(null)
 const currency = ref('TWD')
@@ -50,9 +54,14 @@ const exchangeRateSource = ref<
   'same' | 'live' | 'remembered' | 'estimated' | 'saved' | 'missing'
 >('same')
 const date = ref(getTodayIso())
+const datePanelExpanded = ref(false)
 const note = ref('')
 const errorText = ref('')
 const isSubmitting = ref(false)
+
+const headerDateLabel = computed(() =>
+  formatCompactHeaderDate(date.value, getTodayIso(), t('project.todayShort')),
+)
 
 const existingPoolMember = computed(
   () => props.project?.members.find((m) => m.isPool) ?? null,
@@ -62,24 +71,35 @@ const humanMembers = computed(
   () => props.project?.members.filter((m) => !m.isPool) ?? [],
 )
 
-const currencyOptions = computed<string[]>(() => {
-  const set = new Set<string>(store.availableCurrencies)
-  if (props.project?.baseCurrency) set.add(props.project.baseCurrency.trim().toUpperCase())
-  if (currency.value) set.add(currency.value.trim().toUpperCase())
-  return Array.from(set)
+const orderedCurrencies = computed(() => {
+  const baseCur = props.project?.baseCurrency || store.defaultCurrency
+  const settleCur = props.project
+    ? store.getProjectSettlementCurrency(props.project)
+    : baseCur
+  return buildOrderedCurrencyOptions({
+    baseCurrency: baseCur,
+    settlementCurrency: settleCur,
+    availableCurrencies: store.availableCurrencies,
+    extraCurrencies: [currency.value],
+    tags: {
+      base: t('settle.currencyTagBaseShort'),
+      settlement: t('settle.currencyTagSettlementShort'),
+      both: t('settle.currencyTagBothShort'),
+    },
+  })
 })
+
+const currencyOptions = computed<string[]>(() => orderedCurrencies.value.currencies)
+const currencyOptionLabels = computed<Record<string, string>>(
+  () => orderedCurrencies.value.labels,
+)
 
 const needsExchangeRate = computed(() => {
   if (!props.project) return false
   return currency.value.trim().toUpperCase() !== props.project.baseCurrency.trim().toUpperCase()
 })
 
-const eligibleContributors = computed(() => {
-  if (collectorMode.value === 'pool') {
-    return humanMembers.value
-  }
-  return humanMembers.value.filter((m) => m.id !== selectedCollectorMemberId.value)
-})
+const eligibleContributors = computed(() => humanMembers.value)
 
 const totalCollectedPreview = computed(() => {
   const amt = amountPerMember.value ?? 0
@@ -101,22 +121,15 @@ watch(
   ([isOpen]) => {
     if (!isOpen || !props.project) return
     errorText.value = ''
+    datePanelExpanded.value = false
 
     const editTx = props.editingTx
     if (editTx && editTx.splitConfig) {
       const toId = editTx.splitConfig.shares[0]?.memberId ?? ''
       const toMember = props.project.members.find((m) => m.id === toId)
-      const isPoolTarget = isPoolMemberIdInProject(toId, props.project)
-      collectorMode.value = isPoolTarget ? 'pool' : 'member'
       customPoolName.value =
-        (isPoolTarget ? toMember?.name : existingPoolMember.value?.name) ||
+        (toMember?.isPool ? toMember.name : existingPoolMember.value?.name) ||
         t('pool.defaultName')
-      selectedCollectorMemberId.value = isPoolTarget
-        ? props.project.syncMeta?.myMemberId ||
-          props.project.defaultPayerId ||
-          humanMembers.value[0]?.id ||
-          ''
-        : toId || humanMembers.value[0]?.id || ''
 
       const activePayers = (editTx.splitConfig.payers ?? []).filter(
         (p) => p.amount > 0,
@@ -156,13 +169,7 @@ watch(
       return
     }
 
-    collectorMode.value = 'pool'
     customPoolName.value = existingPoolMember.value?.name || t('pool.defaultName')
-    selectedCollectorMemberId.value =
-      props.project.syncMeta?.myMemberId ||
-      props.project.defaultPayerId ||
-      humanMembers.value[0]?.id ||
-      ''
     currency.value = store.getProjectLastCurrency(
       props.project.id,
       props.project.baseCurrency,
@@ -185,13 +192,6 @@ watch(
   },
   { immediate: true },
 )
-
-watch([collectorMode, selectedCollectorMemberId], () => {
-  const allowed = new Set(eligibleContributors.value.map((m) => m.id))
-  const kept = selectedContributorIds.value.filter((id) => allowed.has(id))
-  selectedContributorIds.value =
-    kept.length > 0 ? kept : eligibleContributors.value.map((m) => m.id)
-})
 
 /** 僅由使用者主動切換幣別時更新匯率，避免開啟編輯歷史公費帳目時覆寫原始匯率 */
 function handleUserCurrencyChange(nextCur: string) {
@@ -241,27 +241,19 @@ async function handleSubmit() {
 
   isSubmitting.value = true
   try {
-    let collectorId = selectedCollectorMemberId.value
-    if (collectorMode.value === 'pool') {
-      const poolMember = await store.ensureProjectPoolMember(
-        props.project.id,
-        customPoolName.value || t('pool.defaultName'),
-      )
-      if (!poolMember) {
-        errorText.value = t('home.saveFailed')
-        return
-      }
-      collectorId = poolMember.id
-    }
-
-    if (!collectorId) {
+    const poolMember = await store.ensureProjectPoolMember(
+      props.project.id,
+      customPoolName.value || t('pool.defaultName'),
+    )
+    if (!poolMember) {
       errorText.value = t('home.saveFailed')
       return
     }
 
+    store.rememberLastExpenseProject(props.project.id)
     const count = await store.batchCollectPoolFund({
       projectId: props.project.id,
-      collectorMemberId: collectorId,
+      collectorMemberId: poolMember.id,
       contributorMemberIds: selectedContributorIds.value,
       amountPerMember: amt,
       currency: currency.value,
@@ -300,27 +292,33 @@ async function handleSubmit() {
       @click.self="emit('close')"
     >
       <div
-        class="flex max-h-[90vh] w-full max-w-md flex-col overflow-hidden rounded-t-3xl border border-slate-200 bg-white shadow-2xl dark:border-slate-800 dark:bg-slate-900 sm:rounded-3xl"
+        class="flex max-h-[92vh] w-full max-w-lg flex-col overflow-hidden rounded-t-3xl bg-[#F2F2F7] shadow-2xl dark:bg-[#0D0D0F] sm:rounded-3xl"
       >
-        <!-- Sticky 頂部標題列 -->
+        <!-- Apple 風格頂部 Sheet 標題列（左日期膠囊、中模式切換／標題、右關閉） -->
         <div
-          class="relative z-20 flex shrink-0 items-center justify-between border-b border-slate-100 px-5 py-3.5 dark:border-slate-800"
+          class="relative z-20 flex shrink-0 items-center justify-between gap-2 border-b border-black/5 bg-white/90 px-4 py-3 backdrop-blur-md dark:border-white/10 dark:bg-[#1C1C1E]/95"
         >
-          <div v-if="editingTx" class="flex items-center gap-2">
-            <span
-              class="inline-flex h-8 w-8 items-center justify-center rounded-xl bg-teal-50 text-teal-700 dark:bg-teal-950/70 dark:text-teal-300"
-            >
-              <Wallet class="h-4 w-4" />
-            </span>
-            <div>
-              <h2 class="text-sm font-bold text-slate-900 dark:text-white">
-                {{ t('pool.modalTitle') }}
-              </h2>
-              <p class="text-[11px] text-slate-400">
-                {{ t('pool.modalSubtitle') }}
-              </p>
-            </div>
-          </div>
+          <button
+            type="button"
+            :aria-expanded="datePanelExpanded"
+            class="inline-flex max-w-[116px] shrink-0 items-center gap-1 rounded-full px-2.5 py-1.5 text-xs font-semibold transition active:scale-95"
+            :class="
+              datePanelExpanded || date !== getTodayIso()
+                ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-950'
+                : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-[#2C2C2E] dark:text-slate-300'
+            "
+            @mousedown.prevent
+            @click="datePanelExpanded = !datePanelExpanded"
+          >
+            <Calendar class="h-3.5 w-3.5 shrink-0" />
+            <span class="truncate tabular-nums">{{ headerDateLabel }}</span>
+          </button>
+          <h2
+            v-if="editingTx"
+            class="truncate text-[15px] font-bold text-slate-900 dark:text-white"
+          >
+            {{ t('pool.modalTitle') }}
+          </h2>
           <EntryModeSelector
             v-else
             model-value="pool"
@@ -329,50 +327,58 @@ async function handleSubmit() {
           <button
             type="button"
             :aria-label="t('settings.close')"
-            class="rounded-full p-1 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+            class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500 transition hover:bg-slate-200 dark:bg-[#2C2C2E] dark:text-slate-300"
+            @mousedown.prevent
             @click="emit('close')"
           >
-            <X class="h-5 w-5" />
+            <X class="h-4 w-4" />
           </button>
+        </div>
+
+        <!-- 展開：日期選擇 -->
+        <div
+          v-if="datePanelExpanded"
+          class="shrink-0 border-b border-black/5 bg-white px-4 py-2.5 dark:border-white/10 dark:bg-[#1C1C1E]"
+        >
+          <input
+            v-model="date"
+            type="date"
+            class="w-full min-w-0 rounded-xl bg-[#F2F2F7] px-3 py-2 text-xs text-slate-800 dark:bg-[#2C2C2E] dark:text-slate-200"
+          />
         </div>
 
         <!-- 中間可捲動表單主體 -->
         <form
           id="pool-collect-form"
-          class="min-h-0 flex-1 space-y-3.5 overflow-y-auto px-5 py-4"
+          class="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3.5"
           @submit.prevent="handleSubmit"
         >
-          <!-- 收款模式切換：獨立公費袋 vs 指定財務長 -->
-          <div class="grid grid-cols-2 gap-1 rounded-xl bg-slate-100 p-1 text-xs font-bold dark:bg-slate-800">
-            <button
-              type="button"
-              class="rounded-lg py-1.5 transition"
-              :class="
-                collectorMode === 'pool'
-                  ? 'bg-white text-teal-700 shadow-sm dark:bg-slate-950 dark:text-teal-300'
-                  : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
-              "
-              @click="collectorMode = 'pool'"
+          <!-- 首頁快速記一筆時顯示目標專案並支援即時切換 -->
+          <div
+            v-if="allowProjectSwitch && !editingTx && store.activeProjects.length > 0"
+            class="flex items-center justify-between gap-2 rounded-2xl bg-white px-3.5 py-2.5 shadow-sm dark:bg-[#1C1C1E]"
+          >
+            <span class="shrink-0 text-xs font-semibold text-slate-500 dark:text-slate-400">
+              {{ t('project.targetProjectLabel') }}
+            </span>
+            <select
+              :value="project.id"
+              class="min-w-0 max-w-[230px] truncate rounded-xl bg-slate-100 px-2.5 py-1.5 text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/40 dark:bg-[#2C2C2E] dark:text-white"
+              @change="emit('switchProject', ($event.target as HTMLSelectElement).value)"
             >
-              {{ t('pool.modeVirtualPool') }}
-            </button>
-            <button
-              type="button"
-              class="rounded-lg py-1.5 transition"
-              :class="
-                collectorMode === 'member'
-                  ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-950 dark:text-white'
-                  : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
-              "
-              @click="collectorMode = 'member'"
-            >
-              {{ t('pool.modeTreasurer') }}
-            </button>
+              <option
+                v-for="p in store.activeProjects"
+                :key="p.id"
+                :value="p.id"
+              >
+                {{ p.name }} ({{ p.baseCurrency }})
+              </option>
+            </select>
           </div>
 
+          <!-- 分組 1：公費袋說明與名稱（首次建立時可自訂） -->
           <div
-            v-if="collectorMode === 'pool'"
-            class="space-y-1.5 rounded-xl border border-teal-200/80 bg-teal-50/60 p-3 text-[11px] leading-relaxed text-teal-900 dark:border-teal-800/60 dark:bg-teal-950/30 dark:text-teal-200"
+            class="space-y-1.5 rounded-2xl border border-teal-200/80 bg-teal-50/70 p-3.5 text-[11px] leading-relaxed text-teal-900 shadow-sm dark:border-teal-800/60 dark:bg-teal-950/35 dark:text-teal-200"
           >
             <p>{{ t('pool.virtualPoolHint') }}</p>
             <input
@@ -381,84 +387,71 @@ async function handleSubmit() {
               type="text"
               maxlength="30"
               :placeholder="t('pool.defaultName')"
-              class="mt-1 w-full rounded-lg border border-teal-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-900 focus:border-teal-500 focus:outline-none dark:border-teal-800 dark:bg-slate-900 dark:text-white"
+              class="mt-1 w-full rounded-xl border border-teal-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-900 focus:border-teal-500 focus:outline-none dark:border-teal-800 dark:bg-[#1C1C1E] dark:text-white"
             />
           </div>
 
-          <div v-else class="space-y-1.5">
-            <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300">
-              {{ t('pool.selectTreasurerLabel') }}
-            </label>
-            <select
-              v-model="selectedCollectorMemberId"
-              class="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
-            >
-              <option v-for="m in humanMembers" :key="m.id" :value="m.id">
-                {{ m.name }}
-              </option>
-            </select>
-          </div>
-
-          <!-- 每人繳交金額與幣別 -->
-          <div class="space-y-1.5">
-            <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300">
+          <!-- 分組 2：每人繳交金額、幣別與匯率 -->
+          <div class="space-y-2.5 rounded-2xl bg-white p-3.5 shadow-sm dark:bg-[#1C1C1E]">
+            <label class="block text-xs font-semibold text-slate-500 dark:text-slate-400">
               {{ t('pool.amountPerPersonLabel') }}
             </label>
             <CurrencyAmountInput
               v-model="amountPerMember"
               :currency="currency"
               :currencies="currencyOptions"
+              :currency-labels="currencyOptionLabels"
               show-currency-select
               size="lg"
               autofocus
               placeholder="0"
               @update:currency="handleUserCurrencyChange"
             />
-          </div>
 
-          <!-- 外幣匯率 -->
-          <div
-            v-if="needsExchangeRate"
-            class="space-y-1.5 rounded-xl border border-amber-200 bg-amber-50/70 px-3 py-2 text-xs dark:border-amber-800/60 dark:bg-amber-950/30"
-          >
-            <div class="flex flex-wrap items-center gap-2">
-              <span class="font-semibold text-amber-900 dark:text-amber-200">
-                {{ t('project.exchangeRateLabel', { from: currency }) }}
-              </span>
-              <CurrencyAmountInput
-                v-model="exchangeRate"
-                :allow-decimals="true"
-                :max-decimals="8"
-                size="sm"
-                :placeholder="t('rates.needInputShort')"
-                class="w-28"
-              />
-              <span class="font-semibold text-amber-900 dark:text-amber-200">
-                {{ project.baseCurrency }}
-              </span>
-              <span
-                v-if="exchangeRateSource === 'estimated' && exchangeRate !== null && exchangeRate > 0"
-                class="rounded-md bg-amber-200/70 px-1.5 py-0.5 text-[10px] font-bold text-amber-900 dark:bg-amber-900/60 dark:text-amber-200"
+            <!-- 外幣匯率 -->
+            <div
+              v-if="needsExchangeRate"
+              class="space-y-1.5 rounded-xl border border-amber-200 bg-amber-50/70 px-3 py-2 text-xs dark:border-amber-800/60 dark:bg-amber-950/30"
+            >
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="font-semibold text-amber-900 dark:text-amber-200">
+                  {{ t('project.exchangeRateLabel', { from: currency }) }}
+                </span>
+                <CurrencyAmountInput
+                  v-model="exchangeRate"
+                  :allow-decimals="true"
+                  :max-decimals="8"
+                  size="sm"
+                  :placeholder="t('rates.needInputShort')"
+                  class="w-28"
+                />
+                <span class="font-semibold text-amber-900 dark:text-amber-200">
+                  {{ project.baseCurrency }}
+                </span>
+                <span
+                  v-if="exchangeRateSource === 'estimated' && exchangeRate !== null && exchangeRate > 0"
+                  class="rounded-md bg-amber-200/70 px-1.5 py-0.5 text-[10px] font-bold text-amber-900 dark:bg-amber-900/60 dark:text-amber-200"
+                >
+                  {{ t('rates.sourceEstimatedTag') }}
+                </span>
+              </div>
+              <p
+                v-if="exchangeRate === null || exchangeRate <= 0"
+                class="text-[11px] font-semibold text-amber-800 dark:text-amber-300"
               >
-                {{ t('rates.sourceEstimatedTag') }}
-              </span>
+                {{ t('project.exchangeRateMissingHint') }}
+              </p>
+              <p
+                v-else-if="exchangeRateSource === 'estimated'"
+                class="text-[10px] font-medium text-amber-800/80 dark:text-amber-300/80"
+              >
+                {{ t('project.exchangeRateEstimatedHint') }}
+              </p>
             </div>
-            <p
-              v-if="exchangeRate === null || exchangeRate <= 0"
-              class="text-[11px] font-semibold text-amber-800 dark:text-amber-300"
-            >
-              {{ t('project.exchangeRateMissingHint') }}
-            </p>
-            <p
-              v-else-if="exchangeRateSource === 'estimated'"
-              class="text-[10px] font-medium text-amber-800/80 dark:text-amber-300/80"
-            >
-              {{ t('project.exchangeRateEstimatedHint') }}
-            </p>
           </div>
 
-          <!-- 繳交成員多選區 -->
-          <div class="space-y-2">
+          <!-- 分組 3：繳交成員多選區 -->
+          <div class="space-y-2.5 rounded-2xl bg-white p-3.5 shadow-sm dark:bg-[#1C1C1E]">
             <div class="flex items-center justify-between gap-2">
               <span class="text-xs font-semibold text-slate-600 dark:text-slate-300">
                 {{ t('pool.contributorsLabel') }} ({{ selectedContributorIds.length }}/{{ eligibleContributors.length }})
@@ -491,7 +484,7 @@ async function handleSubmit() {
                 :class="
                   selectedContributorIds.includes(m.id)
                     ? 'bg-teal-600 text-white shadow-sm dark:bg-teal-500 dark:text-slate-950'
-                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-[#2C2C2E] dark:text-slate-300'
                 "
                 @click="toggleContributor(m.id)"
               >
@@ -511,29 +504,28 @@ async function handleSubmit() {
             </div>
           </div>
 
-          <!-- 日期與備註（手機單欄／寬屏雙欄防擠爆） -->
-          <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
-            <input
-              v-model="date"
-              type="date"
-              class="w-full min-w-0 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-800 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
-            />
+          <!-- 分組 4：備註 -->
+          <div class="rounded-2xl bg-white px-3.5 py-2 shadow-sm dark:bg-[#1C1C1E]">
             <input
               v-model="note"
               type="text"
               :placeholder="t('pool.defaultNote')"
-              class="w-full min-w-0 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-800 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+              class="w-full bg-transparent py-1.5 text-sm text-slate-900 placeholder-slate-400 focus:outline-none dark:text-white dark:placeholder-slate-500"
             />
           </div>
 
-          <p v-if="errorText" class="text-xs font-medium text-rose-500">
+          <p
+            v-if="errorText"
+            role="alert"
+            class="rounded-2xl bg-rose-50 px-3.5 py-2.5 text-xs font-semibold text-rose-600 dark:bg-rose-950/50 dark:text-rose-300"
+          >
             {{ errorText }}
           </p>
         </form>
 
         <!-- Sticky 底部確認收款列 -->
         <div
-          class="safe-sticky-pb shrink-0 space-y-2 border-t border-slate-100 bg-white/95 px-5 pt-3 backdrop-blur dark:border-slate-800 dark:bg-slate-900/95 sm:pb-3"
+          class="safe-sticky-pb shrink-0 space-y-2 border-t border-black/5 bg-white/95 px-4 pt-3 backdrop-blur-md dark:border-white/10 dark:bg-[#1C1C1E]/95 sm:pb-3"
         >
           <div
             v-if="totalCollectedPreview > 0"
@@ -548,7 +540,7 @@ async function handleSubmit() {
             type="submit"
             form="pool-collect-form"
             :disabled="isSubmitting || totalCollectedPreview <= 0"
-            class="w-full rounded-2xl bg-teal-600 py-3 text-sm font-bold text-white shadow-sm transition hover:bg-teal-700 disabled:opacity-40 dark:bg-teal-500 dark:text-slate-950"
+            class="w-full rounded-2xl bg-teal-600 py-3 text-sm font-bold text-white shadow-sm transition hover:bg-teal-700 active:scale-[0.99] disabled:opacity-40 dark:bg-teal-500 dark:text-slate-950"
           >
             {{ t('pool.confirmButton') }}
           </button>

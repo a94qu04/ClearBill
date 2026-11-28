@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Loader2, RefreshCw, X } from 'lucide-vue-next'
+import { Calendar, Loader2, RefreshCw, X } from 'lucide-vue-next'
 import { useLedgerStore } from '@/stores/ledgerStore'
 import { useModalLayer } from '@/composables/useModalLayer'
 import {
@@ -10,7 +10,11 @@ import {
   fromMinorUnits,
   toMinorUnits,
 } from '@/core/currency'
-import { getTodayIso } from '@/core/ledgerHelpers'
+import {
+  buildOrderedCurrencyOptions,
+  formatCompactHeaderDate,
+  getTodayIso,
+} from '@/core/ledgerHelpers'
 import type { Project, Transaction } from '@/schemas/ledgerSchema'
 import CurrencyAmountInput from '@/components/CurrencyAmountInput.vue'
 import EntryModeSelector, { type EntryMode } from '@/components/EntryModeSelector.vue'
@@ -19,6 +23,7 @@ interface Props {
   open: boolean
   project: Project | null
   editingTx: Transaction | null
+  allowProjectSwitch?: boolean
   initialFromId?: string
   initialToId?: string
   suggestedAmount?: number | null
@@ -26,6 +31,7 @@ interface Props {
 }
 
 const props = withDefaults(defineProps<Props>(), {
+  allowProjectSwitch: false,
   initialFromId: '',
   initialToId: '',
   suggestedAmount: null,
@@ -35,6 +41,7 @@ const props = withDefaults(defineProps<Props>(), {
 const emit = defineEmits<{
   (e: 'close'): void
   (e: 'saved', message: string): void
+  (e: 'switchProject', projectId: string): void
   (e: 'switchEntryMode', mode: EntryMode): void
 }>()
 
@@ -61,8 +68,13 @@ const exchangeRateSource = ref<
 const isFetchingRate = ref(false)
 const isSubmitting = ref(false)
 const date = ref(getTodayIso())
+const datePanelExpanded = ref(false)
 const note = ref('')
 const errorText = ref('')
+
+const headerDateLabel = computed(() =>
+  formatCompactHeaderDate(date.value, getTodayIso(), t('project.todayShort')),
+)
 
 const suggestedCurrency = computed<string>(() => {
   if (props.currency) return props.currency.trim().toUpperCase()
@@ -79,44 +91,25 @@ const projectBaseCurrency = computed<string>(() =>
   props.project?.baseCurrency.trim().toUpperCase() || store.defaultCurrency,
 )
 
-/** 優先置頂排列：1. 結帳幣別、2. 記帳幣別、3. 目前選中／其餘常用幣別 */
-const currencyOptions = computed<string[]>(() => {
-  const ordered: string[] = []
-  const pushUnique = (code: string | undefined | null) => {
-    if (!code) return
-    const normalized = code.trim().toUpperCase()
-    if (normalized && !ordered.includes(normalized)) {
-      ordered.push(normalized)
-    }
-  }
-  pushUnique(projectSettlementCurrency.value)
-  pushUnique(projectBaseCurrency.value)
-  pushUnique(suggestedCurrency.value)
-  pushUnique(payCurrency.value)
-  for (const code of store.availableCurrencies) {
-    pushUnique(code)
-  }
-  return ordered
-})
+/** 優先置頂排列：1. 記帳幣別、2. 結帳幣別、3. 目前選中／其餘常用幣別 */
+const orderedCurrencies = computed(() =>
+  buildOrderedCurrencyOptions({
+    baseCurrency: projectBaseCurrency.value,
+    settlementCurrency: projectSettlementCurrency.value,
+    availableCurrencies: store.availableCurrencies,
+    extraCurrencies: [suggestedCurrency.value, payCurrency.value],
+    tags: {
+      base: t('settle.currencyTagBaseShort'),
+      settlement: t('settle.currencyTagSettlementShort'),
+      both: t('settle.currencyTagBothShort'),
+    },
+  }),
+)
 
-/** 下拉選單內針對置頂的結帳幣別／記帳幣別顯示明確標記 */
-const currencyOptionLabels = computed<Record<string, string>>(() => {
-  const labels: Record<string, string> = {}
-  const settleCur = projectSettlementCurrency.value
-  const baseCur = projectBaseCurrency.value
-  for (const code of currencyOptions.value) {
-    if (code === settleCur && code === baseCur) {
-      labels[code] = `${code} · ${t('settle.currencyTagBothShort')}`
-    } else if (code === settleCur) {
-      labels[code] = `${code} · ${t('settle.currencyTagSettlementShort')}`
-    } else if (code === baseCur) {
-      labels[code] = `${code} · ${t('settle.currencyTagBaseShort')}`
-    } else {
-      labels[code] = code
-    }
-  }
-  return labels
-})
+const currencyOptions = computed<string[]>(() => orderedCurrencies.value.currencies)
+const currencyOptionLabels = computed<Record<string, string>>(
+  () => orderedCurrencies.value.labels,
+)
 
 const needsExchangeRate = computed(() => {
   if (!props.project) return false
@@ -218,6 +211,7 @@ watch(
   () =>
     [
       props.open,
+      props.project?.id,
       props.editingTx?.id,
       props.initialFromId,
       props.initialToId,
@@ -227,6 +221,7 @@ watch(
   ([isOpen]) => {
     if (!isOpen || !props.project) return
     errorText.value = ''
+    datePanelExpanded.value = false
 
     if (props.editingTx && props.editingTx.splitConfig) {
       fromId.value = props.editingTx.splitConfig.payerId
@@ -348,6 +343,7 @@ async function handleSubmit() {
 
   isSubmitting.value = true
   try {
+    store.rememberLastExpenseProject(props.project.id)
     if (needsExchangeRate.value && rateToBase > 0) {
       store.rememberExchangeRate(
         normalizedPayCurrency,
@@ -417,12 +413,30 @@ async function handleSubmit() {
       @click.self="emit('close')"
     >
       <div
-        class="safe-sheet-pb w-full max-w-md rounded-t-3xl border border-slate-200 bg-white px-5 pt-5 shadow-2xl dark:border-slate-800 dark:bg-slate-900 sm:rounded-3xl sm:pb-5"
+        class="flex max-h-[92vh] w-full max-w-lg flex-col overflow-hidden rounded-t-3xl bg-[#F2F2F7] shadow-2xl dark:bg-[#0D0D0F] sm:rounded-3xl"
       >
-        <div class="relative z-20 mb-4 flex items-center justify-between">
+        <!-- Apple 風格頂部 Sheet 標題列（左日期膠囊、中模式切換／標題、右關閉） -->
+        <div
+          class="relative z-20 flex shrink-0 items-center justify-between gap-2 border-b border-black/5 bg-white/90 px-4 py-3 backdrop-blur-md dark:border-white/10 dark:bg-[#1C1C1E]/95"
+        >
+          <button
+            type="button"
+            :aria-expanded="datePanelExpanded"
+            class="inline-flex max-w-[116px] shrink-0 items-center gap-1 rounded-full px-2.5 py-1.5 text-xs font-semibold transition active:scale-95"
+            :class="
+              datePanelExpanded || date !== getTodayIso()
+                ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-950'
+                : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-[#2C2C2E] dark:text-slate-300'
+            "
+            @mousedown.prevent
+            @click="datePanelExpanded = !datePanelExpanded"
+          >
+            <Calendar class="h-3.5 w-3.5 shrink-0" />
+            <span class="truncate tabular-nums">{{ headerDateLabel }}</span>
+          </button>
           <h2
             v-if="editingTx"
-            class="text-base font-bold text-slate-900 dark:text-white"
+            class="truncate text-[15px] font-bold text-slate-900 dark:text-white"
           >
             {{ t('settle.editModalTitle') }}
           </h2>
@@ -434,22 +448,63 @@ async function handleSubmit() {
           <button
             type="button"
             :aria-label="t('settings.close')"
-            class="rounded-full p-1 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+            class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500 transition hover:bg-slate-200 dark:bg-[#2C2C2E] dark:text-slate-300"
+            @mousedown.prevent
             @click="emit('close')"
           >
-            <X class="h-5 w-5" />
+            <X class="h-4 w-4" />
           </button>
         </div>
 
-        <form class="space-y-4" @submit.prevent="handleSubmit">
-          <div class="grid grid-cols-2 gap-3">
+        <!-- 展開：日期選擇 -->
+        <div
+          v-if="datePanelExpanded"
+          class="shrink-0 border-b border-black/5 bg-white px-4 py-2.5 dark:border-white/10 dark:bg-[#1C1C1E]"
+        >
+          <input
+            v-model="date"
+            type="date"
+            class="w-full min-w-0 rounded-xl bg-[#F2F2F7] px-3 py-2 text-xs text-slate-800 dark:bg-[#2C2C2E] dark:text-slate-200"
+          />
+        </div>
+
+        <form
+          id="settlement-payment-form"
+          class="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3.5"
+          @submit.prevent="handleSubmit"
+        >
+          <!-- 首頁快速記一筆時顯示目標專案並支援即時切換 -->
+          <div
+            v-if="allowProjectSwitch && !editingTx && store.activeProjects.length > 0"
+            class="flex items-center justify-between gap-2 rounded-2xl bg-white px-3.5 py-2.5 shadow-sm dark:bg-[#1C1C1E]"
+          >
+            <span class="shrink-0 text-xs font-semibold text-slate-500 dark:text-slate-400">
+              {{ t('project.targetProjectLabel') }}
+            </span>
+            <select
+              :value="project.id"
+              class="min-w-0 max-w-[230px] truncate rounded-xl bg-slate-100 px-2.5 py-1.5 text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/40 dark:bg-[#2C2C2E] dark:text-white"
+              @change="emit('switchProject', ($event.target as HTMLSelectElement).value)"
+            >
+              <option
+                v-for="p in store.activeProjects"
+                :key="p.id"
+                :value="p.id"
+              >
+                {{ p.name }} ({{ p.baseCurrency }})
+              </option>
+            </select>
+          </div>
+
+          <!-- 分組 1：付款人與收款人 -->
+          <div class="grid grid-cols-2 gap-3 rounded-2xl bg-white p-3.5 shadow-sm dark:bg-[#1C1C1E]">
             <div>
-              <label class="mb-1 block text-xs font-semibold text-slate-500">
+              <label class="mb-1 block text-xs font-semibold text-slate-500 dark:text-slate-400">
                 {{ t('settle.fromLabel') }}
               </label>
               <select
                 v-model="fromId"
-                class="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                class="w-full rounded-xl bg-[#F2F2F7] px-3 py-2 text-sm font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/40 dark:bg-[#2C2C2E] dark:text-white"
               >
                 <option
                   v-for="m in project.members"
@@ -461,12 +516,12 @@ async function handleSubmit() {
               </select>
             </div>
             <div>
-              <label class="mb-1 block text-xs font-semibold text-slate-500">
+              <label class="mb-1 block text-xs font-semibold text-slate-500 dark:text-slate-400">
                 {{ t('settle.toLabel') }}
               </label>
               <select
                 v-model="toId"
-                class="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                class="w-full rounded-xl bg-[#F2F2F7] px-3 py-2 text-sm font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/40 dark:bg-[#2C2C2E] dark:text-white"
               >
                 <option
                   v-for="m in project.members"
@@ -479,36 +534,16 @@ async function handleSubmit() {
             </div>
           </div>
 
-          <div class="space-y-2">
+          <!-- 分組 2：金額與幣別 -->
+          <div class="space-y-2.5 rounded-2xl bg-white p-3.5 shadow-sm dark:bg-[#1C1C1E]">
             <div class="flex flex-wrap items-center justify-between gap-1.5">
-              <label class="block text-xs font-semibold text-slate-500">
+              <label class="block text-xs font-semibold text-slate-500 dark:text-slate-400">
                 {{ t('settle.paidAmountLabel') }} ({{ payCurrency }})
               </label>
 
-              <!-- 優先置頂快捷切換：結帳幣別（翡翠綠）、記帳幣別（天藍）醒目標記 -->
+              <!-- 優先置頂快捷切換：記帳幣別第一、結帳幣別第二 -->
               <div class="flex flex-wrap items-center gap-1.5">
                 <button
-                  type="button"
-                  class="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-bold transition"
-                  :class="
-                    payCurrency === projectSettlementCurrency
-                      ? 'bg-emerald-600 text-white shadow-sm dark:bg-emerald-500 dark:text-slate-950'
-                      : 'bg-emerald-500/12 text-emerald-700 ring-1 ring-emerald-500/35 hover:bg-emerald-500/20 dark:bg-emerald-500/15 dark:text-emerald-300'
-                  "
-                  @click="handleUserCurrencyChange(projectSettlementCurrency)"
-                >
-                  <span>
-                    {{
-                      projectSettlementCurrency === projectBaseCurrency
-                        ? t('settle.currencyTagBoth')
-                        : t('settle.currencyTagSettlement')
-                    }}
-                  </span>
-                  <span class="tabular-nums">{{ projectSettlementCurrency }}</span>
-                </button>
-
-                <button
-                  v-if="projectBaseCurrency !== projectSettlementCurrency"
                   type="button"
                   class="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-bold transition"
                   :class="
@@ -518,8 +553,29 @@ async function handleSubmit() {
                   "
                   @click="handleUserCurrencyChange(projectBaseCurrency)"
                 >
-                  <span>{{ t('settle.currencyTagBase') }}</span>
+                  <span>
+                    {{
+                      projectBaseCurrency === projectSettlementCurrency
+                        ? t('settle.currencyTagBoth')
+                        : t('settle.currencyTagBase')
+                    }}
+                  </span>
                   <span class="tabular-nums">{{ projectBaseCurrency }}</span>
+                </button>
+
+                <button
+                  v-if="projectSettlementCurrency !== projectBaseCurrency"
+                  type="button"
+                  class="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-bold transition"
+                  :class="
+                    payCurrency === projectSettlementCurrency
+                      ? 'bg-emerald-600 text-white shadow-sm dark:bg-emerald-500 dark:text-slate-950'
+                      : 'bg-emerald-500/12 text-emerald-700 ring-1 ring-emerald-500/35 hover:bg-emerald-500/20 dark:bg-emerald-500/15 dark:text-emerald-300'
+                  "
+                  @click="handleUserCurrencyChange(projectSettlementCurrency)"
+                >
+                  <span>{{ t('settle.currencyTagSettlement') }}</span>
+                  <span class="tabular-nums">{{ projectSettlementCurrency }}</span>
                 </button>
               </div>
             </div>
@@ -628,29 +684,35 @@ async function handleSubmit() {
             </div>
           </div>
 
-          <div class="grid grid-cols-2 gap-2.5">
-            <input
-              v-model="date"
-              type="date"
-              class="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-800 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
-            />
+          <!-- 分組 3：備註 -->
+          <div class="rounded-2xl bg-white px-3.5 py-2 shadow-sm dark:bg-[#1C1C1E]">
             <input
               v-model="note"
               type="text"
               maxlength="1000"
               :placeholder="t('daily.notePlaceholder')"
-              class="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-800 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+              class="w-full bg-transparent py-1.5 text-sm text-slate-900 placeholder-slate-400 focus:outline-none dark:text-white dark:placeholder-slate-500"
             />
           </div>
 
-          <p v-if="errorText" class="text-xs font-medium text-rose-500">
+          <p
+            v-if="errorText"
+            role="alert"
+            class="rounded-2xl bg-rose-50 px-3.5 py-2.5 text-xs font-semibold text-rose-600 dark:bg-rose-950/50 dark:text-rose-300"
+          >
             {{ errorText }}
           </p>
+        </form>
 
+        <!-- Sticky 固定底部儲存按鈕列 -->
+        <div
+          class="safe-sticky-pb shrink-0 border-t border-black/5 bg-white/95 px-4 pt-3 backdrop-blur-md dark:border-white/10 dark:bg-[#1C1C1E]/95 sm:pb-3"
+        >
           <button
             type="submit"
+            form="settlement-payment-form"
             :disabled="isSubmitting"
-            class="inline-flex w-full items-center justify-center gap-1.5 rounded-2xl bg-emerald-600 py-3 text-sm font-bold text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-emerald-500 dark:text-slate-950"
+            class="inline-flex w-full items-center justify-center gap-1.5 rounded-2xl bg-emerald-600 py-3 text-sm font-bold text-white shadow-sm transition hover:bg-emerald-700 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60 dark:bg-emerald-500 dark:text-slate-950"
           >
             <Loader2 v-if="isSubmitting" class="h-4 w-4 animate-spin" />
             <span>
@@ -661,7 +723,7 @@ async function handleSubmit() {
               }}
             </span>
           </button>
-        </form>
+        </div>
       </div>
     </div>
   </Teleport>

@@ -15,6 +15,7 @@ import {
   applyPercentFees,
   computeEffectiveCompoundFeePercent,
 } from '@/core/ledgerHelpers'
+import type { FeeBreakdown } from '@/schemas/ledgerSchema'
 import { parseCustomFeeRatesJson } from '@/schemas/userPrefsSchema'
 
 const FEE_RATES_STORAGE_KEY = 'clearbill_custom_fee_rates_v1'
@@ -44,6 +45,7 @@ function persistFeeRates(service: number, fx: number): void {
 
 interface Props {
   modelValue: number | null
+  feeBreakdown?: FeeBreakdown | null
   currency?: string
   currencies?: string[]
   currencyLabels?: Record<string, string>
@@ -61,6 +63,7 @@ interface Props {
 }
 
 const props = withDefaults(defineProps<Props>(), {
+  feeBreakdown: null,
   currency: 'TWD',
   currencies: undefined,
   currencyLabels: undefined,
@@ -79,6 +82,7 @@ const props = withDefaults(defineProps<Props>(), {
 
 const emit = defineEmits<{
   (e: 'update:modelValue', value: number | null): void
+  (e: 'update:feeBreakdown', value: FeeBreakdown | null): void
   (e: 'update:currency', value: string): void
 }>()
 
@@ -195,16 +199,101 @@ function showFeeAutoClearedNotice() {
   }, 3200)
 }
 
-function resetFeeState(notifyIfCleared = false) {
+let lastEmittedModelValue: number | null | undefined = props.modelValue
+let lastEmittedFeeSignature = ''
+
+function serializeFeeBreakdown(fb: FeeBreakdown | null | undefined): string {
+  if (!fb) return ''
+  return JSON.stringify({
+    b: fb.baseAmount,
+    s: fb.serviceFeePercent ?? 0,
+    f: fb.fxFeePercent ?? 0,
+  })
+}
+
+function buildCurrentFeeBreakdown(): FeeBreakdown | null {
+  if (feeBase.value === null || feeBase.value <= 0) return null
+  const s =
+    serviceFeeEnabled.value && parsedServiceFeePercent.value > 0
+      ? parsedServiceFeePercent.value
+      : undefined
+  const f =
+    fxFeeEnabled.value && parsedFxFeePercent.value > 0
+      ? parsedFxFeePercent.value
+      : undefined
+  if (s === undefined && f === undefined) return null
+  return {
+    baseAmount: feeBase.value,
+    ...(s !== undefined ? { serviceFeePercent: s } : {}),
+    ...(f !== undefined ? { fxFeePercent: f } : {}),
+  }
+}
+
+function emitModelValue(value: number | null) {
+  lastEmittedModelValue = value
+  emit('update:modelValue', value)
+}
+
+function emitFeeBreakdown(value: FeeBreakdown | null) {
+  const sig = serializeFeeBreakdown(value)
+  if (sig === lastEmittedFeeSignature) return
+  lastEmittedFeeSignature = sig
+  emit('update:feeBreakdown', value)
+}
+
+function resetFeeState(notifyIfCleared = false, emitUpdate = true) {
   const hadAppliedFee =
     feeBase.value !== null && (serviceFeeEnabled.value || fxFeeEnabled.value)
   feeBase.value = null
   serviceFeeEnabled.value = false
   fxFeeEnabled.value = false
+  if (emitUpdate) {
+    emitFeeBreakdown(null)
+  }
   if (notifyIfCleared && hadAppliedFee) {
     showFeeAutoClearedNotice()
   }
 }
+
+function hydrateFromFeeBreakdown(fb: FeeBreakdown | null | undefined) {
+  const sig = serializeFeeBreakdown(fb)
+  if (sig === lastEmittedFeeSignature) return
+  lastEmittedFeeSignature = sig
+  clearFeeNotice()
+  if (!fb || fb.baseAmount <= 0) {
+    feeBase.value = null
+    serviceFeeEnabled.value = false
+    fxFeeEnabled.value = false
+    return
+  }
+  const hasService =
+    typeof fb.serviceFeePercent === 'number' && fb.serviceFeePercent > 0
+  const hasFx = typeof fb.fxFeePercent === 'number' && fb.fxFeePercent > 0
+  if (!hasService && !hasFx) {
+    feeBase.value = null
+    serviceFeeEnabled.value = false
+    fxFeeEnabled.value = false
+    return
+  }
+  feeBase.value = fb.baseAmount
+  serviceFeeEnabled.value = hasService
+  fxFeeEnabled.value = hasFx
+  if (hasService) {
+    serviceFeePercentInput.value = String(fb.serviceFeePercent)
+  }
+  if (hasFx) {
+    fxFeePercentInput.value = String(fb.fxFeePercent)
+  }
+  feePanelExpanded.value = true
+}
+
+watch(
+  () => props.feeBreakdown,
+  (nextFb) => {
+    hydrateFromFeeBreakdown(nextFb)
+  },
+  { immediate: true, deep: true },
+)
 
 onBeforeUnmount(() => {
   clearFeeNotice()
@@ -219,7 +308,8 @@ function recalculateWithCurrentFees() {
       original,
       effectiveAllowDecimals.value,
     )
-    emit('update:modelValue', original)
+    emitFeeBreakdown(null)
+    emitModelValue(original)
     return
   }
 
@@ -233,14 +323,24 @@ function recalculateWithCurrentFees() {
     nextVal,
     effectiveAllowDecimals.value,
   )
-  emit('update:modelValue', nextVal)
+  emitFeeBreakdown(buildCurrentFeeBreakdown())
+  emitModelValue(nextVal)
 }
 
 watch(
   () => [props.modelValue, effectiveAllowDecimals.value] as const,
   ([nextVal, allowDec], [, prevAllowDec]) => {
     if (nextVal === null || nextVal === undefined) {
-      resetFeeState()
+      // 使用者剛輸入不完整算式（例如 "100+"）所 emit 的 null，必須保留輸入框內容不可清空
+      if (
+        lastEmittedModelValue === null &&
+        isExpressionInput.value &&
+        evaluatedExpressionValue.value === null
+      ) {
+        return
+      }
+      lastEmittedModelValue = null
+      resetFeeState(false, false)
       if (displayValue.value !== '') {
         displayValue.value = ''
       }
@@ -251,14 +351,18 @@ watch(
       const rounded = Math.round(nextVal)
       resetFeeState()
       displayValue.value = formatGroupedNumberInput(rounded, false, 0)
-      emit('update:modelValue', rounded)
+      emitModelValue(rounded)
       return
     }
     const currentParsed = isExpressionInput.value
       ? evaluatedExpressionValue.value
       : parseGroupedNumberInput(displayValue.value)
     if (currentParsed !== nextVal || (allowDec === false && displayValue.value.includes('.'))) {
-      resetFeeState()
+      lastEmittedModelValue = nextVal
+      // 若外部同時提供了對應此筆交易的 feeBreakdown（例如開啟編輯視窗），保留還原的費用狀態
+      if (!props.feeBreakdown) {
+        resetFeeState(false, false)
+      }
       displayValue.value = formatGroupedNumberInput(
         nextVal,
         allowDec,
@@ -281,7 +385,7 @@ function handleInput(event: Event) {
       target.value = sanitized
     }
     const evaluated = evaluateAmountExpression(sanitized, targetDecimals.value)
-    emit('update:modelValue', evaluated)
+    emitModelValue(evaluated)
     return
   }
 
@@ -295,7 +399,7 @@ function handleInput(event: Event) {
     target.value = formatted
   }
   const parsed = parseGroupedNumberInput(formatted)
-  emit('update:modelValue', parsed)
+  emitModelValue(parsed)
 }
 
 function commitExpressionIfValid() {
@@ -307,7 +411,7 @@ function commitExpressionIfValid() {
       props.maxDecimals,
     )
     displayValue.value = formatted
-    emit('update:modelValue', evaluatedExpressionValue.value)
+    emitModelValue(evaluatedExpressionValue.value)
   }
 }
 
@@ -336,8 +440,16 @@ function appendOperator(op: '+' | '-' | '×' | '÷') {
 
   displayValue.value = replaced
   const evaluated = evaluateAmountExpression(replaced, targetDecimals.value)
-  emit('update:modelValue', evaluated)
-  inputElRef.value?.focus()
+  emitModelValue(evaluated)
+  const el = inputElRef.value
+  if (el) {
+    el.focus()
+    try {
+      el.setSelectionRange(replaced.length, replaced.length)
+    } catch {
+      // 忽略不支援 selectionRange 之環境
+    }
+  }
 }
 
 function ensureFeeBase(): boolean {
@@ -425,20 +537,20 @@ const sizeClasses = computed(() => {
   if (props.size === 'lg') {
     return {
       wrapper: 'rounded-2xl',
-      select: 'w-[86px] py-3 pl-2.5 pr-1 text-xs font-bold',
+      select: 'min-w-[86px] max-w-[144px] py-3 pl-2.5 pr-1.5 text-xs font-bold',
       input: 'px-3.5 py-3 text-xl font-bold',
     }
   }
   if (props.size === 'sm') {
     return {
       wrapper: 'rounded-lg',
-      select: 'w-[76px] py-1.5 pl-2 pr-1 text-[11px] font-bold',
+      select: 'min-w-[76px] max-w-[128px] py-1.5 pl-2 pr-1 text-[11px] font-bold',
       input: 'px-2.5 py-1.5 text-sm font-medium',
     }
   }
   return {
     wrapper: 'rounded-xl',
-    select: 'w-[82px] py-2.5 pl-2 pr-1 text-xs font-bold',
+    select: 'min-w-[82px] max-w-[136px] py-2.5 pl-2 pr-1.5 text-xs font-bold',
     input: 'px-3 py-2.5 text-base font-bold',
   }
 })

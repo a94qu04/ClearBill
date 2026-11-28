@@ -11,7 +11,6 @@ import {
   Loader2,
   Plus,
   RefreshCw,
-  RotateCcw,
   Users,
   Wallet,
   X,
@@ -23,12 +22,15 @@ import { formatCurrencyAmount } from '@/core/currency'
 import { findPotentialDuplicateTransaction } from '@/core/duplicateDetector'
 import { compressImageFileToDataUrl } from '@/platform/imageCompressor'
 import {
+  buildOrderedCurrencyOptions,
+  formatCompactHeaderDate,
   getCurrentTimeHHmm,
   getSuggestedExchangeRate,
   getTodayIso,
 } from '@/core/ledgerHelpers'
 import type { ParsedQuickIntakeResult } from '@/core/quickIntakeParser'
 import type {
+  FeeBreakdown,
   Project,
   ProjectMember,
   SplitConfig,
@@ -36,7 +38,6 @@ import type {
 } from '@/schemas/ledgerSchema'
 import CategoryIconBadge from '@/components/CategoryIconBadge.vue'
 import CurrencyAmountInput from '@/components/CurrencyAmountInput.vue'
-import CurrencyQuickAddPicker from '@/components/CurrencyQuickAddPicker.vue'
 import EntryModeSelector, { type EntryMode } from '@/components/EntryModeSelector.vue'
 import MemberAvatar from '@/components/MemberAvatar.vue'
 import MoneyText from '@/components/MoneyText.vue'
@@ -76,6 +77,7 @@ const splitPreset = ref<SplitConfig | null>(null)
 const splitDraftPreview = ref<SplitConfig | null>(null)
 const splitResetKey = ref(0)
 const amount = ref<number | null>(null)
+const feeBreakdown = ref<FeeBreakdown | null>(null)
 const currency = ref('TWD')
 const exchangeRate = ref<number | null>(1)
 const exchangeRateSource = ref<
@@ -176,7 +178,6 @@ function scrollCategoryBar(direction: 'left' | 'right') {
 
 const inlineNewCategoryOpen = ref(false)
 const inlineNewCategoryName = ref('')
-const inlineNewCurrencyOpen = ref(false)
 const ratePanelExpanded = ref(false)
 const dateTimePanelExpanded = ref(false)
 const photoPanelExpanded = ref(false)
@@ -186,6 +187,10 @@ const isCompressingImages = ref(false)
 let formSessionId = 0
 const initialSnapshot = ref('')
 const snapshotReady = ref(false)
+
+const headerDateLabel = computed(() =>
+  formatCompactHeaderDate(date.value, getTodayIso(), t('project.todayShort'), time.value),
+)
 
 /** 收合拆帳面板時顯示的結構化摘要（墊付者小圈圈＋墊付文案＋拆帳模式＋分攤成員小圈圈） */
 const splitSummaryMeta = computed(() => {
@@ -311,11 +316,6 @@ function handleUserCurrencyChange(nextCurrency: string) {
   }
 }
 
-function handleInlineCurrencyAdded(code: string) {
-  handleUserCurrencyChange(code)
-  inlineNewCurrencyOpen.value = false
-}
-
 async function handleSaveSplitGroup(payload: { name: string; memberIds: string[] }) {
   if (!props.project) return
   const saved = await store.saveProjectSplitGroup(
@@ -338,6 +338,7 @@ function captureFormSnapshot(): string {
   return JSON.stringify({
     txType: txType.value,
     amount: amount.value ?? null,
+    feeBreakdown: feeBreakdown.value ?? null,
     currency: currency.value,
     exchangeRate: exchangeRate.value ?? null,
     categoryKey: categoryKey.value,
@@ -393,14 +394,27 @@ const allCategories = computed(() =>
   })),
 )
 
-/** 確保目前表單幣別（例如來自快速入帳預填的外幣）一定存在於下拉選單中 */
-const currencyOptions = computed(() => {
-  const list = [...store.availableCurrencies]
-  if (currency.value && !list.includes(currency.value)) {
-    list.unshift(currency.value)
-  }
-  return list
+/** 幣別下拉選單：記帳幣別列第一項、結帳幣別列第二項並標記 */
+const orderedCurrencies = computed(() => {
+  const baseCur = props.project?.baseCurrency || store.defaultCurrency
+  const settleCur = props.project
+    ? store.getProjectSettlementCurrency(props.project)
+    : baseCur
+  return buildOrderedCurrencyOptions({
+    baseCurrency: baseCur,
+    settlementCurrency: settleCur,
+    availableCurrencies: store.availableCurrencies,
+    extraCurrencies: [currency.value],
+    tags: {
+      base: t('settle.currencyTagBaseShort'),
+      settlement: t('settle.currencyTagSettlementShort'),
+      both: t('settle.currencyTagBothShort'),
+    },
+  })
 })
+
+const currencyOptions = computed(() => orderedCurrencies.value.currencies)
+const currencyOptionLabels = computed(() => orderedCurrencies.value.labels)
 
 const needsExchangeRate = computed(() => {
   if (!props.project) return false
@@ -486,7 +500,6 @@ function hydrateForm() {
   if (!props.project) return
   errorText.value = ''
   inlineNewCategoryOpen.value = false
-  inlineNewCurrencyOpen.value = false
   ratePanelExpanded.value = false
   dateTimePanelExpanded.value = false
   photoPanelExpanded.value = false
@@ -496,6 +509,7 @@ function hydrateForm() {
     const tx = props.editingTx
     txType.value = tx.type === 'refund' ? 'refund' : 'expense'
     amount.value = tx.amount
+    feeBreakdown.value = tx.feeBreakdown ? { ...tx.feeBreakdown } : null
     currency.value = tx.currency
     exchangeRate.value = tx.exchangeRateToBase ?? 1
     exchangeRateSource.value = 'saved'
@@ -506,7 +520,7 @@ function hydrateForm() {
     links.value = tx.links ? [...tx.links] : []
     receiptImages.value = tx.receiptImages ? [...tx.receiptImages] : []
     photoPanelExpanded.value = receiptImages.value.length > 0
-    dateTimePanelExpanded.value = tx.date !== getTodayIso() || (Boolean(tx.time) && tx.time !== '00:00')
+    dateTimePanelExpanded.value = false
     splitPreset.value = cloneSplitConfig(tx.splitConfig)
     splitPanelExpanded.value = Boolean(
       tx.splitConfig &&
@@ -518,6 +532,7 @@ function hydrateForm() {
     const src = props.duplicateTx
     txType.value = src.type === 'refund' ? 'refund' : 'expense'
     amount.value = src.amount
+    feeBreakdown.value = src.feeBreakdown ? { ...src.feeBreakdown } : null
     currency.value = src.currency
     const resolved = resolveExchangeRateForCurrency(
       src.currency,
@@ -540,6 +555,7 @@ function hydrateForm() {
     const pf = props.prefill
     txType.value = 'expense'
     amount.value = pf.amount
+    feeBreakdown.value = null
     const prefillCurrency = pf.currency?.trim().toUpperCase() || props.project.baseCurrency
     currency.value = prefillCurrency
     const resolved = resolveExchangeRateForCurrency(
@@ -561,6 +577,7 @@ function hydrateForm() {
   } else {
     txType.value = props.initialTxType === 'refund' ? 'refund' : 'expense'
     amount.value = null
+    feeBreakdown.value = null
     // 按專案自動記憶上次記帳使用之幣別（出國連續記當地幣別不必每筆重選）
     const lastCur = store.getProjectLastCurrency(
       props.project.id,
@@ -772,6 +789,7 @@ async function handleSubmit(continueAdding = false) {
     links: links.value.length > 0 ? links.value : undefined,
     receiptImages:
       receiptImages.value.length > 0 ? [...receiptImages.value] : undefined,
+    feeBreakdown: feeBreakdown.value ?? undefined,
     splitConfig: splitConfig.value,
   }
 
@@ -815,8 +833,9 @@ async function handleSubmit(continueAdding = false) {
     }
     await store.addTransaction(payload)
     if (continueAdding) {
-      // 存並續記：保留幣別、匯率、分類、日期與分攤明細，清空金額、備註與收據立刻記下一筆
+      // 存並續記：保留幣別、匯率、分類、日期與分攤明細，清空金額、費用明細、備註與收據立刻記下一筆
       amount.value = null
+      feeBreakdown.value = null
       note.value = ''
       time.value = ''
       links.value = []
@@ -867,21 +886,28 @@ async function handleSubmit(continueAdding = false) {
         <div
           class="flex max-h-[92vh] w-full max-w-lg flex-col overflow-hidden rounded-t-3xl bg-[#F2F2F7] shadow-2xl dark:bg-[#0D0D0F] sm:rounded-3xl"
         >
-          <!-- Apple 風格頂部 Sheet 標題列（左取消、中可切換帳務類型按鈕、右關閉） -->
+          <!-- Apple 風格頂部 Sheet 標題列（左日期膠囊、中可切換帳務類型／標題、右關閉） -->
           <div
-            class="relative z-20 flex shrink-0 items-center justify-between border-b border-black/5 bg-white/90 px-4 py-3 backdrop-blur-md dark:border-white/10 dark:bg-[#1C1C1E]/95"
+            class="relative z-20 flex shrink-0 items-center justify-between gap-2 border-b border-black/5 bg-white/90 px-4 py-3 backdrop-blur-md dark:border-white/10 dark:bg-[#1C1C1E]/95"
           >
             <button
               type="button"
-              class="rounded-lg px-2 py-1 text-sm font-medium text-slate-500 transition hover:text-slate-900 dark:text-slate-400 dark:hover:text-white"
+              :aria-expanded="dateTimePanelExpanded"
+              class="inline-flex max-w-[116px] shrink-0 items-center gap-1 rounded-full px-2.5 py-1.5 text-xs font-semibold transition active:scale-95"
+              :class="
+                dateTimePanelExpanded || date !== getTodayIso() || (time && time !== '00:00')
+                  ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-950'
+                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-[#2C2C2E] dark:text-slate-300'
+              "
               @mousedown.prevent
-              @click.stop="requestClose"
+              @click="dateTimePanelExpanded = !dateTimePanelExpanded"
             >
-              {{ t('confirm.cancelButton') }}
+              <Calendar class="h-3.5 w-3.5 shrink-0" />
+              <span class="truncate tabular-nums">{{ headerDateLabel }}</span>
             </button>
             <h2
               v-if="editingTx"
-              class="text-[15px] font-bold text-slate-900 dark:text-white"
+              class="truncate text-[15px] font-bold text-slate-900 dark:text-white"
             >
               {{ t('project.editExpenseTitle') }}
             </h2>
@@ -893,12 +919,39 @@ async function handleSubmit(continueAdding = false) {
             <button
               type="button"
               :aria-label="t('settings.close')"
-              class="inline-flex h-8 w-8 items-center justify-center rounded-full bg-slate-100 text-slate-500 transition hover:bg-slate-200 dark:bg-[#2C2C2E] dark:text-slate-300"
+              class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500 transition hover:bg-slate-200 dark:bg-[#2C2C2E] dark:text-slate-300"
               @mousedown.prevent
               @click.stop="requestClose"
             >
               <X class="h-4 w-4" />
             </button>
+          </div>
+
+          <!-- 展開：日期與時間（緊接標題列下方） -->
+          <div
+            v-if="dateTimePanelExpanded"
+            class="grid shrink-0 grid-cols-1 gap-2 border-b border-black/5 bg-white px-4 py-2.5 dark:border-white/10 dark:bg-[#1C1C1E] sm:grid-cols-2"
+          >
+            <input
+              v-model="date"
+              type="date"
+              class="w-full min-w-0 rounded-xl bg-[#F2F2F7] px-3 py-2 text-xs text-slate-800 dark:bg-[#2C2C2E] dark:text-slate-200"
+            />
+            <div class="flex min-w-0 items-center gap-1.5">
+              <input
+                v-model="time"
+                type="time"
+                class="min-w-0 flex-1 rounded-xl bg-[#F2F2F7] px-2.5 py-2 text-xs text-slate-800 dark:bg-[#2C2C2E] dark:text-slate-200"
+              />
+              <button
+                type="button"
+                class="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-xl bg-emerald-500/15 px-2.5 py-2 text-xs font-semibold text-emerald-700 dark:text-emerald-300"
+                @click="time = getCurrentTimeHHmm()"
+              >
+                <Clock class="h-3.5 w-3.5 shrink-0" />
+                <span>{{ t('daily.useNowTime') }}</span>
+              </button>
+            </div>
           </div>
 
           <!-- 中間可捲動表單主體（Apple 分組卡片：3 秒一屏記完，進階項目按需展開） -->
@@ -930,41 +983,23 @@ async function handleSubmit(continueAdding = false) {
               </select>
             </div>
 
-            <!-- 分組 1：金額英雄卡 ＋ 幣別快速新增 ＋ 單行可展開匯率 -->
+            <!-- 分組 1：金額英雄卡 ＋ 單行可展開匯率 -->
             <div class="space-y-2.5 rounded-2xl bg-white p-3.5 shadow-sm dark:bg-[#1C1C1E]">
-              <div class="flex items-start gap-2">
-                <div class="min-w-0 flex-1">
-                  <CurrencyAmountInput
-                    v-model="amount"
-                    :currency="currency"
-                    :currencies="currencyOptions"
-                    show-currency-select
-                    enable-expression
-                    show-math-toolbar
-                    show-service-fee-button
-                    show-fx-fee-button
-                    size="lg"
-                    :autofocus="!editingTx"
-                    placeholder="0"
-                    @update:currency="handleUserCurrencyChange"
-                  />
-                </div>
-                <button
-                  type="button"
-                  :title="t('project.quickAddCurrencyButton')"
-                  :aria-label="t('project.quickAddCurrencyButton')"
-                  class="mt-1 inline-flex h-11 w-9 shrink-0 items-center justify-center rounded-xl bg-slate-100 text-slate-500 transition hover:bg-emerald-50 hover:text-emerald-600 dark:bg-[#2C2C2E] dark:text-slate-300"
-                  @click="inlineNewCurrencyOpen = !inlineNewCurrencyOpen"
-                >
-                  <Plus class="h-4 w-4" />
-                </button>
-              </div>
-
-              <CurrencyQuickAddPicker
-                v-if="inlineNewCurrencyOpen"
-                @added="handleInlineCurrencyAdded"
-                @close="inlineNewCurrencyOpen = false"
-                @toast="emit('toast', $event)"
+              <CurrencyAmountInput
+                v-model="amount"
+                v-model:fee-breakdown="feeBreakdown"
+                :currency="currency"
+                :currencies="currencyOptions"
+                :currency-labels="currencyOptionLabels"
+                show-currency-select
+                enable-expression
+                show-math-toolbar
+                show-service-fee-button
+                show-fx-fee-button
+                size="lg"
+                :autofocus="!editingTx"
+                placeholder="0"
+                @update:currency="handleUserCurrencyChange"
               />
 
               <!-- 外幣匯率預設精簡為 1 行摘要列，點開才顯示即時參考與現金／刷卡價預設 -->
@@ -1124,19 +1159,8 @@ async function handleSubmit(continueAdding = false) {
               </div>
             </div>
 
-            <!-- 分組 2：項目備註 ＋ 單行橫滑分類膠囊 -->
+            <!-- 分組 2：單行橫滑分類膠囊（上） ＋ 項目名稱與相機圖示（下） -->
             <div class="divide-y divide-slate-100 rounded-2xl bg-white shadow-sm dark:divide-white/10 dark:bg-[#1C1C1E]">
-              <input
-                v-model="note"
-                type="text"
-                :placeholder="
-                  txType === 'refund'
-                    ? t('project.refundTitlePlaceholder')
-                    : t('project.expenseTitlePlaceholder')
-                "
-                class="w-full rounded-t-2xl bg-transparent px-4 py-3 text-sm text-slate-900 placeholder-slate-400 focus:outline-none dark:text-white dark:placeholder-slate-500"
-              />
-
               <div class="space-y-2 px-3.5 py-2.5">
                 <div class="relative flex items-center gap-1">
                   <button
@@ -1233,134 +1257,87 @@ async function handleSubmit(continueAdding = false) {
                   </button>
                 </div>
               </div>
-            </div>
 
-            <!-- Apple 提醒事項風格單行快捷工具列（日期時間 / 收據照片 / 退款切換，按需展開不佔位） -->
-            <div class="space-y-2">
-              <div class="no-scrollbar flex flex-nowrap items-center gap-2 overflow-x-auto px-0.5">
-                <button
-                  type="button"
-                  class="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-semibold shadow-sm transition"
-                  :class="
-                    dateTimePanelExpanded || date !== getTodayIso() || time
-                      ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-950'
-                      : 'bg-white text-slate-600 dark:bg-[#1C1C1E] dark:text-slate-300'
+              <div class="flex items-center gap-2 px-3.5 py-1.5">
+                <input
+                  v-model="note"
+                  type="text"
+                  :placeholder="
+                    txType === 'refund'
+                      ? t('project.refundTitlePlaceholder')
+                      : t('project.expenseTitlePlaceholder')
                   "
-                  @click="dateTimePanelExpanded = !dateTimePanelExpanded"
-                >
-                  <Calendar class="h-3.5 w-3.5" />
-                  <span>{{ date === getTodayIso() && !time ? t('project.todayShort') : `${date}${time ? ` ${time}` : ''}` }}</span>
-                </button>
-
+                  class="min-w-0 flex-1 bg-transparent py-1.5 text-sm text-slate-900 placeholder-slate-400 focus:outline-none dark:text-white dark:placeholder-slate-500"
+                />
                 <button
                   type="button"
-                  class="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-semibold shadow-sm transition"
+                  :aria-label="t('photo.addButton')"
+                  :title="t('photo.addButton')"
+                  class="relative inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition active:scale-95"
                   :class="
                     photoPanelExpanded || receiptImages.length > 0
                       ? 'bg-emerald-600 text-white dark:bg-emerald-500 dark:text-slate-950'
-                      : 'bg-white text-slate-600 dark:bg-[#1C1C1E] dark:text-slate-300'
+                      : 'bg-slate-100 text-slate-500 hover:bg-slate-200 hover:text-slate-800 dark:bg-[#2C2C2E] dark:text-slate-300'
                   "
                   @click="photoPanelExpanded = !photoPanelExpanded"
                 >
-                  <Camera class="h-3.5 w-3.5" />
-                  <span>
-                    {{
-                      receiptImages.length > 0
-                        ? `${t('photo.addButton')} (${receiptImages.length})`
-                        : t('photo.addButton')
-                    }}
+                  <Camera class="h-4 w-4" />
+                  <span
+                    v-if="receiptImages.length > 0"
+                    class="absolute -right-1 -top-1 inline-flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-slate-900 px-1 text-[9px] font-bold text-white ring-1 ring-white dark:bg-white dark:text-slate-950 dark:ring-[#1C1C1E]"
+                  >
+                    {{ receiptImages.length }}
                   </span>
                 </button>
-
-                <button
-                  type="button"
-                  class="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-semibold shadow-sm transition"
-                  :class="
-                    txType === 'refund'
-                      ? 'bg-emerald-600 text-white dark:bg-emerald-500 dark:text-slate-950'
-                      : 'bg-white text-slate-600 dark:bg-[#1C1C1E] dark:text-slate-300'
-                  "
-                  @click="txType = txType === 'refund' ? 'expense' : 'refund'"
-                >
-                  <RotateCcw class="h-3.5 w-3.5" />
-                  <span>{{ t('project.typeRefund') }}</span>
-                </button>
               </div>
+            </div>
 
-              <!-- 展開：日期與時間 -->
-              <div
-                v-if="dateTimePanelExpanded"
-                class="grid grid-cols-1 gap-2 rounded-2xl bg-white p-3 shadow-sm dark:bg-[#1C1C1E] sm:grid-cols-2"
-              >
-                <input
-                  v-model="date"
-                  type="date"
-                  class="w-full min-w-0 rounded-xl bg-[#F2F2F7] px-3 py-2 text-xs text-slate-800 dark:bg-[#2C2C2E] dark:text-slate-200"
-                />
-                <div class="flex min-w-0 items-center gap-1.5">
+            <!-- 展開：收據照片 -->
+            <div
+              v-if="photoPanelExpanded || receiptImages.length > 0"
+              class="space-y-2 rounded-2xl bg-white p-3 shadow-sm dark:bg-[#1C1C1E]"
+            >
+              <div class="flex items-center justify-between">
+                <span class="text-xs font-semibold text-slate-500 dark:text-slate-400">
+                  {{ t('photo.title') }}
+                </span>
+                <label
+                  v-if="receiptImages.length < 3"
+                  class="inline-flex cursor-pointer items-center gap-1 rounded-full bg-emerald-500/15 px-2.5 py-1 text-xs font-semibold text-emerald-700 hover:bg-emerald-500/25 dark:text-emerald-300"
+                >
+                  <Camera class="h-3.5 w-3.5" />
+                  <span>{{ t('photo.addButton') }}</span>
                   <input
-                    v-model="time"
-                    type="time"
-                    class="min-w-0 flex-1 rounded-xl bg-[#F2F2F7] px-2.5 py-2 text-xs text-slate-800 dark:bg-[#2C2C2E] dark:text-slate-200"
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    class="hidden"
+                    @change="handleImageFilesSelected"
+                  />
+                </label>
+              </div>
+              <div v-if="receiptImages.length > 0" class="flex gap-2">
+                <div
+                  v-for="(img, idx) in receiptImages"
+                  :key="idx"
+                  class="relative h-16 w-16 overflow-hidden rounded-xl bg-slate-100 dark:bg-[#2C2C2E]"
+                >
+                  <img
+                    :src="img"
+                    alt="receipt preview"
+                    class="h-full w-full cursor-pointer object-cover"
+                    @click="
+                      emit('previewPhotos', { photos: receiptImages, index: idx })
+                    "
                   />
                   <button
                     type="button"
-                    class="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-xl bg-emerald-500/15 px-2.5 py-2 text-xs font-semibold text-emerald-700 dark:text-emerald-300"
-                    @click="time = getCurrentTimeHHmm()"
+                    :aria-label="t('photo.remove')"
+                    class="absolute right-0.5 top-0.5 rounded-full bg-black/75 p-0.5 text-white"
+                    @click="removeImage(idx)"
                   >
-                    <Clock class="h-3.5 w-3.5 shrink-0" />
-                    <span>{{ t('daily.useNowTime') }}</span>
+                    <X class="h-3 w-3" />
                   </button>
-                </div>
-              </div>
-
-              <!-- 展開：收據照片 -->
-              <div
-                v-if="photoPanelExpanded || receiptImages.length > 0"
-                class="space-y-2 rounded-2xl bg-white p-3 shadow-sm dark:bg-[#1C1C1E]"
-              >
-                <div class="flex items-center justify-between">
-                  <span class="text-xs font-semibold text-slate-500 dark:text-slate-400">
-                    {{ t('photo.title') }}
-                  </span>
-                  <label
-                    v-if="receiptImages.length < 3"
-                    class="inline-flex cursor-pointer items-center gap-1 rounded-full bg-emerald-500/15 px-2.5 py-1 text-xs font-semibold text-emerald-700 hover:bg-emerald-500/25 dark:text-emerald-300"
-                  >
-                    <Camera class="h-3.5 w-3.5" />
-                    <span>{{ t('photo.addButton') }}</span>
-                    <input
-                      type="file"
-                      accept="image/*"
-                      multiple
-                      class="hidden"
-                      @change="handleImageFilesSelected"
-                    />
-                  </label>
-                </div>
-                <div v-if="receiptImages.length > 0" class="flex gap-2">
-                  <div
-                    v-for="(img, idx) in receiptImages"
-                    :key="idx"
-                    class="relative h-16 w-16 overflow-hidden rounded-xl bg-slate-100 dark:bg-[#2C2C2E]"
-                  >
-                    <img
-                      :src="img"
-                      alt="receipt preview"
-                      class="h-full w-full cursor-pointer object-cover"
-                      @click="
-                        emit('previewPhotos', { photos: receiptImages, index: idx })
-                      "
-                    />
-                    <button
-                      type="button"
-                      :aria-label="t('photo.remove')"
-                      class="absolute right-0.5 top-0.5 rounded-full bg-black/75 p-0.5 text-white"
-                      @click="removeImage(idx)"
-                    >
-                      <X class="h-3 w-3" />
-                    </button>
-                  </div>
                 </div>
               </div>
             </div>
@@ -1384,11 +1361,8 @@ async function handleSubmit(continueAdding = false) {
                     <Users class="h-4 w-4" />
                   </span>
                   <div class="min-w-0 flex-1">
-                    <div class="text-xs font-bold text-slate-900 dark:text-white">
-                      {{ t('project.splitBreakdownLabel') }}
-                    </div>
-                    <div class="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px]">
-                      <!-- 墊付者小圈圈＋先付文案 -->
+                    <div class="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px]">
+                      <!-- 墊付者小圈圈＋付款文案 -->
                       <span
                         class="inline-flex items-center gap-1 rounded-full bg-slate-100 py-0.5 pl-1 pr-2 font-semibold text-slate-800 dark:bg-white/10 dark:text-slate-100"
                       >
