@@ -333,17 +333,18 @@
     "deleteAllTxSuccessToast": "全 {count} 件の明細を削除しました（ゴミ箱から復元可能）"
   },
   "profile": {
-    "sectionTitle": "マイプロフィール・アイコン",
+    "sectionTitle": "プロフィール",
     "sectionDesc": "新規プロジェクトや共同編集で使う自分の名前とアイコン画像を設定できます。",
     "namePlaceholder": "表示名を入力（例：たろう）",
     "uploadAvatar": "画像をアップロード",
     "removeAvatar": "画像を削除",
     "useMyProfile": "マイ設定を適用",
-    "applyToExistingProjects": "既存プロジェクトの自分の名前・アイコンにも反映する",
+    "applyToExistingProjects": "既存プロジェクトのデータも同期更新",
     "paymentInfoLabel": "受取口座・送金先（任意）",
     "paymentInfoPlaceholder": "例：銀行名・口座番号や PayPay ID など",
     "paymentInfoCopiedToast": "送金先情報をコピーしました！",
     "saveButton": "プロフィールを保存",
+    "cancelChangesButton": "変更を取消",
     "savedToast": "名前とアイコンを保存しました！"
   },
   "settle": {

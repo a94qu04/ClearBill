@@ -63,6 +63,14 @@ function handleRemoveProfileAvatar() {
   profileAvatarImage.value = undefined
 }
 
+function handleCancelProfileChanges() {
+  profileDisplayName.value = store.userProfile.displayName
+  profileAvatarColor.value = store.userProfile.avatarColor || AVATAR_PALETTE[0]
+  profileAvatarImage.value = store.userProfile.avatarImage
+  profilePaymentInfo.value = store.userProfile.paymentInfo ?? ''
+  isColorPickerOpen.value = false
+}
+
 async function handleSaveProfile() {
   if (isSavingProfile.value) return
   isSavingProfile.value = true
@@ -128,7 +136,7 @@ async function handleSaveProfile() {
             class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-900 focus:border-emerald-500 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-white"
             @keyup.enter="handleSaveProfile"
           />
-          <div class="flex items-center gap-2">
+          <div class="flex flex-wrap items-center gap-2">
             <label
               class="cursor-pointer text-[11px] font-semibold text-emerald-600 hover:underline dark:text-emerald-400"
             >
@@ -148,58 +156,55 @@ async function handleSaveProfile() {
             >
               {{ t('profile.removeAvatar') }}
             </button>
+            <button
+              type="button"
+              class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-semibold transition"
+              :class="
+                isColorPickerOpen
+                  ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-950'
+                  : 'bg-white text-slate-600 shadow-xs hover:text-slate-900 dark:bg-slate-900 dark:text-slate-300'
+              "
+              @click="isColorPickerOpen = !isColorPickerOpen"
+            >
+              <span
+                class="h-3 w-3 rounded-full ring-1 ring-black/15"
+                :style="{ backgroundColor: profileAvatarColor }"
+              />
+              <span>{{ t('settings.categoryColorLabel') }}</span>
+              <ChevronDown
+                class="h-3 w-3 transition-transform"
+                :class="isColorPickerOpen ? 'rotate-180' : ''"
+              />
+            </button>
           </div>
         </div>
       </div>
 
-      <!-- 頭像底色選取（與分類底色相同：預設收合膠囊，點擊後展開色票與自訂調色盤） -->
-      <div class="space-y-2 pt-0.5">
+      <!-- 點擊「底色」後展開之色票與自訂調色盤 -->
+      <div
+        v-if="isColorPickerOpen"
+        class="flex flex-wrap items-center gap-2 rounded-xl bg-white p-2.5 shadow-xs dark:bg-slate-900"
+      >
         <button
+          v-for="color in AVATAR_PALETTE"
+          :key="color"
           type="button"
-          class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold transition"
+          class="h-6 w-6 rounded-full transition"
+          :style="{ backgroundColor: color }"
           :class="
-            isColorPickerOpen
-              ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-950'
-              : 'bg-white text-slate-600 shadow-xs hover:text-slate-900 dark:bg-slate-900 dark:text-slate-300'
+            profileAvatarColor.toLowerCase() === color.toLowerCase()
+              ? 'scale-110 ring-2 ring-slate-900 ring-offset-2 dark:ring-white dark:ring-offset-slate-900'
+              : 'opacity-80 hover:opacity-100'
           "
-          @click="isColorPickerOpen = !isColorPickerOpen"
+          @click="profileAvatarColor = color"
+        />
+        <label
+          class="inline-flex cursor-pointer items-center gap-1 rounded-full border border-dashed border-slate-300 px-2 py-0.5 text-[10px] font-semibold text-slate-600 hover:border-emerald-500 hover:text-emerald-600 dark:border-slate-600 dark:text-slate-300"
         >
-          <span
-            class="h-3 w-3 rounded-full ring-1 ring-black/15"
-            :style="{ backgroundColor: profileAvatarColor }"
-          />
-          <span>{{ t('settings.categoryColorLabel') }}</span>
-          <ChevronDown
-            class="h-3 w-3 transition-transform"
-            :class="isColorPickerOpen ? 'rotate-180' : ''"
-          />
-        </button>
-
-        <div
-          v-if="isColorPickerOpen"
-          class="flex flex-wrap items-center gap-2 rounded-xl bg-white p-2.5 shadow-xs dark:bg-slate-900"
-        >
-          <button
-            v-for="color in AVATAR_PALETTE"
-            :key="color"
-            type="button"
-            class="h-6 w-6 rounded-full transition"
-            :style="{ backgroundColor: color }"
-            :class="
-              profileAvatarColor.toLowerCase() === color.toLowerCase()
-                ? 'scale-110 ring-2 ring-slate-900 ring-offset-2 dark:ring-white dark:ring-offset-slate-900'
-                : 'opacity-80 hover:opacity-100'
-            "
-            @click="profileAvatarColor = color"
-          />
-          <label
-            class="inline-flex cursor-pointer items-center gap-1 rounded-full border border-dashed border-slate-300 px-2 py-0.5 text-[10px] font-semibold text-slate-600 hover:border-emerald-500 hover:text-emerald-600 dark:border-slate-600 dark:text-slate-300"
-          >
-            <Palette class="h-3 w-3" />
-            <span>{{ t('settings.customColorPicker') }}</span>
-            <input v-model="profileAvatarColor" type="color" class="sr-only" />
-          </label>
-        </div>
+          <Palette class="h-3 w-3" />
+          <span>{{ t('settings.customColorPicker') }}</span>
+          <input v-model="profileAvatarColor" type="color" class="sr-only" />
+        </label>
       </div>
 
       <!-- 選填：我的收款帳號／轉帳資訊（結算與一鍵分享時自動帶出） -->
@@ -231,14 +236,24 @@ async function handleSaveProfile() {
         <span>{{ t('profile.applyToExistingProjects') }}</span>
       </label>
 
-      <button
-        type="button"
-        :disabled="isSavingProfile"
-        class="w-full rounded-xl bg-slate-900 py-2 text-xs font-bold text-white transition hover:bg-slate-800 disabled:opacity-50 dark:bg-emerald-500 dark:text-slate-950 dark:hover:bg-emerald-400"
-        @click="handleSaveProfile"
-      >
-        {{ t('profile.saveButton') }}
-      </button>
+      <div class="flex items-center gap-2">
+        <button
+          type="button"
+          :disabled="isSavingProfile"
+          class="flex-[2] rounded-xl bg-slate-900 py-2 text-xs font-bold text-white transition hover:bg-slate-800 disabled:opacity-50 dark:bg-emerald-500 dark:text-slate-950 dark:hover:bg-emerald-400"
+          @click="handleSaveProfile"
+        >
+          {{ t('profile.saveButton') }}
+        </button>
+        <button
+          type="button"
+          :disabled="isSavingProfile"
+          class="flex-1 rounded-xl border border-slate-200 bg-white py-2 text-xs font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-900 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white"
+          @click="handleCancelProfileChanges"
+        >
+          {{ t('profile.cancelChangesButton') }}
+        </button>
+      </div>
     </section>
 
     <!-- 插槽：插入雲端同步區塊，維持原有介面順序 -->

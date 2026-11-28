@@ -333,17 +333,18 @@
     "deleteAllTxSuccessToast": "Deleted all {count} entries (recoverable from Trash)"
   },
   "profile": {
-    "sectionTitle": "My Member Profile & Avatar",
+    "sectionTitle": "Profile",
     "sectionDesc": "Set your default display name and avatar photo for new projects and collaborative trips.",
     "namePlaceholder": "Your display name (e.g. Alex)",
     "uploadAvatar": "Upload photo",
     "removeAvatar": "Remove photo",
     "useMyProfile": "Use my profile",
-    "applyToExistingProjects": "Also update my name & avatar in existing projects",
+    "applyToExistingProjects": "Sync updates to existing projects",
     "paymentInfoLabel": "My Payment / Bank Info (Optional)",
     "paymentInfoPlaceholder": "e.g. Bank code + account number or payment link",
     "paymentInfoCopiedToast": "Payment info copied!",
     "saveButton": "Save Profile",
+    "cancelChangesButton": "Cancel",
     "savedToast": "Your member name & avatar have been saved!"
   },
   "settle": {

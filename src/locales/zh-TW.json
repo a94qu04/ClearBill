@@ -333,17 +333,18 @@
     "deleteAllTxSuccessToast": "已刪除全部 {count} 筆明細（可於回收桶復原）"
   },
   "profile": {
-    "sectionTitle": "我的成員名稱與大頭貼",
+    "sectionTitle": "個人檔案",
     "sectionDesc": "設定你在分帳專案中的預設顯示名稱與大頭貼照片，建立新專案或加入協作時可一鍵套用。",
     "namePlaceholder": "輸入你的成員名稱（如：小明）",
     "uploadAvatar": "上傳大頭貼",
     "removeAvatar": "移除大頭貼",
     "useMyProfile": "套用我的資料",
-    "applyToExistingProjects": "同時更新現有專案中我的名稱與大頭貼",
+    "applyToExistingProjects": "同步更新 現有專案資料",
     "paymentInfoLabel": "我的收款帳號（選填）",
     "paymentInfoPlaceholder": "例如：國泰世華(013) 0123-4567-8901 或 LINE Pay 連結",
     "paymentInfoCopiedToast": "已複製收款帳號資訊！",
     "saveButton": "儲存個人資料",
+    "cancelChangesButton": "取消異動",
     "savedToast": "已儲存你的成員名稱與大頭貼！"
   },
   "settle": {
