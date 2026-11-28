@@ -500,6 +500,14 @@ const { isDark, setTheme, isTouchDevice, inAppBrowser, inAppBannerDismissed } =
     onReady: () => {
       hashRoute.processCurrentHash()
       hashRoute.startListening()
+      if (
+        !store.userProfile.displayName.trim() &&
+        !pendingJoinInvite.value &&
+        !projExpenseSheetOpen.value &&
+        !settingsOpen.value
+      ) {
+        openSettingsModal('profile')
+      }
     },
   })
 

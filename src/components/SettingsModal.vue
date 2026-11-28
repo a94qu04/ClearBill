@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { X } from 'lucide-vue-next'
+import { Moon, Sun, X } from 'lucide-vue-next'
 import SettingsBackupSection from '@/components/settings/SettingsBackupSection.vue'
 import SettingsCategoriesSection from '@/components/settings/SettingsCategoriesSection.vue'
 import SettingsCloudSyncSection from '@/components/settings/SettingsCloudSyncSection.vue'
@@ -78,7 +78,7 @@ watch(
         <aside
           class="safe-top flex h-full w-full max-w-sm flex-col border-l border-slate-200 bg-white shadow-2xl dark:border-slate-800 dark:bg-slate-900"
         >
-          <!-- 標題列（右上顯示版本號與關閉鈕） -->
+          <!-- 標題列（與標題同排提供深淺色圖示切換、版本號與關閉鈕） -->
           <div
             class="flex items-center justify-between gap-2 border-b border-slate-200 px-5 py-4 dark:border-slate-800"
           >
@@ -87,7 +87,44 @@ watch(
             >
               {{ t('settings.title') }}
             </h2>
-            <div class="flex shrink-0 items-center gap-2">
+            <div class="flex shrink-0 items-center gap-1.5">
+              <!-- 外觀主題純圖示切換 -->
+              <div
+                role="group"
+                :aria-label="t('settings.appearance')"
+                class="inline-flex items-center rounded-full bg-slate-100 p-0.5 dark:bg-slate-800"
+              >
+                <button
+                  type="button"
+                  :aria-label="t('settings.themeLight')"
+                  :title="t('settings.themeLight')"
+                  :aria-pressed="!isDark"
+                  class="inline-flex h-6 w-6 items-center justify-center rounded-full transition"
+                  :class="
+                    !isDark
+                      ? 'bg-white text-amber-500 shadow-xs'
+                      : 'text-slate-400 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
+                  "
+                  @click="emit('setTheme', false)"
+                >
+                  <Sun class="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  :aria-label="t('settings.themeDark')"
+                  :title="t('settings.themeDark')"
+                  :aria-pressed="isDark"
+                  class="inline-flex h-6 w-6 items-center justify-center rounded-full transition"
+                  :class="
+                    isDark
+                      ? 'bg-slate-700 text-emerald-400 shadow-xs'
+                      : 'text-slate-400 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
+                  "
+                  @click="emit('setTheme', true)"
+                >
+                  <Moon class="h-3.5 w-3.5" />
+                </button>
+              </div>
               <span
                 class="rounded-full bg-slate-100 px-2 py-0.5 font-mono text-[10px] font-semibold tracking-tight text-slate-500 dark:bg-slate-800 dark:text-slate-400"
               >
@@ -160,11 +197,9 @@ watch(
 
           <!-- 分頁內容區 -->
           <div class="safe-sheet-pb flex-1 overflow-y-auto px-5 pt-5">
-            <!-- 分頁 1：個人（我的成員檔案 ＋ Google 雲端同步 ＋ 外觀深淺色 ＋ 介面語言） -->
+            <!-- 分頁 1：個人（我的成員檔案 ＋ Google 雲端同步 ＋ 介面語言） -->
             <SettingsProfileSection
               v-if="activeTab === 'profile'"
-              :is-dark="isDark"
-              @set-theme="emit('setTheme', $event)"
               @toast="emit('toast', $event)"
             >
               <template #after-profile>

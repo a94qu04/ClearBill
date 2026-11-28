@@ -1,20 +1,13 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Camera, Globe, Moon, Palette, Sun, User } from 'lucide-vue-next'
+import { Camera, ChevronDown, Globe, Palette, User } from 'lucide-vue-next'
 import MemberAvatar from '@/components/MemberAvatar.vue'
 import { compressAvatarImageFileToDataUrl } from '@/platform/imageCompressor'
 import { SUPPORTED_LOCALES, setAppLocale, type SupportedLocale } from '@/i18n'
 import { AVATAR_PALETTE, useLedgerStore } from '@/stores/ledgerStore'
 
-interface Props {
-  isDark: boolean
-}
-
-defineProps<Props>()
-
 const emit = defineEmits<{
-  (e: 'setTheme', dark: boolean): void
   (e: 'toast', message: string): void
 }>()
 
@@ -32,6 +25,7 @@ const profileAvatarImage = ref<string | undefined>(
 const profilePaymentInfo = ref(store.userProfile.paymentInfo ?? '')
 const applyProfileToExisting = ref(true)
 const isSavingProfile = ref(false)
+const isColorPickerOpen = ref(false)
 
 watch(
   () => store.userProfile,
@@ -82,6 +76,7 @@ async function handleSaveProfile() {
       },
       { applyToExistingProjects: applyProfileToExisting.value },
     )
+    isColorPickerOpen.value = false
     emit('toast', t('profile.savedToast'))
   } finally {
     isSavingProfile.value = false
@@ -157,21 +152,54 @@ async function handleSaveProfile() {
         </div>
       </div>
 
-      <!-- 頭像預設色票 -->
-      <div class="flex items-center gap-1.5 pt-0.5">
+      <!-- 頭像底色選取（與分類底色相同：預設收合膠囊，點擊後展開色票與自訂調色盤） -->
+      <div class="space-y-2 pt-0.5">
         <button
-          v-for="color in AVATAR_PALETTE"
-          :key="color"
           type="button"
-          class="h-5 w-5 rounded-full transition"
-          :style="{ backgroundColor: color }"
+          class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold transition"
           :class="
-            profileAvatarColor === color
-              ? 'ring-2 ring-slate-900 ring-offset-2 dark:ring-white dark:ring-offset-slate-900'
-              : 'opacity-70 hover:opacity-100'
+            isColorPickerOpen
+              ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-950'
+              : 'bg-white text-slate-600 shadow-xs hover:text-slate-900 dark:bg-slate-900 dark:text-slate-300'
           "
-          @click="profileAvatarColor = color"
-        />
+          @click="isColorPickerOpen = !isColorPickerOpen"
+        >
+          <span
+            class="h-3 w-3 rounded-full ring-1 ring-black/15"
+            :style="{ backgroundColor: profileAvatarColor }"
+          />
+          <span>{{ t('settings.categoryColorLabel') }}</span>
+          <ChevronDown
+            class="h-3 w-3 transition-transform"
+            :class="isColorPickerOpen ? 'rotate-180' : ''"
+          />
+        </button>
+
+        <div
+          v-if="isColorPickerOpen"
+          class="flex flex-wrap items-center gap-2 rounded-xl bg-white p-2.5 shadow-xs dark:bg-slate-900"
+        >
+          <button
+            v-for="color in AVATAR_PALETTE"
+            :key="color"
+            type="button"
+            class="h-6 w-6 rounded-full transition"
+            :style="{ backgroundColor: color }"
+            :class="
+              profileAvatarColor.toLowerCase() === color.toLowerCase()
+                ? 'scale-110 ring-2 ring-slate-900 ring-offset-2 dark:ring-white dark:ring-offset-slate-900'
+                : 'opacity-80 hover:opacity-100'
+            "
+            @click="profileAvatarColor = color"
+          />
+          <label
+            class="inline-flex cursor-pointer items-center gap-1 rounded-full border border-dashed border-slate-300 px-2 py-0.5 text-[10px] font-semibold text-slate-600 hover:border-emerald-500 hover:text-emerald-600 dark:border-slate-600 dark:text-slate-300"
+          >
+            <Palette class="h-3 w-3" />
+            <span>{{ t('settings.customColorPicker') }}</span>
+            <input v-model="profileAvatarColor" type="color" class="sr-only" />
+          </label>
+        </div>
       </div>
 
       <!-- 選填：我的收款帳號／轉帳資訊（結算與一鍵分享時自動帶出） -->
@@ -215,44 +243,6 @@ async function handleSaveProfile() {
 
     <!-- 插槽：插入雲端同步區塊，維持原有介面順序 -->
     <slot name="after-profile" />
-
-    <!-- 外觀深淺色 -->
-    <section>
-      <div
-        class="mb-2.5 flex items-center gap-1.5 text-xs font-semibold text-slate-500 dark:text-slate-400"
-      >
-        <Palette class="h-3.5 w-3.5" />
-        <span>{{ t('settings.appearance') }}</span>
-      </div>
-      <div class="grid grid-cols-2 gap-2.5">
-        <button
-          type="button"
-          class="flex items-center justify-center gap-2 rounded-xl border py-3 text-xs font-semibold transition"
-          :class="
-            !isDark
-              ? 'border-emerald-500 bg-emerald-50 text-emerald-900 dark:border-emerald-500 dark:bg-emerald-950/60 dark:text-emerald-200'
-              : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300'
-          "
-          @click="emit('setTheme', false)"
-        >
-          <Sun class="h-4 w-4" />
-          <span>{{ t('settings.themeLight') }}</span>
-        </button>
-        <button
-          type="button"
-          class="flex items-center justify-center gap-2 rounded-xl border py-3 text-xs font-semibold transition"
-          :class="
-            isDark
-              ? 'border-emerald-500 bg-emerald-50 text-emerald-900 dark:border-emerald-500 dark:bg-emerald-950/60 dark:text-emerald-200'
-              : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300'
-          "
-          @click="emit('setTheme', true)"
-        >
-          <Moon class="h-4 w-4" />
-          <span>{{ t('settings.themeDark') }}</span>
-        </button>
-      </div>
-    </section>
 
     <!-- 介面語言 -->
     <section>
